@@ -44,6 +44,7 @@ func (p *provisioner) createNetwork(ctx context.Context, req provision.NetworkRe
 			Config: []network.IPAMConfig{
 				{
 					Subnet: req.CIDRs[0].String(),
+					Gateway: req.GatewayAddrs[0].String()
 				},
 			},
 		},
