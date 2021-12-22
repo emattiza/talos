@@ -8,6 +8,8 @@ import (
 	"context"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 
 	v1alpha1server "github.com/talos-systems/talos/internal/app/machined/internal/server/v1alpha1"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -26,50 +28,46 @@ var rules = map[string]role.Set{
 
 	"/inspect.InspectService/ControllerRuntimeDependencies": role.MakeSet(role.Admin, role.Reader),
 
-	"/machine.MachineService/ApplyConfiguration":           role.MakeSet(role.Admin),
-	"/machine.MachineService/Bootstrap":                    role.MakeSet(role.Admin),
-	"/machine.MachineService/CPUInfo":                      role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Containers":                   role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Copy":                         role.MakeSet(role.Admin),
-	"/machine.MachineService/DiskStats":                    role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/DiskUsage":                    role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Dmesg":                        role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/EtcdForfeitLeadership":        role.MakeSet(role.Admin),
-	"/machine.MachineService/EtcdLeaveCluster":             role.MakeSet(role.Admin),
-	"/machine.MachineService/EtcdMemberList":               role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/EtcdRecover":                  role.MakeSet(role.Admin),
-	"/machine.MachineService/EtcdRemoveMember":             role.MakeSet(role.Admin),
-	"/machine.MachineService/EtcdSnapshot":                 role.MakeSet(role.Admin, role.EtcdBackup),
-	"/machine.MachineService/Events":                       role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/GenerateClientConfiguration":  role.MakeSet(role.Admin),
-	"/machine.MachineService/GenerateConfiguration":        role.MakeSet(role.Admin),
-	"/machine.MachineService/Hostname":                     role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Kubeconfig":                   role.MakeSet(role.Admin),
-	"/machine.MachineService/List":                         role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/LoadAvg":                      role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Logs":                         role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Memory":                       role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Mounts":                       role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/NetworkDeviceStats":           role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Processes":                    role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Read":                         role.MakeSet(role.Admin),
-	"/machine.MachineService/Reboot":                       role.MakeSet(role.Admin),
-	"/machine.MachineService/RemoveBootkubeInitializedKey": role.MakeSet(role.Admin),
-	"/machine.MachineService/Reset":                        role.MakeSet(role.Admin),
-	"/machine.MachineService/Restart":                      role.MakeSet(role.Admin),
-	"/machine.MachineService/Rollback":                     role.MakeSet(role.Admin),
-	"/machine.MachineService/ServiceList":                  role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/ServiceRestart":               role.MakeSet(role.Admin),
-	"/machine.MachineService/ServiceStart":                 role.MakeSet(role.Admin),
-	"/machine.MachineService/ServiceStop":                  role.MakeSet(role.Admin),
-	"/machine.MachineService/Shutdown":                     role.MakeSet(role.Admin),
-	"/machine.MachineService/Stats":                        role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/SystemStat":                   role.MakeSet(role.Admin, role.Reader),
-	"/machine.MachineService/Upgrade":                      role.MakeSet(role.Admin),
-	"/machine.MachineService/Version":                      role.MakeSet(role.Admin, role.Reader),
-
-	"/network.NetworkService/Interfaces": role.MakeSet(role.Admin, role.Reader),
-	"/network.NetworkService/Routes":     role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/ApplyConfiguration":          role.MakeSet(role.Admin),
+	"/machine.MachineService/Bootstrap":                   role.MakeSet(role.Admin),
+	"/machine.MachineService/CPUInfo":                     role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Containers":                  role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Copy":                        role.MakeSet(role.Admin),
+	"/machine.MachineService/DiskStats":                   role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/DiskUsage":                   role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Dmesg":                       role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/EtcdForfeitLeadership":       role.MakeSet(role.Admin),
+	"/machine.MachineService/EtcdLeaveCluster":            role.MakeSet(role.Admin),
+	"/machine.MachineService/EtcdMemberList":              role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/EtcdRecover":                 role.MakeSet(role.Admin),
+	"/machine.MachineService/EtcdRemoveMember":            role.MakeSet(role.Admin),
+	"/machine.MachineService/EtcdSnapshot":                role.MakeSet(role.Admin, role.EtcdBackup),
+	"/machine.MachineService/Events":                      role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/GenerateClientConfiguration": role.MakeSet(role.Admin),
+	"/machine.MachineService/GenerateConfiguration":       role.MakeSet(role.Admin),
+	"/machine.MachineService/Hostname":                    role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Kubeconfig":                  role.MakeSet(role.Admin),
+	"/machine.MachineService/List":                        role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/LoadAvg":                     role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Logs":                        role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Memory":                      role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Mounts":                      role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/NetworkDeviceStats":          role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Processes":                   role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Read":                        role.MakeSet(role.Admin),
+	"/machine.MachineService/Reboot":                      role.MakeSet(role.Admin),
+	"/machine.MachineService/Reset":                       role.MakeSet(role.Admin),
+	"/machine.MachineService/Restart":                     role.MakeSet(role.Admin),
+	"/machine.MachineService/Rollback":                    role.MakeSet(role.Admin),
+	"/machine.MachineService/ServiceList":                 role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/ServiceRestart":              role.MakeSet(role.Admin),
+	"/machine.MachineService/ServiceStart":                role.MakeSet(role.Admin),
+	"/machine.MachineService/ServiceStop":                 role.MakeSet(role.Admin),
+	"/machine.MachineService/Shutdown":                    role.MakeSet(role.Admin),
+	"/machine.MachineService/Stats":                       role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/SystemStat":                  role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/Upgrade":                     role.MakeSet(role.Admin),
+	"/machine.MachineService/Version":                     role.MakeSet(role.Admin, role.Reader),
 
 	// per-type authorization is handled by the service itself
 	"/resource.ResourceService/Get":   role.MakeSet(role.Admin, role.Reader),
@@ -113,8 +111,23 @@ func (s *machinedService) Main(ctx context.Context, r runtime.Runtime, logWriter
 		factory.WithStreamInterceptor(authorizer.StreamInterceptor()),
 	)
 
+	// ensure socket dir exists
+	if err := os.MkdirAll(filepath.Dir(constants.MachineSocketPath), 0o750); err != nil {
+		return err
+	}
+
+	// set the final leaf to be world-executable to make apid connect to the socket
+	if err := os.Chmod(filepath.Dir(constants.MachineSocketPath), 0o751); err != nil {
+		return err
+	}
+
 	listener, err := factory.NewListener(factory.Network("unix"), factory.SocketPath(constants.MachineSocketPath))
 	if err != nil {
+		return err
+	}
+
+	// chown the socket path to make it accessible to the apid
+	if err := os.Chown(constants.MachineSocketPath, constants.ApidUserID, constants.ApidUserID); err != nil {
 		return err
 	}
 

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -120,7 +121,7 @@ DrainLoop:
 
 // TestClusterHasDmesg verifies that all the cluster nodes have dmesg.
 func (suite *DmesgSuite) TestClusterHasDmesg() {
-	nodes := suite.DiscoverNodes().Nodes()
+	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
 	suite.Require().NotEmpty(nodes)
 
 	ctx := client.WithNodes(suite.ctx, nodes...)

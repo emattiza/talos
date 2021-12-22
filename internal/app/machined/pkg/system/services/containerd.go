@@ -58,9 +58,12 @@ func (c *Containerd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		ID: c.ID(r),
 		ProcessArgs: []string{
 			"/bin/containerd",
-			"--address", constants.SystemContainerdAddress,
-			"--state", filepath.Join(constants.SystemRunPath, "containerd"),
-			"--root", filepath.Join(constants.SystemVarPath, "lib", "containerd"),
+			"--address",
+			constants.SystemContainerdAddress,
+			"--state",
+			filepath.Join(constants.SystemRunPath, "containerd"),
+			"--root",
+			filepath.Join(constants.SystemVarPath, "lib", "containerd"),
 		},
 	}
 
@@ -75,6 +78,7 @@ func (c *Containerd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithEnv(env),
 		runner.WithOOMScoreAdj(-999),
+		runner.WithCgroupPath(constants.CgroupRuntime),
 	),
 		restart.WithType(restart.Forever),
 	), nil

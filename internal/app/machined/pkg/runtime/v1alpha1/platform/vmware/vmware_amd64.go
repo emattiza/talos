@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build amd64
 // +build amd64
 
 package vmware
@@ -118,7 +119,7 @@ func (v *VMware) Configuration(context.Context) ([]byte, error) {
 	}
 
 	if *option == constants.ConfigGuestInfo {
-		log.Printf("fetching machine config from VMWare extraConfig or OVF env")
+		log.Printf("fetching machine config from VMware extraConfig or OVF env")
 
 		ok, err := vmcheck.IsVirtualWorld()
 		if err != nil {

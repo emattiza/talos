@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_provision
 // +build integration_provision
 
 package provision
@@ -59,6 +60,8 @@ type upgradeSpec struct {
 	TargetVersion        string
 	TargetK8sVersion     string
 
+	SkipKubeletUpgrade bool
+
 	MasterNodes int
 	WorkerNodes int
 
@@ -68,13 +71,13 @@ type upgradeSpec struct {
 }
 
 const (
-	previousRelease = "v0.10.4"
-	stableRelease   = "v0.11.0-beta.0" // or soon-to-be-stable
+	previousRelease = "v0.13.4"
+	stableRelease   = "v0.14.0-alpha.2" // or soon-to-be-stable
 	// The current version (the one being built on CI) is DefaultSettings.CurrentVersion.
 
-	previousK8sVersion = "1.21.0" // constants.DefaultKubernetesVersion in the previousRelease
-	stableK8sVersion   = "1.21.2" // constants.DefaultKubernetesVersion in the stableRelease
-	currentK8sVersion  = "1.21.2" // next k8s version being tested
+	previousK8sVersion = "1.22.3"      // constants.DefaultKubernetesVersion in the previousRelease
+	stableK8sVersion   = "1.23.0-rc.0" // constants.DefaultKubernetesVersion in the stableRelease
+	currentK8sVersion  = constants.DefaultKubernetesVersion
 )
 
 var defaultNameservers = []net.IP{net.ParseIP("8.8.8.8"), net.ParseIP("1.1.1.1")}
@@ -93,6 +96,9 @@ func upgradePreviousToStable() upgradeSpec {
 		TargetInstallerImage: fmt.Sprintf("%s:%s", "ghcr.io/talos-systems/installer", stableRelease),
 		TargetVersion:        stableRelease,
 		TargetK8sVersion:     stableK8sVersion,
+
+		// TODO: remove when StableVersion >= 0.14.0-beta.0
+		SkipKubeletUpgrade: true,
 
 		MasterNodes: DefaultSettings.MasterNodes,
 		WorkerNodes: DefaultSettings.WorkerNodes,
@@ -523,6 +529,10 @@ func (suite *UpgradeSuite) upgradeNode(client *talosclient.Client, node provisio
 				return retry.ExpectedError(err)
 			}
 
+			if strings.Contains(err.Error(), "failed to acquire upgrade lock") {
+				return retry.ExpectedError(err)
+			}
+
 			return err
 		}
 
@@ -560,7 +570,7 @@ func (suite *UpgradeSuite) upgradeNode(client *talosclient.Client, node provisio
 	suite.waitForClusterHealth()
 }
 
-func (suite *UpgradeSuite) upgradeKubernetes(fromVersion, toVersion string) {
+func (suite *UpgradeSuite) upgradeKubernetes(fromVersion, toVersion string, skipKubeletUpgrade bool) {
 	if fromVersion == toVersion {
 		suite.T().Logf("skipping Kubernetes upgrade, as versions are equal %q -> %q", fromVersion, toVersion)
 
@@ -574,6 +584,8 @@ func (suite *UpgradeSuite) upgradeKubernetes(fromVersion, toVersion string) {
 		ToVersion:   toVersion,
 
 		ControlPlaneEndpoint: suite.controlPlaneEndpoint,
+
+		UpgradeKubelet: !skipKubeletUpgrade,
 	}
 
 	suite.Require().NoError(kubernetes.UpgradeTalosManaged(suite.ctx, suite.clusterAccess, options))
@@ -638,7 +650,7 @@ func (suite *UpgradeSuite) TestRolling() {
 	suite.assertSameVersionCluster(client, suite.spec.TargetVersion)
 
 	// upgrade Kubernetes if required
-	suite.upgradeKubernetes(suite.spec.SourceK8sVersion, suite.spec.TargetK8sVersion)
+	suite.upgradeKubernetes(suite.spec.SourceK8sVersion, suite.spec.TargetK8sVersion, suite.spec.SkipKubeletUpgrade)
 
 	// run e2e test
 	suite.runE2E(suite.spec.TargetK8sVersion)

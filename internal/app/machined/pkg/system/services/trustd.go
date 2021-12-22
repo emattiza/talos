@@ -25,8 +25,8 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner/restart"
 	"github.com/talos-systems/talos/pkg/conditions"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
 )
 
 // Trustd implements the Service interface. It serves as the concrete type with
@@ -61,6 +61,7 @@ func (t *Trustd) DependsOn(r runtime.Runtime) []string {
 	return []string{"containerd"}
 }
 
+// Runner implements the Service interface.
 func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 	// Set the process arguments.
 	args := runner.Args{
@@ -103,6 +104,7 @@ func (t *Trustd) Runner(r runtime.Runtime) (runner.Runner, error) {
 			oci.WithMounts(mounts),
 			oci.WithRootFSPath(filepath.Join(constants.SystemLibexecPath, t.ID(r))),
 			oci.WithRootFSReadonly(),
+			oci.WithUser(fmt.Sprintf("%d:%d", constants.TrustdUserID, constants.TrustdUserID)),
 		),
 		runner.WithOOMScoreAdj(-998),
 	),

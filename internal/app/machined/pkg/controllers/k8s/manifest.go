@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/AlekSi/pointer"
@@ -17,9 +18,10 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"go.uber.org/zap"
 
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
 
 // ManifestController renders manifests based on templates and config/secrets.
@@ -41,8 +43,8 @@ func (ctrl *ManifestController) Inputs() []controller.Input {
 		},
 		{
 			Namespace: secrets.NamespaceName,
-			Type:      secrets.RootType,
-			ID:        pointer.ToString(secrets.RootKubernetesID),
+			Type:      secrets.KubernetesRootType,
+			ID:        pointer.ToString(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -84,7 +86,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 
 		config := configResource.(*config.K8sControlPlane).Manifests()
 
-		secretsResources, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.RootType, secrets.RootKubernetesID, resource.VersionUndefined))
+		secretsResources, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				if err = ctrl.teardownAll(ctx, r); err != nil {
@@ -97,7 +99,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 			return err
 		}
 
-		secrets := secretsResources.(*secrets.Root).KubernetesSpec()
+		secrets := secretsResources.(*secrets.KubernetesRoot).TypedSpec()
 
 		renderedManifests, err := ctrl.render(config, secrets)
 		if err != nil {
@@ -109,7 +111,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 
 			if err = r.Modify(ctx, k8s.NewManifest(k8s.ControlPlaneNamespaceName, renderedManifest.name),
 				func(r resource.Resource) error {
-					return r.(*k8s.Manifest).SetYAML(renderedManifest.data)
+					return k8sadapter.Manifest(r.(*k8s.Manifest)).SetYAML(renderedManifest.data)
 				}); err != nil {
 				return fmt.Errorf("error updating manifests: %w", err)
 			}
@@ -154,11 +156,11 @@ func jsonify(input string) (string, error) {
 	return string(out), err
 }
 
-func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secrets.RootKubernetesSpec) ([]renderedManifest, error) {
+func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secrets.KubernetesRootSpec) ([]renderedManifest, error) {
 	templateConfig := struct {
 		config.K8sManifestsSpec
 
-		Secrets *secrets.RootKubernetesSpec
+		Secrets *secrets.KubernetesRootSpec
 	}{
 		K8sManifestsSpec: cfg,
 		Secrets:          scrt,
@@ -175,7 +177,6 @@ func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secret
 		{"01-csr-approver-role-binding", csrApproverRoleBindingTemplate},
 		{"01-csr-renewal-role-binding", csrRenewalRoleBindingTemplate},
 		{"02-kube-system-sa-role-binding", kubeSystemSARoleBindingTemplate},
-		{"03-default-pod-security-policy", podSecurityPolicy},
 		{"11-kube-config-in-cluster", kubeConfigInClusterTemplate},
 	}
 
@@ -186,14 +187,6 @@ func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secret
 				{"11-core-dns-svc", coreDNSSvcTemplate},
 			}...,
 		)
-
-		if cfg.DNSServiceIPv6 != "" {
-			defaultManifests = append(defaultManifests,
-				[]manifestDesc{
-					{"11-core-dns-v6-svc", coreDNSv6SvcTemplate},
-				}...,
-			)
-		}
 	}
 
 	if cfg.FlannelEnabled {
@@ -212,12 +205,21 @@ func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secret
 		)
 	}
 
+	if cfg.PodSecurityPolicyEnabled {
+		defaultManifests = append(defaultManifests,
+			[]manifestDesc{
+				{"03-default-pod-security-policy", podSecurityPolicy},
+			}...,
+		)
+	}
+
 	manifests := make([]renderedManifest, len(defaultManifests))
 
 	for i := range defaultManifests {
 		tmpl, err := template.New(defaultManifests[i].name).
 			Funcs(template.FuncMap{
 				"json": jsonify,
+				"join": strings.Join,
 			}).
 			Parse(string(defaultManifests[i].template))
 		if err != nil {

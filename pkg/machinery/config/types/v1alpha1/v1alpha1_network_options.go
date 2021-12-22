@@ -82,7 +82,7 @@ func WithNetworkInterfaceDHCPv6(iface string, enable bool) NetworkConfigOption {
 // WithNetworkInterfaceCIDR configures interface for static addressing.
 func WithNetworkInterfaceCIDR(iface, cidr string) NetworkConfigOption {
 	return func(_ machine.Type, cfg *NetworkConfig) error {
-		cfg.getDevice(iface).DeviceCIDR = cidr
+		cfg.getDevice(iface).DeviceAddresses = append(cfg.getDevice(iface).DeviceAddresses, cidr)
 
 		return nil
 	}
@@ -116,6 +116,15 @@ func WithNetworkInterfaceVirtualIP(iface, cidr string) NetworkConfigOption {
 		cfg.getDevice(iface).DeviceVIPConfig = &DeviceVIPConfig{
 			SharedIP: cidr,
 		}
+
+		return nil
+	}
+}
+
+// WithKubeSpan configures a KubeSpan interface.
+func WithKubeSpan() NetworkConfigOption {
+	return func(_ machine.Type, cfg *NetworkConfig) error {
+		cfg.NetworkKubeSpan.KubeSpanEnabled = true
 
 		return nil
 	}

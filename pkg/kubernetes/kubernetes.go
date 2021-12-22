@@ -47,7 +47,8 @@ type Client struct {
 	dialer *connrotation.Dialer
 }
 
-func newDialer() *connrotation.Dialer {
+// NewDialer creates new custom dialer.
+func NewDialer() *connrotation.Dialer {
 	return connrotation.NewDialer((&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext)
 }
 
@@ -64,7 +65,7 @@ func NewClientFromKubeletKubeconfig() (client *Client, err error) {
 		config.Timeout = 30 * time.Second
 	}
 
-	dialer := newDialer()
+	dialer := NewDialer()
 	config.Dial = dialer.DialContext
 
 	var clientset *kubernetes.Clientset
@@ -88,7 +89,7 @@ func NewForConfig(config *restclient.Config) (client *Client, err error) {
 		return nil, fmt.Errorf("dialer is already set")
 	}
 
-	dialer := newDialer()
+	dialer := NewDialer()
 	config.Dial = dialer.DialContext
 
 	clientset, err = kubernetes.NewForConfig(config)
@@ -118,7 +119,7 @@ func NewClientFromPKI(ca, crt, key []byte, endpoint *url.URL) (client *Client, e
 		Timeout:         30 * time.Second,
 	}
 
-	dialer := newDialer()
+	dialer := NewDialer()
 	config.Dial = dialer.DialContext
 
 	var clientset *kubernetes.Clientset
@@ -309,7 +310,7 @@ func (h *Client) WaitUntilReady(ctx context.Context, name string) error {
 					return retry.ExpectedError(err)
 				}
 
-				if apierrors.ReasonForError(err) == metav1.StatusReasonUnknown {
+				if apierrors.ReasonForError(err) == metav1.StatusReasonUnknown || IsRetryableError(err) {
 					// non-API error, e.g. networking error
 					return retry.ExpectedError(err)
 				}
@@ -345,6 +346,11 @@ func (h *Client) Cordon(ctx context.Context, name string) error {
 		if err != nil {
 			if IsRetryableError(err) {
 				return retry.ExpectedError(err)
+			}
+
+			if apierrors.IsNotFound(err) {
+				// node not found, should have already been deleted, skip cordoning
+				return nil
 			}
 
 			return err

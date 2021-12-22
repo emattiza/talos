@@ -22,13 +22,14 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-procfs/procfs"
 	"github.com/talos-systems/go-retry/retry"
+	"inet.af/netaddr"
 
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type RouteConfigSuite struct {
@@ -106,7 +107,7 @@ func (suite *RouteConfigSuite) TestCmdline() {
 	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 		func() error {
 			return suite.assertRoutes([]string{
-				"cmdline/172.20.0.1/",
+				"cmdline/inet4/172.20.0.1//1024",
 			}, func(r *network.RouteSpec) error {
 				suite.Assert().Equal("eth1", r.TypedSpec().OutLinkName)
 				suite.Assert().Equal(network.ConfigCmdline, r.TypedSpec().ConfigLayer)
@@ -133,7 +134,7 @@ func (suite *RouteConfigSuite) TestMachineConfiguration() {
 				NetworkInterfaces: []*v1alpha1.Device{
 					{
 						DeviceInterface: "eth3",
-						DeviceCIDR:      "192.168.0.24/28",
+						DeviceAddresses: []string{"192.168.0.24/28"},
 						DeviceRoutes: []*v1alpha1.Route{
 							{
 								RouteNetwork: "192.168.0.0/18",
@@ -145,7 +146,7 @@ func (suite *RouteConfigSuite) TestMachineConfiguration() {
 					{
 						DeviceIgnore:    true,
 						DeviceInterface: "eth4",
-						DeviceCIDR:      "192.168.0.24/28",
+						DeviceAddresses: []string{"192.168.0.24/28"},
 						DeviceRoutes: []*v1alpha1.Route{
 							{
 								RouteNetwork: "192.168.0.0/18",
@@ -156,7 +157,7 @@ func (suite *RouteConfigSuite) TestMachineConfiguration() {
 					},
 					{
 						DeviceInterface: "eth2",
-						DeviceCIDR:      "2001:470:6d:30e:8ed2:b60c:9d2f:803a/64",
+						DeviceAddresses: []string{"2001:470:6d:30e:8ed2:b60c:9d2f:803a/64"},
 						DeviceRoutes: []*v1alpha1.Route{
 							{
 								RouteGateway: "2001:470:6d:30e:8ed2:b60c:9d2f:803b",
@@ -167,14 +168,26 @@ func (suite *RouteConfigSuite) TestMachineConfiguration() {
 						DeviceInterface: "eth0",
 						DeviceVlans: []*v1alpha1.Vlan{
 							{
-								VlanID:   24,
-								VlanCIDR: "10.0.0.1/8",
+								VlanID: 24,
+								VlanAddresses: []string{
+									"10.0.0.1/8",
+								},
 								VlanRoutes: []*v1alpha1.Route{
 									{
 										RouteNetwork: "10.0.3.0/24",
 										RouteGateway: "10.0.3.1",
 									},
 								},
+							},
+						},
+					},
+					{
+						DeviceInterface: "eth1",
+						DeviceRoutes: []*v1alpha1.Route{
+							{
+								RouteNetwork: "192.244.0.0/24",
+								RouteGateway: "192.244.0.1",
+								RouteSource:  "192.244.0.10",
 							},
 						},
 					},
@@ -195,23 +208,29 @@ func (suite *RouteConfigSuite) TestMachineConfiguration() {
 	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 		func() error {
 			return suite.assertRoutes([]string{
-				"configuration/2001:470:6d:30e:8ed2:b60c:9d2f:803b/",
-				"configuration/10.0.3.1/10.0.3.0/24",
-				"configuration/192.168.0.25/192.168.0.0/18",
+				"configuration/inet6/2001:470:6d:30e:8ed2:b60c:9d2f:803b//1024",
+				"configuration/inet4/10.0.3.1/10.0.3.0/24/1024",
+				"configuration/inet4/192.168.0.25/192.168.0.0/18/25",
+				"configuration/inet4/192.244.0.1/192.244.0.0/24/1024",
 			}, func(r *network.RouteSpec) error {
 				switch r.Metadata().ID() {
-				case "configuration/2001:470:6d:30e:8ed2:b60c:9d2f:803b/":
+				case "configuration/inet6/2001:470:6d:30e:8ed2:b60c:9d2f:803b//1024":
 					suite.Assert().Equal("eth2", r.TypedSpec().OutLinkName)
 					suite.Assert().Equal(nethelpers.FamilyInet6, r.TypedSpec().Family)
 					suite.Assert().EqualValues(netctrl.DefaultRouteMetric, r.TypedSpec().Priority)
-				case "configuration/10.0.3.1/10.0.3.0/24":
+				case "configuration/inet4/10.0.3.1/10.0.3.0/24/1024":
 					suite.Assert().Equal("eth0.24", r.TypedSpec().OutLinkName)
 					suite.Assert().Equal(nethelpers.FamilyInet4, r.TypedSpec().Family)
 					suite.Assert().EqualValues(netctrl.DefaultRouteMetric, r.TypedSpec().Priority)
-				case "configuration/192.168.0.25/192.168.0.0/18":
+				case "configuration/inet4/192.168.0.25/192.168.0.0/18/25":
 					suite.Assert().Equal("eth3", r.TypedSpec().OutLinkName)
 					suite.Assert().Equal(nethelpers.FamilyInet4, r.TypedSpec().Family)
 					suite.Assert().EqualValues(25, r.TypedSpec().Priority)
+				case "configuration/inet4/192.244.0.1/192.244.0.0/24/1024":
+					suite.Assert().Equal("eth1", r.TypedSpec().OutLinkName)
+					suite.Assert().Equal(nethelpers.FamilyInet4, r.TypedSpec().Family)
+					suite.Assert().EqualValues(netctrl.DefaultRouteMetric, r.TypedSpec().Priority)
+					suite.Assert().EqualValues(netaddr.MustParseIP("192.244.0.10"), r.TypedSpec().Source)
 				}
 
 				suite.Assert().Equal(network.ConfigMachineConfiguration, r.TypedSpec().ConfigLayer)

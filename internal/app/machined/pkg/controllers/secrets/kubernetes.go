@@ -9,7 +9,6 @@ import (
 	"context"
 	stdlibx509 "crypto/x509"
 	"fmt"
-	"net"
 	"net/url"
 	"time"
 
@@ -23,10 +22,10 @@ import (
 	"github.com/talos-systems/talos/internal/pkg/kubeconfig"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // KubernetesCertificateValidityDuration is the validity duration for the certificates created with this controller.
@@ -66,7 +65,7 @@ func (ctrl *KubernetesController) Outputs() []controller.Output {
 
 // Run implements controller.Controller interface.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// wait for the network to be ready first, then switch to regular inputs
 	for {
@@ -96,14 +95,20 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 	if err := r.UpdateInputs([]controller.Input{
 		{
 			Namespace: secrets.NamespaceName,
-			Type:      secrets.RootType,
-			ID:        pointer.ToString(secrets.RootKubernetesID),
+			Type:      secrets.KubernetesRootType,
+			ID:        pointer.ToString(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: v1alpha1.NamespaceName,
 			Type:      timeresource.StatusType,
 			ID:        pointer.ToString(timeresource.StatusID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: secrets.NamespaceName,
+			Type:      secrets.CertSANType,
+			ID:        pointer.ToString(secrets.CertSANKubernetesID),
 			Kind:      controller.InputWeak,
 		},
 	}); err != nil {
@@ -123,7 +128,7 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 		case <-refreshTicker.C:
 		}
 
-		k8sRootRes, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.RootType, secrets.RootKubernetesID, resource.VersionUndefined))
+		k8sRootRes, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				if err = ctrl.teardownAll(ctx, r); err != nil {
@@ -136,7 +141,7 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 			return fmt.Errorf("error getting root k8s secrets: %w", err)
 		}
 
-		k8sRoot := k8sRootRes.(*secrets.Root).KubernetesSpec()
+		k8sRoot := k8sRootRes.(*secrets.KubernetesRoot).TypedSpec()
 
 		// wait for time sync as certs depend on current time
 		timeSyncResource, err := r.Get(ctx, resource.NewMetadata(v1alpha1.NamespaceName, timeresource.StatusType, timeresource.StatusID, resource.VersionUndefined))
@@ -152,53 +157,35 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 			continue
 		}
 
+		certSANResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.CertSANType, secrets.CertSANKubernetesID, resource.VersionUndefined))
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				continue
+			}
+
+			return err
+		}
+
+		certSANs := certSANResource.(*secrets.CertSAN).TypedSpec()
+
 		if err = r.Modify(ctx, secrets.NewKubernetes(), func(r resource.Resource) error {
-			return ctrl.updateSecrets(k8sRoot, r.(*secrets.Kubernetes).Certs())
+			return ctrl.updateSecrets(k8sRoot, r.(*secrets.Kubernetes).Certs(), certSANs)
 		}); err != nil {
 			return err
 		}
 	}
 }
 
-//nolint:gocyclo
-func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.RootKubernetesSpec, k8sSecrets *secrets.KubernetesCertsSpec) error {
-	urls := []string{k8sRoot.Endpoint.Hostname()}
-	urls = append(urls, k8sRoot.CertSANs...)
-	altNames := altNamesFromURLs(urls)
-
-	altNames.IPs = append(altNames.IPs, k8sRoot.APIServerIPs...)
-
-	// Add kubernetes default svc with cluster domain to AltNames
-	altNames.DNSNames = append(altNames.DNSNames,
-		"kubernetes",
-		"kubernetes.default",
-		"kubernetes.default.svc",
-		"kubernetes.default.svc."+k8sRoot.DNSDomain,
-	)
-
-	// Add localhost if it is not in the list yet
-	localhostFound := false
-
-	for _, dnsName := range altNames.DNSNames {
-		if dnsName == "localhost" {
-			localhostFound = true
-
-			break
-		}
-	}
-
-	if !localhostFound {
-		altNames.DNSNames = append(altNames.DNSNames, "localhost")
-	}
-
+func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.KubernetesRootSpec, k8sSecrets *secrets.KubernetesCertsSpec,
+	certSANs *secrets.CertSANSpec) error {
 	ca, err := x509.NewCertificateAuthorityFromCertificateAndKey(k8sRoot.CA)
 	if err != nil {
 		return fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
 	apiServer, err := x509.NewKeyPair(ca,
-		x509.IPAddresses(altNames.IPs),
-		x509.DNSNames(altNames.DNSNames),
+		x509.IPAddresses(certSANs.StdIPs()),
+		x509.DNSNames(certSANs.DNSNames),
 		x509.CommonName("kube-apiserver"),
 		x509.Organization("kube-master"),
 		x509.NotAfter(time.Now().Add(KubernetesCertificateValidityDuration)),
@@ -315,32 +302,9 @@ func (ctrl *KubernetesController) teardownAll(ctx context.Context, r controller.
 	return nil
 }
 
-// AltNames defines certificate alternative names.
-type AltNames struct {
-	IPs      []net.IP
-	DNSNames []string
-}
-
-func altNamesFromURLs(urls []string) *AltNames {
-	var an AltNames
-
-	for _, u := range urls {
-		ip := net.ParseIP(u)
-		if ip != nil {
-			an.IPs = append(an.IPs, ip)
-
-			continue
-		}
-
-		an.DNSNames = append(an.DNSNames, u)
-	}
-
-	return &an
-}
-
 // generateAdminAdapter allows to translate input config into GenerateAdmin input.
 type generateAdminAdapter struct {
-	k8sRoot *secrets.RootKubernetesSpec
+	k8sRoot *secrets.KubernetesRootSpec
 }
 
 func (adapter *generateAdminAdapter) Name() string {

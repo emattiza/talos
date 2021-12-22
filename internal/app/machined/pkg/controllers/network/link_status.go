@@ -19,9 +19,10 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // LinkStatusController manages secrets.Etcd based on configuration.
@@ -214,11 +215,11 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 
 			switch status.Kind {
 			case network.LinkKindVLAN:
-				if err = status.VLAN.Decode(link.Attributes.Info.Data); err != nil {
+				if err = networkadapter.VLANSpec(&status.VLAN).Decode(link.Attributes.Info.Data); err != nil {
 					logger.Warn("failure decoding VLAN attributes", zap.Error(err), zap.String("link", link.Attributes.Name))
 				}
 			case network.LinkKindBond:
-				if err = status.BondMaster.Decode(link.Attributes.Info.Data); err != nil {
+				if err = networkadapter.BondMasterSpec(&status.BondMaster).Decode(link.Attributes.Info.Data); err != nil {
 					logger.Warn("failure decoding bond attributes", zap.Error(err), zap.String("link", link.Attributes.Name))
 				}
 			case network.LinkKindWireguard:
@@ -228,7 +229,7 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 				if err != nil {
 					logger.Warn("failure getting wireguard attributes", zap.Error(err), zap.String("link", link.Attributes.Name))
 				} else {
-					status.Wireguard.Decode(wgDev)
+					networkadapter.WireguardSpec(&status.Wireguard).Decode(wgDev, true)
 				}
 			}
 

@@ -88,11 +88,19 @@ func TestApplyDynamicConfig(t *testing.T) {
 		DeviceVIPConfig: &v1alpha1.DeviceVIPConfig{
 			SharedIP: "192.168.88.77",
 		},
+		DeviceVlans: []*v1alpha1.Vlan{
+			{
+				VlanID: 100,
+				VlanVIP: &v1alpha1.DeviceVIPConfig{
+					SharedIP: "192.168.88.66",
+				},
+			},
+		},
 	})
 
 	err = config.ApplyDynamicConfig(ctx, provider)
 	require.NoError(t, err)
-	require.Equal(t, []string{"10.2.0.3", "10.10.1.2", "10.10.1.3", "192.168.88.77"}, c.MachineConfig.CertSANs())
+	require.Equal(t, []string{"10.2.0.3", "10.10.1.2", "10.10.1.3", "192.168.88.77", "192.168.88.66"}, c.MachineConfig.CertSANs())
 }
 
 func TestInterfaces(t *testing.T) {
@@ -108,4 +116,7 @@ func TestInterfaces(t *testing.T) {
 	assert.Implements(t, (*config.MachineConfig)(nil), (*v1alpha1.MachineConfig)(nil))
 	assert.Implements(t, (*config.Scheduler)(nil), (*v1alpha1.SchedulerConfig)(nil))
 	assert.Implements(t, (*config.Token)(nil), (*v1alpha1.ClusterConfig)(nil))
+
+	tok := new(v1alpha1.ClusterConfig).Token()
+	assert.Implements(t, (*config.Token)(nil), (tok))
 }

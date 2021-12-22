@@ -4,7 +4,11 @@
 
 package argsbuilder
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // Key represents an arg key.
 type Key = string
@@ -15,13 +19,64 @@ type Value = string
 // Args represents a set of args.
 type Args map[Key]Value
 
+// MustMerge implements the ArgsBuilder interface.
+func (a Args) MustMerge(args Args, setters ...MergeOption) {
+	if err := a.Merge(args, setters...); err != nil {
+		panic(err)
+	}
+}
+
 // Merge implements the ArgsBuilder interface.
-func (a Args) Merge(args Args) ArgsBuilder {
-	for key, val := range args {
-		a[key] = val
+//nolint:gocyclo
+func (a Args) Merge(args Args, setters ...MergeOption) error {
+	var opts MergeOptions
+
+	for _, s := range setters {
+		s(&opts)
 	}
 
-	return a
+	policies := opts.Policies
+	if policies == nil {
+		policies = MergePolicies{}
+	}
+
+	for key, val := range args {
+		policy := policies[key]
+
+		switch policy {
+		case MergeDenied:
+			return NewDenylistError(key)
+		case MergeAdditive:
+			values := strings.Split(a[key], ",")
+			definedValues := map[string]struct{}{}
+
+			i := 0
+
+			for _, v := range values {
+				definedValues[strings.TrimSpace(v)] = struct{}{}
+
+				if v != "" {
+					values[i] = v
+					i++
+				}
+			}
+
+			values = values[:i]
+
+			for _, v := range strings.Split(val, ",") {
+				v = strings.TrimSpace(v)
+				if _, defined := definedValues[v]; !defined {
+					values = append(values, v)
+				}
+			}
+
+			a[key] = strings.Join(values, ",")
+		case MergeOverwrite:
+			a[key] = val
+		}
+	}
+
+	return nil
 }
 
 // Set implements the ArgsBuilder interface.
@@ -33,10 +88,18 @@ func (a Args) Set(k, v Key) ArgsBuilder {
 
 // Args implements the ArgsBuilder interface.
 func (a Args) Args() []string {
+	keys := make([]string, 0, len(a))
+
+	for key := range a {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
 	args := []string{}
 
-	for key, val := range a {
-		args = append(args, fmt.Sprintf("--%s=%s", key, val))
+	for _, key := range keys {
+		args = append(args, fmt.Sprintf("--%s=%s", key, a[key]))
 	}
 
 	return args

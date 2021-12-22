@@ -6,8 +6,8 @@ package secrets
 
 import (
 	"context"
+	stdlibx509 "crypto/x509"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/AlekSi/pointer"
@@ -19,13 +19,13 @@ import (
 
 	"github.com/talos-systems/talos/pkg/grpc/gen"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/role"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
 )
 
 // APIController manages secrets.API based on configuration to provide apid certificate.
@@ -74,6 +74,11 @@ func (ctrl *APIController) Run(ctx context.Context, r controller.Runtime, logger
 		case <-ctx.Done():
 			return nil
 		case <-r.EventCh():
+		}
+
+		// reset inputs back to what they were initially
+		if err := r.UpdateInputs(ctrl.Inputs()); err != nil {
+			return err
 		}
 
 		machineTypeRes, err := r.Get(ctx, resource.NewMetadata(config.NamespaceName, config.MachineTypeType, config.MachineTypeID, resource.VersionUndefined))
@@ -129,20 +134,14 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 	inputs := []controller.Input{
 		{
 			Namespace: secrets.NamespaceName,
-			Type:      secrets.RootType,
-			ID:        pointer.ToString(secrets.RootOSID),
+			Type:      secrets.OSRootType,
+			ID:        pointer.ToString(secrets.OSRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
-			Namespace: network.NamespaceName,
-			Type:      network.HostnameStatusType,
-			ID:        pointer.ToString(network.HostnameID),
-			Kind:      controller.InputWeak,
-		},
-		{
-			Namespace: network.NamespaceName,
-			Type:      network.NodeAddressType,
-			ID:        pointer.ToString(network.NodeAddressAccumulativeID),
+			Namespace: secrets.NamespaceName,
+			Type:      secrets.CertSANType,
+			ID:        pointer.ToString(secrets.CertSANAPIID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -166,7 +165,6 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 		inputs = append(inputs, controller.Input{
 			Namespace: k8s.ControlPlaneNamespaceName,
 			Type:      k8s.EndpointType,
-			ID:        pointer.ToString(k8s.ControlPlaneEndpointsID),
 			Kind:      controller.InputWeak,
 		})
 	}
@@ -214,7 +212,7 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 			panic(fmt.Sprintf("unexpected machine type %v", machineType))
 		}
 
-		rootResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.RootType, secrets.RootOSID, resource.VersionUndefined))
+		rootResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.OSRootType, secrets.OSRootID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				if err = ctrl.teardownAll(ctx, r); err != nil {
@@ -227,107 +225,81 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 			return fmt.Errorf("error getting etcd root secrets: %w", err)
 		}
 
-		rootSpec := rootResource.(*secrets.Root).OSSpec()
+		rootSpec := rootResource.(*secrets.OSRoot).TypedSpec()
 
-		hostnameResource, err := r.Get(ctx, resource.NewMetadata(network.NamespaceName, network.HostnameStatusType, network.HostnameID, resource.VersionUndefined))
+		certSANResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.CertSANType, secrets.CertSANAPIID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				continue
 			}
 
-			return err
+			return fmt.Errorf("error getting certSANs: %w", err)
 		}
 
-		hostnameStatus := hostnameResource.(*network.HostnameStatus).TypedSpec()
-
-		addressesResource, err := r.Get(ctx, resource.NewMetadata(network.NamespaceName, network.NodeAddressType, network.NodeAddressAccumulativeID, resource.VersionUndefined))
-		if err != nil {
-			if state.IsNotFoundError(err) {
-				continue
-			}
-
-			return err
-		}
-
-		nodeAddresses := addressesResource.(*network.NodeAddress).TypedSpec()
+		certSANs := certSANResource.(*secrets.CertSAN).TypedSpec()
 
 		var endpointsStr []string
 
 		if !isControlplane {
-			endpointResource, err := r.Get(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.EndpointType, k8s.ControlPlaneEndpointsID, resource.VersionUndefined))
+			endpointResources, err := r.List(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.EndpointType, "", resource.VersionUndefined))
 			if err != nil {
-				if state.IsNotFoundError(err) {
-					continue
-				}
-
-				return fmt.Errorf("error getting endpoints resource: %w", err)
+				return fmt.Errorf("error getting endpoints resources: %w", err)
 			}
 
-			endpoints := endpointResource.(*k8s.Endpoint).TypedSpec()
+			var endpointAddrs k8s.EndpointList
 
-			if len(endpoints.Addresses) == 0 {
+			// merge all endpoints into a single list
+			for _, res := range endpointResources.Items {
+				endpointAddrs = endpointAddrs.Merge(res.(*k8s.Endpoint))
+			}
+
+			if len(endpointAddrs) == 0 {
 				continue
 			}
 
-			endpointsStr = make([]string, 0, len(endpoints.Addresses))
-
-			for _, ip := range endpoints.Addresses {
-				endpointsStr = append(endpointsStr, ip.String())
-			}
-		}
-
-		ips := make([]net.IP, 0, len(rootSpec.CertSANIPs)+len(nodeAddresses.Addresses))
-
-		for _, ip := range rootSpec.CertSANIPs {
-			ips = append(ips, ip.IPAddr().IP)
-		}
-
-		for _, ip := range nodeAddresses.Addresses {
-			ips = append(ips, ip.IPAddr().IP)
-		}
-
-		dnsNames := make([]string, 0, len(rootSpec.CertSANDNSNames)+2)
-
-		dnsNames = append(dnsNames, rootSpec.CertSANDNSNames...)
-		dnsNames = append(dnsNames, hostnameStatus.Hostname)
-
-		if hostnameStatus.FQDN() != hostnameStatus.Hostname {
-			dnsNames = append(dnsNames, hostnameStatus.FQDN())
+			endpointsStr = endpointAddrs.Strings()
 		}
 
 		if isControlplane {
-			if err := ctrl.generateControlPlane(ctx, r, logger, rootSpec, ips, dnsNames, hostnameStatus.FQDN()); err != nil {
+			if err := ctrl.generateControlPlane(ctx, r, logger, rootSpec, certSANs); err != nil {
 				return err
 			}
 		} else {
-			if err := ctrl.generateJoin(ctx, r, logger, rootSpec, endpointsStr, ips, dnsNames, hostnameStatus.FQDN()); err != nil {
+			if err := ctrl.generateJoin(ctx, r, logger, rootSpec, endpointsStr, certSANs); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (ctrl *APIController) generateControlPlane(ctx context.Context, r controller.Runtime, logger *zap.Logger, rootSpec *secrets.RootOSSpec, ips []net.IP, dnsNames []string, fqdn string) error {
-	// TODO: add keyusage
+func (ctrl *APIController) generateControlPlane(ctx context.Context, r controller.Runtime, logger *zap.Logger, rootSpec *secrets.OSRootSpec, certSANs *secrets.CertSANSpec) error {
 	ca, err := x509.NewCertificateAuthorityFromCertificateAndKey(rootSpec.CA)
 	if err != nil {
 		return fmt.Errorf("failed to parse CA certificate: %w", err)
 	}
 
 	serverCert, err := x509.NewKeyPair(ca,
-		x509.IPAddresses(ips),
-		x509.DNSNames(dnsNames),
-		x509.CommonName(fqdn),
+		x509.IPAddresses(certSANs.StdIPs()),
+		x509.DNSNames(certSANs.DNSNames),
+		x509.CommonName(certSANs.FQDN),
 		x509.NotAfter(time.Now().Add(x509.DefaultCertificateValidityDuration)),
+		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature|stdlibx509.KeyUsageKeyEncipherment),
+		x509.ExtKeyUsage([]stdlibx509.ExtKeyUsage{
+			stdlibx509.ExtKeyUsageServerAuth,
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to generate API server cert: %w", err)
 	}
 
 	clientCert, err := x509.NewKeyPair(ca,
-		x509.CommonName(fqdn),
+		x509.CommonName(certSANs.FQDN),
 		x509.Organization(string(role.Impersonator)),
 		x509.NotAfter(time.Now().Add(x509.DefaultCertificateValidityDuration)),
+		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature|stdlibx509.KeyUsageKeyEncipherment),
+		x509.ExtKeyUsage([]stdlibx509.ExtKeyUsage{
+			stdlibx509.ExtKeyUsageClientAuth,
+		}),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to generate API client cert: %w", err)
@@ -360,8 +332,8 @@ func (ctrl *APIController) generateControlPlane(ctx context.Context, r controlle
 }
 
 func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtime, logger *zap.Logger,
-	rootSpec *secrets.RootOSSpec, endpointsStr []string, ips []net.IP, dnsNames []string, fqdn string) error {
-	remoteGen, err := gen.NewRemoteGenerator(rootSpec.Token, endpointsStr)
+	rootSpec *secrets.OSRootSpec, endpointsStr []string, certSANs *secrets.CertSANSpec) error {
+	remoteGen, err := gen.NewRemoteGenerator(rootSpec.Token, endpointsStr, rootSpec.CA)
 	if err != nil {
 		return fmt.Errorf("failed creating trustd client: %w", err)
 	}
@@ -369,9 +341,9 @@ func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtim
 	defer remoteGen.Close() //nolint:errcheck
 
 	serverCSR, serverCert, err := x509.NewEd25519CSRAndIdentity(
-		x509.IPAddresses(ips),
-		x509.DNSNames(dnsNames),
-		x509.CommonName(fqdn),
+		x509.IPAddresses(certSANs.StdIPs()),
+		x509.DNSNames(certSANs.DNSNames),
+		x509.CommonName(certSANs.FQDN),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to generate API server CSR: %w", err)
@@ -385,13 +357,16 @@ func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtim
 	}
 
 	clientCSR, clientCert, err := x509.NewEd25519CSRAndIdentity(
-		x509.CommonName(fqdn),
+		x509.CommonName(certSANs.FQDN),
 		x509.Organization(string(role.Impersonator)),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to generate API client CSR: %w", err)
 	}
 
+	logger.Debug("sending CSR", zap.Strings("endpoints", endpointsStr))
+
+	// TODO: add keyusage: trustd should accept key usage as additional params
 	_, clientCert.Crt, err = remoteGen.IdentityContext(ctx, clientCSR)
 	if err != nil {
 		return fmt.Errorf("failed to sign API client CSR: %w", err)

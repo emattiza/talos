@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_cli
 // +build integration_cli
 
 package cli
@@ -71,7 +72,7 @@ func parseLine(line string) (*duInfo, error) {
 
 // TestSuccess runs comand with success.
 func (suite *DiskUsageSuite) TestSuccess() {
-	folder := "/var"
+	folder := "/etc"
 	node := suite.RandomDiscoveredNode()
 
 	var folderSize int64 = 4096
@@ -85,7 +86,7 @@ func (suite *DiskUsageSuite) TestSuccess() {
 
 			parts := splitLine(lines[1])
 			var err error
-			folderSize, err = strconv.ParseInt(parts[2], 10, 64)
+			folderSize, err = strconv.ParseInt(parts[4], 10, 64)
 			if err != nil {
 				return err
 			}

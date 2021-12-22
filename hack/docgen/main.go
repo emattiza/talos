@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -17,7 +18,7 @@ import (
 	"strings"
 	"text/template"
 
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 	"mvdan.cc/gofumpt/format"
 )
 
@@ -62,7 +63,7 @@ func init() {
 	}
 	{{ end -}}
 	{{ $docVar }}.Fields = make([]encoder.Doc,{{ len $struct.Fields }})
-	{{ range $index, $field := $struct.Fields -}}
+	{{ range $index, $field := $struct.Fields }}{{ if $field.Tag -}}
 	{{ $docVar }}.Fields[{{ $index }}].Name = "{{ $field.Tag }}"
 	{{ $docVar }}.Fields[{{ $index }}].Type = "{{ $field.Type }}"
 	{{ $docVar }}.Fields[{{ $index }}].Note = "{{ $field.Note }}"
@@ -81,6 +82,7 @@ func init() {
 	}
 	{{ end -}}
 	{{ end -}}
+	{{- end }}
 	{{ end }}
 }
 
@@ -177,7 +179,7 @@ func collectStructs(node ast.Node) []*structType {
 
 		if g.Doc != nil {
 			for _, comment := range g.Doc.List {
-				if strings.Contains(comment.Text, "docgen: nodoc") {
+				if strings.Contains(comment.Text, "docgen:nodoc") {
 					return true
 				}
 			}
@@ -234,7 +236,7 @@ func parseComment(comment []byte) *Text {
 		// take only the first line from the Description for the comment
 		text.Comment = strings.Split(text.Description, "\n")[0]
 
-		// try to parse the everything except for the first line as yaml
+		// try to parse everything except for the first line as yaml
 		if err = yaml.Unmarshal([]byte(strings.Join(strings.Split(text.Description, "\n")[1:], "\n")), text); err == nil {
 			// if parsed, remove it from the description
 			text.Description = text.Comment
@@ -244,6 +246,8 @@ func parseComment(comment []byte) *Text {
 		// take only the first line from the Description for the comment
 		text.Comment = strings.Split(text.Description, "\n")[0]
 	}
+
+	text.Comment = escape(text.Comment)
 
 	text.Description = escape(text.Description)
 	for _, example := range text.Examples {
@@ -297,11 +301,10 @@ func formatFieldType(p interface{}) string {
 }
 
 func escape(value string) string {
-	return strings.TrimSpace(strings.ReplaceAll(
-		strings.ReplaceAll(value, "\"", "\\\""),
-		"\n",
-		"\\n",
-	))
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	value = strings.ReplaceAll(value, "\n", `\n`)
+
+	return strings.TrimSpace(value)
 }
 
 func collectFields(s *structType) (fields []*Field) {
@@ -320,6 +323,8 @@ func collectFields(s *structType) (fields []*Field) {
 		}
 
 		if strings.Contains(f.Doc.Text(), "docgen:nodoc") {
+			fields = append(fields, &Field{Type: "unknown"})
+
 			continue
 		}
 
@@ -385,8 +390,8 @@ func render(doc *Doc, dest string) {
 	}
 }
 
-func main() {
-	abs, err := in(os.Args[1])
+func processFile(inputFile, outputFile, typeName string) {
+	abs, err := in(inputFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -464,19 +469,29 @@ func main() {
 		}
 	}
 
-	if len(os.Args) != 4 {
-		log.Fatalf("expected 3 args, got %d", len(os.Args)-1)
-	}
-
 	if err == nil {
 		doc.Package = node.Name.Name
-		doc.Name = os.Args[3]
+		doc.Name = typeName
 
 		if node.Doc != nil {
 			doc.Header = escape(node.Doc.Text())
 		}
 	}
 
-	doc.File = os.Args[2]
-	render(doc, os.Args[2])
+	doc.File = outputFile
+	render(doc, outputFile)
+}
+
+func main() {
+	flag.Parse()
+
+	if flag.NArg() != 3 {
+		log.Fatalf("expected 3 args, got %d", flag.NArg())
+	}
+
+	inputFile := flag.Arg(0)
+	outputFile := flag.Arg(1)
+	typeName := flag.Arg(2)
+
+	processFile(inputFile, outputFile, typeName)
 }

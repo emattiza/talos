@@ -29,8 +29,8 @@ import (
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type OperatorConfigSuite struct {
@@ -419,6 +419,18 @@ func (suite *OperatorConfigSuite) TestMachineConfigurationVIP() {
 							SharedIP: "fd7a:115c:a1e0:ab12:4843:cd96:6277:2302",
 						},
 					},
+					{
+						DeviceInterface: "eth3",
+						DeviceDHCP:      true,
+						DeviceVlans: []*v1alpha1.Vlan{
+							{
+								VlanID: 26,
+								VlanVIP: &v1alpha1.DeviceVIPConfig{
+									SharedIP: "5.5.4.4",
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -438,6 +450,7 @@ func (suite *OperatorConfigSuite) TestMachineConfigurationVIP() {
 			return suite.assertOperators([]string{
 				"vip/eth1",
 				"vip/eth2",
+				"vip/eth3.26",
 			}, func(r *network.OperatorSpec) error {
 				suite.Assert().Equal(network.OperatorVIP, r.TypedSpec().Operator)
 				suite.Assert().True(r.TypedSpec().RequireUp)
@@ -449,6 +462,9 @@ func (suite *OperatorConfigSuite) TestMachineConfigurationVIP() {
 				case "vip/eth2":
 					suite.Assert().Equal("eth2", r.TypedSpec().LinkName)
 					suite.Assert().EqualValues(netaddr.MustParseIP("fd7a:115c:a1e0:ab12:4843:cd96:6277:2302"), r.TypedSpec().VIP.IP)
+				case "vip/eth3.26":
+					suite.Assert().Equal("eth3.26", r.TypedSpec().LinkName)
+					suite.Assert().EqualValues(netaddr.MustParseIP("5.5.4.4"), r.TypedSpec().VIP.IP)
 				}
 
 				return nil

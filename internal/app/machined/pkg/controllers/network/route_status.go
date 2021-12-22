@@ -17,7 +17,7 @@ import (
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // RouteStatusController manages secrets.Etcd based on configuration.
@@ -103,16 +103,15 @@ func (ctrl *RouteStatusController) Run(ctx context.Context, r controller.Runtime
 			dstAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Dst)
 			dstPrefix := netaddr.IPPrefixFrom(dstAddr, route.DstLength)
 			srcAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Src)
-			srcPrefix := netaddr.IPPrefixFrom(srcAddr, route.SrcLength)
 			gatewayAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Gateway)
-			id := network.RouteID(dstPrefix, gatewayAddr)
+			id := network.RouteID(nethelpers.RoutingTable(route.Table), nethelpers.Family(route.Family), dstPrefix, gatewayAddr, route.Attributes.Priority)
 
 			if err = r.Modify(ctx, network.NewRouteStatus(network.NamespaceName, id), func(r resource.Resource) error {
 				status := r.(*network.RouteStatus).TypedSpec()
 
 				status.Family = nethelpers.Family(route.Family)
 				status.Destination = dstPrefix
-				status.Source = srcPrefix
+				status.Source = srcAddr
 				status.Gateway = gatewayAddr
 				status.OutLinkIndex = route.Attributes.OutIface
 				status.OutLinkName = linkLookup[route.Attributes.OutIface]

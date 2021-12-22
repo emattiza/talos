@@ -16,11 +16,12 @@ import (
 	talosnet "github.com/talos-systems/net"
 	"go.uber.org/zap"
 
+	"github.com/talos-systems/talos/pkg/argsbuilder"
 	"github.com/talos-systems/talos/pkg/images"
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
 // K8sControlPlaneController manages config.K8sControlPlane based on configuration.
@@ -141,14 +142,15 @@ func (ctrl *K8sControlPlaneController) manageAPIServerConfig(ctx context.Context
 
 	return r.Modify(ctx, config.NewK8sControlPlaneAPIServer(), func(r resource.Resource) error {
 		r.(*config.K8sControlPlane).SetAPIServer(config.K8sControlPlaneAPIServerSpec{
-			Image:                cfgProvider.Cluster().APIServer().Image(),
-			CloudProvider:        cloudProvider,
-			ControlPlaneEndpoint: cfgProvider.Cluster().Endpoint().String(),
-			EtcdServers:          []string{"https://127.0.0.1:2379"},
-			LocalPort:            cfgProvider.Cluster().LocalAPIServerPort(),
-			ServiceCIDR:          cfgProvider.Cluster().Network().ServiceCIDR(),
-			ExtraArgs:            cfgProvider.Cluster().APIServer().ExtraArgs(),
-			ExtraVolumes:         convertVolumes(cfgProvider.Cluster().APIServer().ExtraVolumes()),
+			Image:                    cfgProvider.Cluster().APIServer().Image(),
+			CloudProvider:            cloudProvider,
+			ControlPlaneEndpoint:     cfgProvider.Cluster().Endpoint().String(),
+			EtcdServers:              []string{"https://127.0.0.1:2379"},
+			LocalPort:                cfgProvider.Cluster().LocalAPIServerPort(),
+			ServiceCIDRs:             cfgProvider.Cluster().Network().ServiceCIDRs(),
+			ExtraArgs:                cfgProvider.Cluster().APIServer().ExtraArgs(),
+			ExtraVolumes:             convertVolumes(cfgProvider.Cluster().APIServer().ExtraVolumes()),
+			PodSecurityPolicyEnabled: !cfgProvider.Cluster().APIServer().DisablePodSecurityPolicy(),
 		})
 
 		return nil
@@ -163,10 +165,11 @@ func (ctrl *K8sControlPlaneController) manageControllerManagerConfig(ctx context
 
 	return r.Modify(ctx, config.NewK8sControlPlaneControllerManager(), func(r resource.Resource) error {
 		r.(*config.K8sControlPlane).SetControllerManager(config.K8sControlPlaneControllerManagerSpec{
+			Enabled:       !cfgProvider.Machine().Controlplane().ControllerManager().Disabled(),
 			Image:         cfgProvider.Cluster().ControllerManager().Image(),
 			CloudProvider: cloudProvider,
-			PodCIDR:       cfgProvider.Cluster().Network().PodCIDR(),
-			ServiceCIDR:   cfgProvider.Cluster().Network().ServiceCIDR(),
+			PodCIDRs:      cfgProvider.Cluster().Network().PodCIDRs(),
+			ServiceCIDRs:  cfgProvider.Cluster().Network().ServiceCIDRs(),
 			ExtraArgs:     cfgProvider.Cluster().ControllerManager().ExtraArgs(),
 			ExtraVolumes:  convertVolumes(cfgProvider.Cluster().ControllerManager().ExtraVolumes()),
 		})
@@ -178,6 +181,7 @@ func (ctrl *K8sControlPlaneController) manageControllerManagerConfig(ctx context
 func (ctrl *K8sControlPlaneController) manageSchedulerConfig(ctx context.Context, r controller.Runtime, logger *zap.Logger, cfgProvider talosconfig.Provider) error {
 	return r.Modify(ctx, config.NewK8sControlPlaneScheduler(), func(r resource.Resource) error {
 		r.(*config.K8sControlPlane).SetScheduler(config.K8sControlPlaneSchedulerSpec{
+			Enabled:      !cfgProvider.Machine().Controlplane().Scheduler().Disabled(),
 			Image:        cfgProvider.Cluster().Scheduler().Image(),
 			ExtraArgs:    cfgProvider.Cluster().Scheduler().ExtraArgs(),
 			ExtraVolumes: convertVolumes(cfgProvider.Cluster().Scheduler().ExtraVolumes()),
@@ -213,17 +217,20 @@ func (ctrl *K8sControlPlaneController) manageManifestsConfig(ctx context.Context
 	return r.Modify(ctx, config.NewK8sManifests(), func(r resource.Resource) error {
 		images := images.List(cfgProvider)
 
+		proxyArgs, err := getProxyArgs(cfgProvider)
+		if err != nil {
+			return err
+		}
+
 		r.(*config.K8sControlPlane).SetManifests(config.K8sManifestsSpec{
 			Server:        cfgProvider.Cluster().Endpoint().String(),
 			ClusterDomain: cfgProvider.Cluster().Network().DNSDomain(),
 
-			PodCIDRs:     cfgProvider.Cluster().Network().PodCIDR(),
-			FirstPodCIDR: strings.Split(cfgProvider.Cluster().Network().PodCIDR(), ",")[0],
+			PodCIDRs: cfgProvider.Cluster().Network().PodCIDRs(),
 
-			ProxyEnabled:   cfgProvider.Cluster().Proxy().Enabled(),
-			ProxyImage:     cfgProvider.Cluster().Proxy().Image(),
-			ProxyMode:      cfgProvider.Cluster().Proxy().Mode(),
-			ProxyExtraArgs: cfgProvider.Cluster().Proxy().ExtraArgs(),
+			ProxyEnabled: cfgProvider.Cluster().Proxy().Enabled(),
+			ProxyImage:   cfgProvider.Cluster().Proxy().Image(),
+			ProxyArgs:    proxyArgs,
 
 			CoreDNSEnabled: cfgProvider.Cluster().CoreDNS().Enabled(),
 			CoreDNSImage:   cfgProvider.Cluster().CoreDNS().Image(),
@@ -234,6 +241,8 @@ func (ctrl *K8sControlPlaneController) manageManifestsConfig(ctx context.Context
 			FlannelEnabled:  cfgProvider.Cluster().Network().CNI().Name() == constants.FlannelCNI,
 			FlannelImage:    images.Flannel,
 			FlannelCNIImage: images.FlannelCNI,
+
+			PodSecurityPolicyEnabled: !cfgProvider.Cluster().APIServer().DisablePodSecurityPolicy(),
 		})
 
 		return nil
@@ -285,4 +294,26 @@ func (ctrl *K8sControlPlaneController) manageExtraManifestsConfig(ctx context.Co
 
 func (ctrl *K8sControlPlaneController) teardownAll(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	return nil
+}
+
+func getProxyArgs(cfgProvider talosconfig.Provider) ([]string, error) {
+	clusterCidr := strings.Join(cfgProvider.Cluster().Network().PodCIDRs(), ",")
+
+	builder := argsbuilder.Args{
+		"cluster-cidr":           clusterCidr,
+		"hostname-override":      "$(NODE_NAME)",
+		"kubeconfig":             "/etc/kubernetes/kubeconfig",
+		"proxy-mode":             cfgProvider.Cluster().Proxy().Mode(),
+		"conntrack-max-per-core": "0",
+	}
+
+	policies := argsbuilder.MergePolicies{
+		"kubeconfig": argsbuilder.MergeDenied,
+	}
+
+	if err := builder.Merge(cfgProvider.Cluster().Proxy().ExtraArgs(), argsbuilder.WithMergePolicies(policies)); err != nil {
+		return nil, err
+	}
+
+	return builder.Args(), nil
 }

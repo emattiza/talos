@@ -41,6 +41,18 @@ case "${WITH_VIRTUAL_IP:-false}" in
     ;;
 esac
 
+case "${WITH_CLUSTER_DISCOVERY:-true}" in
+  false)
+    QEMU_FLAGS="${QEMU_FLAGS} --with-cluster-discovery=false"
+    ;;
+esac
+
+case "${WITH_KUBESPAN:-false}" in
+  true)
+    QEMU_FLAGS="${QEMU_FLAGS} --with-kubespan"
+    ;;
+esac
+
 case "${USE_DISK_IMAGE:-false}" in
   false)
     DISK_IMAGE_FLAG=
@@ -60,29 +72,41 @@ case "${WITH_DISK_ENCRYPTION:-false}" in
     ;;
 esac
 
+case "${WITH_CONFIG_PATCH:-false}" in
+  # using arrays here to preserve spaces properly in WITH_CONFIG_PATCH
+  false)
+     CONFIG_PATCH_FLAG=()
+    ;;
+  *)
+    CONFIG_PATCH_FLAG=(--config-patch "${WITH_CONFIG_PATCH}")
+    ;;
+esac
+
 function create_cluster {
   build_registry_mirrors
 
   "${TALOSCTL}" cluster create \
-    --provisioner "${PROVISIONER}" \
-    --name "${CLUSTER_NAME}" \
+    --provisioner="${PROVISIONER}" \
+    --name="${CLUSTER_NAME}" \
+    --kubernetes-version=${KUBERNETES_VERSION} \
     --masters=3 \
     --workers="${QEMU_WORKERS:-1}" \
-    --mtu 1450 \
-    --memory 2048 \
-    --cpus "${QEMU_CPUS:-2}" \
-    --cidr 172.20.1.0/24 \
-    --user-disk /var/lib/extra:100MB \
-    --user-disk /var/lib/p1:100MB:/var/lib/p2:100MB \
-    --install-image ${INSTALLER_IMAGE} \
+    --mtu=1450 \
+    --memory=2048 \
+    --cpus="${QEMU_CPUS:-2}" \
+    --cidr=172.20.1.0/24 \
+    --user-disk=/var/lib/extra:100MB \
+    --user-disk=/var/lib/p1:100MB:/var/lib/p2:100MB \
+    --install-image=${INSTALLER_IMAGE} \
     --with-init-node=false \
-    --cni-bundle-url ${ARTIFACTS}/talosctl-cni-bundle-'${ARCH}'.tar.gz \
+    --cni-bundle-url=${ARTIFACTS}/talosctl-cni-bundle-'${ARCH}'.tar.gz \
     --crashdump \
     ${DISK_IMAGE_FLAG} \
     ${DISK_ENCRYPTION_FLAG} \
     ${REGISTRY_MIRROR_FLAGS} \
     ${QEMU_FLAGS} \
-    ${CUSTOM_CNI_FLAG}
+    ${CUSTOM_CNI_FLAG} \
+    "${CONFIG_PATCH_FLAG[@]}"
 
   "${TALOSCTL}" config node 172.20.1.2
 }

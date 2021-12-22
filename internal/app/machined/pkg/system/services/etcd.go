@@ -44,9 +44,9 @@ import (
 	"github.com/talos-systems/talos/pkg/conditions"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
 )
 
 // Etcd implements the Service interface. It serves as the concrete type with
@@ -58,6 +58,11 @@ type Etcd struct {
 
 	args   []string
 	client *etcd.Client
+
+	// if the new member was added as a learner during the service start, its ID is kept here
+	learnerMemberID uint64
+
+	promoteCtxCancel context.CancelFunc
 }
 
 // ID implements the Service interface.
@@ -66,6 +71,8 @@ func (e *Etcd) ID(r runtime.Runtime) string {
 }
 
 // PreFunc implements the Service interface.
+//
+//nolint:gocyclo
 func (e *Etcd) PreFunc(ctx context.Context, r runtime.Runtime) (err error) {
 	if err = os.MkdirAll(constants.EtcdDataPath, 0o700); err != nil {
 		return err
@@ -76,7 +83,12 @@ func (e *Etcd) PreFunc(ctx context.Context, r runtime.Runtime) (err error) {
 		return err
 	}
 
-	if err = generatePKI(r); err != nil {
+	// Make sure etcd user can access files in the data directory.
+	if err = chownRecursive(constants.EtcdDataPath, constants.EtcdUserID, constants.EtcdUserID); err != nil {
+		return err
+	}
+
+	if err = generatePKI(ctx, r); err != nil {
 		return fmt.Errorf("failed to generate etcd PKI: %w", err)
 	}
 
@@ -95,6 +107,9 @@ func (e *Etcd) PreFunc(ctx context.Context, r runtime.Runtime) (err error) {
 		return fmt.Errorf("failed to pull image %q: %w", r.Config().Cluster().Etcd().Image(), err)
 	}
 
+	// Clear any previously set learner member ID
+	e.learnerMemberID = 0
+
 	switch t := r.Config().Machine().Type(); t {
 	case machine.TypeInit:
 		return e.argsForInit(ctx, r)
@@ -111,6 +126,10 @@ func (e *Etcd) PreFunc(ctx context.Context, r runtime.Runtime) (err error) {
 
 // PostFunc implements the Service interface.
 func (e *Etcd) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+	if e.promoteCtxCancel != nil {
+		e.promoteCtxCancel()
+	}
+
 	if e.client != nil {
 		e.client.Close() //nolint:errcheck
 	}
@@ -142,7 +161,7 @@ func (e *Etcd) Runner(r runtime.Runtime) (runner.Runner, error) {
 	}
 
 	mounts := []specs.Mount{
-		{Type: "bind", Destination: constants.EtcdPKIPath, Source: constants.EtcdPKIPath, Options: []string{"rbind", "rw"}},
+		{Type: "bind", Destination: constants.EtcdPKIPath, Source: constants.EtcdPKIPath, Options: []string{"rbind", "ro"}},
 		{Type: "bind", Destination: constants.EtcdDataPath, Source: constants.EtcdDataPath, Options: []string{"rbind", "rw"}},
 	}
 
@@ -157,18 +176,32 @@ func (e *Etcd) Runner(r runtime.Runtime) (runner.Runner, error) {
 
 	env = append(env, "ETCD_CIPHER_SUITES=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305") //nolint:lll
 
+	if e.learnerMemberID != 0 {
+		var promoteCtx context.Context
+
+		promoteCtx, e.promoteCtxCancel = context.WithCancel(context.Background())
+
+		go func() {
+			if err := promoteMember(promoteCtx, r, e.learnerMemberID); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("failed promoting member: %s", err)
+			} else if err == nil {
+				log.Printf("successfully promoted etcd member")
+			}
+		}()
+	}
+
 	return restart.New(containerd.NewRunner(
 		r.Config().Debug(),
 		&args,
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithNamespace(constants.SystemContainerdNamespace),
-		runner.WithContainerImage(r.Config().Machine().Kubelet().Image()),
 		runner.WithContainerImage(r.Config().Cluster().Etcd().Image()),
 		runner.WithEnv(env),
 		runner.WithOCISpecOpts(
 			oci.WithDroppedCapabilities(cap.Known()),
 			oci.WithHostNamespace(specs.NetworkNamespace),
 			oci.WithMounts(mounts),
+			oci.WithUser(fmt.Sprintf("%d:%d", constants.EtcdUserID, constants.EtcdUserID)),
 		),
 		runner.WithOOMScoreAdj(-998),
 	),
@@ -202,7 +235,13 @@ func (e *Etcd) HealthSettings(runtime.Runtime) *health.Settings {
 }
 
 //nolint:gocyclo
-func generatePKI(r runtime.Runtime) (err error) {
+func generatePKI(ctx context.Context, r runtime.Runtime) (err error) {
+	// remove legacy etcd PKI directory to handle upgrades with `--preserve` to Talos 0.12
+	// TODO: remove me in Talos 0.13
+	if err = os.RemoveAll("/etc/kubernetes/pki/etcd"); err != nil {
+		return err
+	}
+
 	if err = os.MkdirAll(constants.EtcdPKIPath, 0o700); err != nil {
 		return err
 	}
@@ -216,9 +255,6 @@ func generatePKI(r runtime.Runtime) (err error) {
 	}
 
 	// wait for etcd certificates to be generated in the controller
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	watchCh := make(chan state.Event)
 
 	if err = r.State().V1Alpha2().Resources().Watch(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.EtcdType, secrets.EtcdID, resource.VersionUndefined), watchCh); err != nil {
@@ -228,7 +264,11 @@ func generatePKI(r runtime.Runtime) (err error) {
 	var event state.Event
 
 	for {
-		event = <-watchCh
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event = <-watchCh:
+		}
 
 		if event.Type == state.Created || event.Type == state.Updated {
 			break
@@ -267,7 +307,7 @@ func generatePKI(r runtime.Runtime) (err error) {
 		}
 	}
 
-	return nil
+	return chownRecursive(constants.EtcdPKIPath, constants.EtcdUserID, constants.EtcdUserID)
 }
 
 func addMember(ctx context.Context, r runtime.Runtime, addrs []string, name string) (*clientv3.MemberListResponse, uint64, error) {
@@ -298,7 +338,7 @@ func addMember(ctx context.Context, r runtime.Runtime, addrs []string, name stri
 		}
 	}
 
-	add, err := client.MemberAdd(ctx, addrs)
+	add, err := client.MemberAddAsLearner(ctx, addrs)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error adding member: %w", err)
 	}
@@ -311,8 +351,13 @@ func addMember(ctx context.Context, r runtime.Runtime, addrs []string, name stri
 	return list, add.Member.ID, nil
 }
 
-func buildInitialCluster(ctx context.Context, r runtime.Runtime, name, ip string) (initial string, err error) {
-	err = retry.Constant(10*time.Minute,
+func buildInitialCluster(ctx context.Context, r runtime.Runtime, name, ip string) (initial string, learnerMemberID uint64, err error) {
+	var (
+		id      uint64
+		lastNag time.Time
+	)
+
+	err = retry.Constant(constants.EtcdJoinTimeout,
 		retry.WithUnits(3*time.Second),
 		retry.WithJitter(time.Second),
 		retry.WithErrorLogging(true),
@@ -320,8 +365,13 @@ func buildInitialCluster(ctx context.Context, r runtime.Runtime, name, ip string
 		var (
 			peerAddrs = []string{"https://" + net.FormatAddress(ip) + ":2380"}
 			resp      *clientv3.MemberListResponse
-			id        uint64
 		)
+
+		if time.Since(lastNag) > 30*time.Second {
+			log.Printf("etcd is waiting to join the cluster, if this node is the first node in the cluster, please run `talosctl bootstrap`")
+
+			lastNag = time.Now()
+		}
 
 		attemptCtx, attemptCtxCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer attemptCtxCancel()
@@ -356,10 +406,10 @@ func buildInitialCluster(ctx context.Context, r runtime.Runtime, name, ip string
 	})
 
 	if err != nil {
-		return "", fmt.Errorf("failed to build cluster arguments: %w", err)
+		return "", 0, fmt.Errorf("failed to build cluster arguments: %w", err)
 	}
 
-	return initial, nil
+	return initial, id, nil
 }
 
 //nolint:gocyclo
@@ -388,7 +438,7 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime) error {
 		_, upgraded = meta.LegacyADV.ReadTag(adv.Upgrade)
 	}
 
-	primaryAddr, listenAddress, err := primaryAndListenAddresses()
+	primaryAddr, listenAddress, err := primaryAndListenAddresses(r.Config().Cluster().Etcd().Subnet())
 	if err != nil {
 		return fmt.Errorf("failed to calculate etcd addresses: %w", err)
 	}
@@ -411,11 +461,7 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime) error {
 
 	extraArgs := argsbuilder.Args(r.Config().Cluster().Etcd().ExtraArgs())
 
-	for k := range denyListArgs {
-		if extraArgs.Contains(k) {
-			return argsbuilder.NewDenylistError(k)
-		}
-	}
+	denyList := argsbuilder.WithDenyList(denyListArgs)
 
 	if !extraArgs.Contains("initial-cluster-state") {
 		denyListArgs.Set("initial-cluster-state", "new")
@@ -435,7 +481,7 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime) error {
 			if upgraded {
 				denyListArgs.Set("initial-cluster-state", "existing")
 
-				initialCluster, err = buildInitialCluster(ctx, r, hostname, primaryAddr)
+				initialCluster, e.learnerMemberID, err = buildInitialCluster(ctx, r, hostname, primaryAddr)
 				if err != nil {
 					return err
 				}
@@ -455,7 +501,11 @@ func (e *Etcd) argsForInit(ctx context.Context, r runtime.Runtime) error {
 		denyListArgs.Set("advertise-client-urls", fmt.Sprintf("https://%s:2379", net.FormatAddress(primaryAddr)))
 	}
 
-	e.args = denyListArgs.Merge(extraArgs).Args()
+	if err := denyListArgs.Merge(extraArgs, denyList); err != nil {
+		return err
+	}
+
+	e.args = denyListArgs.Args()
 
 	return nil
 }
@@ -472,7 +522,7 @@ func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime) error
 	// extraArgs (which may contain special overrides from the user.
 	// This needs to be refactored to allow greater binding flexibility.
 	// Issue #2121.
-	primaryAddr, listenAddress, err := primaryAndListenAddresses()
+	primaryAddr, listenAddress, err := primaryAndListenAddresses(r.Config().Cluster().Etcd().Subnet())
 	if err != nil {
 		return fmt.Errorf("failed to calculate etcd addresses: %w", err)
 	}
@@ -494,11 +544,7 @@ func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime) error
 
 	extraArgs := argsbuilder.Args(r.Config().Cluster().Etcd().ExtraArgs())
 
-	for k := range denyListArgs {
-		if extraArgs.Contains(k) {
-			return argsbuilder.NewDenylistError(k)
-		}
-	}
+	denyList := argsbuilder.WithDenyList(denyListArgs)
 
 	if e.RecoverFromSnapshot {
 		if err = e.recoverFromSnapshot(hostname, primaryAddr); err != nil {
@@ -528,7 +574,7 @@ func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime) error
 			if e.Bootstrap {
 				initialCluster = fmt.Sprintf("%s=https://%s:2380", hostname, net.FormatAddress(primaryAddr))
 			} else {
-				initialCluster, err = buildInitialCluster(ctx, r, hostname, primaryAddr)
+				initialCluster, e.learnerMemberID, err = buildInitialCluster(ctx, r, hostname, primaryAddr)
 				if err != nil {
 					return fmt.Errorf("failed to build initial etcd cluster: %w", err)
 				}
@@ -546,7 +592,11 @@ func (e *Etcd) argsForControlPlane(ctx context.Context, r runtime.Runtime) error
 		denyListArgs.Set("advertise-client-urls", fmt.Sprintf("https://%s:2379", net.FormatAddress(primaryAddr)))
 	}
 
-	e.args = denyListArgs.Merge(extraArgs).Args()
+	if err = denyListArgs.Merge(extraArgs, denyList); err != nil {
+		return err
+	}
+
+	e.args = denyListArgs.Args()
 
 	return nil
 }
@@ -582,7 +632,28 @@ func (e *Etcd) recoverFromSnapshot(hostname, primaryAddr string) error {
 		return fmt.Errorf("error deleting snapshot: %w", err)
 	}
 
-	return nil
+	return chownRecursive(constants.EtcdDataPath, constants.EtcdUserID, constants.EtcdUserID)
+}
+
+func promoteMember(ctx context.Context, r runtime.Runtime, memberID uint64) error {
+	// try to promote a member until it succeeds (call might fail until the member catches up with the leader)
+	// promote member call will fail until member catches up with the master
+	return retry.Constant(10*time.Minute,
+		retry.WithUnits(10*time.Second),
+		retry.WithJitter(time.Second),
+		retry.WithErrorLogging(true),
+	).RetryWithContext(ctx, func(ctx context.Context) error {
+		client, err := etcd.NewClientFromControlPlaneIPs(ctx, r.Config().Cluster().CA(), r.Config().Cluster().Endpoint())
+		if err != nil {
+			return retry.ExpectedError(err)
+		}
+
+		defer client.Close() //nolint:errcheck
+
+		_, err = client.MemberPromote(ctx, memberID)
+
+		return retry.ExpectedError(err)
+	})
 }
 
 // IsDirEmpty checks if a directory is empty or not.
@@ -603,20 +674,38 @@ func IsDirEmpty(name string) (bool, error) {
 }
 
 // primaryAndListenAddresses calculates the primary (advertised) and listen (bind) addresses for etcd.
-func primaryAndListenAddresses() (primary, listen string, err error) {
+func primaryAndListenAddresses(subnet string) (primary, listen string, err error) {
 	ips, err := net.IPAddrs()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to discover interface IP addresses: %w", err)
 	}
 
+	ips = net.IPFilter(ips, network.NotSideroLinkStdIP)
+
 	if len(ips) == 0 {
 		return "", "", errors.New("no valid unicast IP addresses on any interface")
 	}
 
-	// NOTE: we will later likely want to expose the primary IP selection to the
-	// user or build it with greater flexibility.  For now, this maintains
-	// previous behavior.
-	primary = ips[0].String()
+	if subnet == "" {
+		primary = ips[0].String()
+	} else {
+		network, err := net.ParseCIDR(subnet)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to parse subnet: %w", err)
+		}
+
+		for _, ip := range ips {
+			if network.Contains(ip) {
+				primary = ip.String()
+
+				break
+			}
+		}
+
+		if primary == "" {
+			return "", "", errors.New("no address matched the provided subnet")
+		}
+	}
 
 	// Regardless of primary selected IP, we should be liberal with our listen
 	// address, for maximum compatibility.  Again, this should probably be

@@ -17,8 +17,8 @@ import (
 	"go.uber.org/zap"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // HostnameConfigController manages network.HostnameSpec based on machine configuration, kernel cmdline.
@@ -177,7 +177,7 @@ func (ctrl *HostnameConfigController) getDefault(defaultAddr *network.NodeAddres
 		return
 	}
 
-	spec.Hostname = fmt.Sprintf("talos-%s", strings.ReplaceAll(strings.ReplaceAll(defaultAddr.TypedSpec().Addresses[0].String(), ":", ""), ".", "-"))
+	spec.Hostname = fmt.Sprintf("talos-%s", strings.ReplaceAll(strings.ReplaceAll(defaultAddr.TypedSpec().Addresses[0].IP().String(), ":", ""), ".", "-"))
 	spec.ConfigLayer = network.ConfigDefault
 
 	return spec

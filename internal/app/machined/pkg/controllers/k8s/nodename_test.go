@@ -25,9 +25,9 @@ import (
 	k8sctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type NodenameSuite struct {
@@ -69,7 +69,7 @@ func (suite *NodenameSuite) startRuntime() {
 
 //nolint:dupl
 func (suite *NodenameSuite) assertNodename(expected string) error {
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.NodenameType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, "", resource.VersionUndefined))
 	if err != nil {
 		return err
 	}

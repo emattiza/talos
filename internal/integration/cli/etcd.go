@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_cli
 // +build integration_cli
 
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 
@@ -31,7 +33,7 @@ func (suite *EtcdSuite) TestMembers() {
 
 // TestForfeitLeadership etcd forfeit-leadership check.
 func (suite *EtcdSuite) TestForfeitLeadership() {
-	nodes := suite.DiscoverNodes().NodesByType(machine.TypeControlPlane)
+	nodes := suite.DiscoverNodes(context.TODO()).NodesByType(machine.TypeControlPlane)
 
 	if len(nodes) < 3 {
 		suite.T().Skip("test only can be run on HA etcd clusters")

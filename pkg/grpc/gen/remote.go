@@ -33,14 +33,14 @@ type RemoteGenerator struct {
 }
 
 // NewRemoteGenerator initializes a RemoteGenerator with a preconfigured grpc.ClientConn.
-func NewRemoteGenerator(token string, endpoints []string) (g *RemoteGenerator, err error) {
+func NewRemoteGenerator(token string, endpoints []string, ca *x509.PEMEncodedCertificateAndKey) (g *RemoteGenerator, err error) {
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("at least one root of trust endpoint is required")
 	}
 
 	g = &RemoteGenerator{}
 
-	conn, err := basic.NewConnection(fmt.Sprintf("%s:///%s", trustdResolverScheme, strings.Join(endpoints, ",")), basic.NewTokenCredentials(token))
+	conn, err := basic.NewConnection(fmt.Sprintf("%s:///%s", trustdResolverScheme, strings.Join(endpoints, ",")), basic.NewTokenCredentials(token), ca)
 	if err != nil {
 		return nil, err
 	}
@@ -62,12 +62,12 @@ func (g *RemoteGenerator) IdentityContext(ctx context.Context, csr *x509.Certifi
 		Csr: csr.X509CertificateRequestPEM,
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
-	err = retry.Exponential(5*time.Minute,
-		retry.WithAttemptTimeout(30*time.Second),
-		retry.WithUnits(5*time.Second),
+	err = retry.Exponential(time.Minute,
+		retry.WithAttemptTimeout(10*time.Second),
+		retry.WithUnits(time.Second),
 		retry.WithJitter(100*time.Millisecond),
 	).RetryWithContext(ctx, func(ctx context.Context) error {
 		var resp *securityapi.CertificateResponse

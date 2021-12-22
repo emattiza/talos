@@ -68,11 +68,15 @@ func (c *ClusterConfig) Endpoint() *url.URL {
 
 // Token implements the config.ClusterConfig interface.
 func (c *ClusterConfig) Token() config.Token {
-	return c
+	return clusterToken(c.BootstrapToken)
 }
 
 // CertSANs implements the config.ClusterConfig interface.
 func (c *ClusterConfig) CertSANs() []string {
+	if c.APIServerConfig == nil {
+		return nil
+	}
+
 	return c.APIServerConfig.CertSANs
 }
 
@@ -117,7 +121,7 @@ func (c *ClusterConfig) Network() config.ClusterNetwork {
 
 // LocalAPIServerPort implements the config.ClusterConfig interface.
 func (c *ClusterConfig) LocalAPIServerPort() int {
-	if c.ControlPlane.LocalAPIServerPort == 0 {
+	if c.ControlPlane == nil || c.ControlPlane.LocalAPIServerPort == 0 {
 		return constants.DefaultControlPlanePort
 	}
 
@@ -177,24 +181,14 @@ func (c *ClusterConfig) ScheduleOnMasters() bool {
 	return c.AllowSchedulingOnMasters
 }
 
-// ID implements the config.Token interface.
+// ID returns the unique identifier for the cluster.
 func (c *ClusterConfig) ID() string {
-	parts := strings.Split(c.BootstrapToken, ".")
-	if len(parts) != 2 {
-		return ""
-	}
-
-	return parts[0]
+	return c.ClusterID
 }
 
-// Secret implements the config.Token interface.
+// Secret returns the cluster secret.
 func (c *ClusterConfig) Secret() string {
-	parts := strings.Split(c.BootstrapToken, ".")
-	if len(parts) != 2 {
-		return ""
-	}
-
-	return parts[1]
+	return c.ClusterSecret
 }
 
 // CNI implements the config.ClusterNetwork interface.
@@ -212,28 +206,28 @@ func (c *ClusterConfig) CNI() config.CNI {
 	return c.ClusterNetwork.CNI
 }
 
-// PodCIDR implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) PodCIDR() string {
+// PodCIDRs implements the config.ClusterNetwork interface.
+func (c *ClusterConfig) PodCIDRs() []string {
 	switch {
 	case c.ClusterNetwork == nil:
 		fallthrough
 	case len(c.ClusterNetwork.PodSubnet) == 0:
-		return constants.DefaultIPv4PodNet
+		return []string{constants.DefaultIPv4PodNet}
 	}
 
-	return strings.Join(c.ClusterNetwork.PodSubnet, ",")
+	return c.ClusterNetwork.PodSubnet
 }
 
-// ServiceCIDR implements the config.ClusterNetwork interface.
-func (c *ClusterConfig) ServiceCIDR() string {
+// ServiceCIDRs implements the config.ClusterNetwork interface.
+func (c *ClusterConfig) ServiceCIDRs() []string {
 	switch {
 	case c.ClusterNetwork == nil:
 		fallthrough
 	case len(c.ClusterNetwork.ServiceSubnet) == 0:
-		return constants.DefaultIPv4ServiceNet
+		return []string{constants.DefaultIPv4ServiceNet}
 	}
 
-	return strings.Join(c.ClusterNetwork.ServiceSubnet, ",")
+	return c.ClusterNetwork.ServiceSubnet
 }
 
 // DNSDomain implements the config.ClusterNetwork interface.
@@ -247,7 +241,7 @@ func (c *ClusterConfig) DNSDomain() string {
 
 // APIServerIPs implements the config.ClusterNetwork interface.
 func (c *ClusterConfig) APIServerIPs() ([]net.IP, error) {
-	serviceCIDRs, err := talosnet.SplitCIDRs(c.ServiceCIDR())
+	serviceCIDRs, err := talosnet.SplitCIDRs(strings.Join(c.ServiceCIDRs(), ","))
 	if err != nil {
 		return nil, fmt.Errorf("failed to process Service CIDRs: %w", err)
 	}
@@ -257,10 +251,37 @@ func (c *ClusterConfig) APIServerIPs() ([]net.IP, error) {
 
 // DNSServiceIPs implements the config.ClusterNetwork interface.
 func (c *ClusterConfig) DNSServiceIPs() ([]net.IP, error) {
-	serviceCIDRs, err := talosnet.SplitCIDRs(c.ServiceCIDR())
+	serviceCIDRs, err := talosnet.SplitCIDRs(strings.Join(c.ServiceCIDRs(), ","))
 	if err != nil {
 		return nil, fmt.Errorf("failed to process Service CIDRs: %w", err)
 	}
 
 	return talosnet.NthIPInCIDRSet(serviceCIDRs, 10)
+}
+
+// Discovery implements the config.Cluster interface.
+func (c *ClusterConfig) Discovery() config.Discovery {
+	return c.ClusterDiscoveryConfig
+}
+
+type clusterToken string
+
+// ID implements the config.Token interface.
+func (t clusterToken) ID() string {
+	parts := strings.Split(string(t), ".")
+	if len(parts) != 2 {
+		return ""
+	}
+
+	return parts[0]
+}
+
+// Secret implements the config.Token interface.
+func (t clusterToken) Secret() string {
+	parts := strings.Split(string(t), ".")
+	if len(parts) != 2 {
+		return ""
+	}
+
+	return parts[1]
 }

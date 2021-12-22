@@ -44,11 +44,14 @@ type MachineConfig interface {
 	Env() Env
 	Files() ([]File, error)
 	Type() machine.Type
+	Controlplane() MachineControlPlane
 	Kubelet() Kubelet
 	Sysctls() map[string]string
 	Registries() Registries
 	SystemDiskEncryption() SystemDiskEncryption
 	Features() Features
+	Udev() UdevConfig
+	Logging() Logging
 }
 
 // Disk represents the options available for partitioning, formatting, and
@@ -94,6 +97,25 @@ type Security interface {
 	CertSANs() []string
 }
 
+// MachineControlPlane defines the requirements for a config that pertains to Controlplane
+// related options.
+type MachineControlPlane interface {
+	ControllerManager() MachineControllerManager
+	Scheduler() MachineScheduler
+}
+
+// MachineControllerManager defines the requirements for a config that pertains to ControllerManager
+// related options.
+type MachineControllerManager interface {
+	Disabled() bool
+}
+
+// MachineScheduler defines the requirements for a config that pertains to Scheduler
+// related options.
+type MachineScheduler interface {
+	Disabled() bool
+}
+
 // MachineNetwork defines the requirements for a config that pertains to network
 // related options.
 type MachineNetwork interface {
@@ -101,6 +123,7 @@ type MachineNetwork interface {
 	Resolvers() []string
 	Devices() []Device
 	ExtraHosts() []ExtraHost
+	KubeSpan() KubeSpan
 }
 
 // ExtraHost represents a host entry in /etc/hosts.
@@ -112,7 +135,7 @@ type ExtraHost interface {
 // Device represents a network interface.
 type Device interface {
 	Interface() string
-	CIDR() string
+	Addresses() []string
 	Routes() []Route
 	Bond() Bond
 	Vlans() []Vlan
@@ -135,6 +158,18 @@ type DHCPOptions interface {
 // VIPConfig contains settings for the Virtual (shared) IP setup.
 type VIPConfig interface {
 	IP() string
+	EquinixMetal() VIPEquinixMetal
+	HCloud() VIPHCloud
+}
+
+// VIPEquinixMetal contains Equinix Metal API VIP settings.
+type VIPEquinixMetal interface {
+	APIToken() string
+}
+
+// VIPHCloud contains Hetzner Cloud API VIP settings.
+type VIPHCloud interface {
+	APIToken() string
 }
 
 // WireguardConfig contains settings for configuring Wireguard network interface.
@@ -187,17 +222,26 @@ type Bond interface {
 
 // Vlan represents vlan settings for a device.
 type Vlan interface {
-	CIDR() string
+	Addresses() []string
 	Routes() []Route
 	DHCP() bool
 	ID() uint16
+	MTU() uint32
+	VIPConfig() VIPConfig
 }
 
 // Route represents a network route.
 type Route interface {
 	Network() string
 	Gateway() string
+	Source() string
 	Metric() uint32
+}
+
+// KubeSpan configures KubeSpan feature.
+type KubeSpan interface {
+	Enabled() bool
+	ForceRouting() bool
 }
 
 // Time defines the requirements for a config that pertains to time related
@@ -205,6 +249,7 @@ type Route interface {
 type Time interface {
 	Disabled() bool
 	Servers() []string
+	BootTimeout() time.Duration
 }
 
 // Kubelet defines the requirements for a config that pertains to kubelet
@@ -215,6 +260,12 @@ type Kubelet interface {
 	ExtraArgs() map[string]string
 	ExtraMounts() []specs.Mount
 	RegisterWithFQDN() bool
+	NodeIP() KubeletNodeIP
+}
+
+// KubeletNodeIP defines the way node IPs are selected for the kubelet.
+type KubeletNodeIP interface {
+	ValidSubnets() []string
 }
 
 // Registries defines the configuration for image fetching.
@@ -255,7 +306,9 @@ type RegistryTLSConfig interface {
 // ClusterConfig defines the requirements for a config that pertains to cluster
 // related options.
 type ClusterConfig interface {
+	ID() string
 	Name() string
+	Secret() string
 	APIServer() APIServer
 	ControllerManager() ControllerManager
 	Proxy() Proxy
@@ -279,14 +332,15 @@ type ClusterConfig interface {
 	InlineManifests() []InlineManifest
 	AdminKubeconfig() AdminKubeconfig
 	ScheduleOnMasters() bool
+	Discovery() Discovery
 }
 
 // ClusterNetwork defines the requirements for a config that pertains to cluster
 // network options.
 type ClusterNetwork interface {
 	CNI() CNI
-	PodCIDR() string
-	ServiceCIDR() string
+	PodCIDRs() []string
+	ServiceCIDRs() []string
 	DNSDomain() string
 	// APIServerIPs returns kube-apiserver IPs in the ServiceCIDR.
 	APIServerIPs() ([]net.IP, error)
@@ -307,6 +361,7 @@ type APIServer interface {
 	Image() string
 	ExtraArgs() map[string]string
 	ExtraVolumes() []VolumeMount
+	DisablePodSecurityPolicy() bool
 }
 
 // ControllerManager defines the requirements for a config that pertains to controller manager related
@@ -345,6 +400,7 @@ type Etcd interface {
 	Image() string
 	CA() *x509.PEMEncodedCertificateAndKey
 	ExtraArgs() map[string]string
+	Subnet() string
 }
 
 // Token defines the requirements for a config that pertains to Kubernetes
@@ -421,4 +477,43 @@ type VolumeMount interface {
 type InlineManifest interface {
 	Name() string
 	Contents() string
+}
+
+// Discovery describes cluster membership discovery.
+type Discovery interface {
+	Enabled() bool
+	Registries() DiscoveryRegistries
+}
+
+// DiscoveryRegistries describes discovery methods.
+type DiscoveryRegistries interface {
+	Kubernetes() KubernetesRegistry
+	Service() ServiceRegistry
+}
+
+// KubernetesRegistry describes Kubernetes discovery registry.
+type KubernetesRegistry interface {
+	Enabled() bool
+}
+
+// ServiceRegistry describes external service discovery registry.
+type ServiceRegistry interface {
+	Enabled() bool
+	Endpoint() string
+}
+
+// UdevConfig describes configuration for udev.
+type UdevConfig interface {
+	Rules() []string
+}
+
+// Logging describes logging configuration.
+type Logging interface {
+	Destinations() []LoggingDestination
+}
+
+// LoggingDestination describes logging destination.
+type LoggingDestination interface {
+	Endpoint() *url.URL
+	Format() string
 }

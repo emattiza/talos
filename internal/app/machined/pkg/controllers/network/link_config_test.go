@@ -28,8 +28,8 @@ import (
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type LinkConfigSuite struct {
@@ -178,18 +178,23 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 						DeviceInterface: "eth0",
 						DeviceVlans: []*v1alpha1.Vlan{
 							{
-								VlanID:   24,
-								VlanCIDR: "10.0.0.1/8",
+								VlanID:  24,
+								VlanMTU: 1000,
+								VlanAddresses: []string{
+									"10.0.0.1/8",
+								},
 							},
 							{
-								VlanID:   48,
-								VlanCIDR: "10.0.0.2/8",
+								VlanID: 48,
+								VlanAddresses: []string{
+									"10.0.0.2/8",
+								},
 							},
 						},
 					},
 					{
 						DeviceInterface: "eth1",
-						DeviceCIDR:      "192.168.0.24/28",
+						DeviceAddresses: []string{"192.168.0.24/28"},
 					},
 					{
 						DeviceInterface: "eth1",
@@ -198,7 +203,7 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 					{
 						DeviceIgnore:    true,
 						DeviceInterface: "eth2",
-						DeviceCIDR:      "192.168.0.24/28",
+						DeviceAddresses: []string{"192.168.0.24/28"},
 					},
 					{
 						DeviceInterface: "eth2",
@@ -279,8 +284,10 @@ func (suite *LinkConfigSuite) TestMachineConfiguration() {
 
 					if r.TypedSpec().Name == "eth0.24" {
 						suite.Assert().EqualValues(24, r.TypedSpec().VLAN.VID)
+						suite.Assert().EqualValues(1000, r.TypedSpec().MTU)
 					} else {
 						suite.Assert().EqualValues(48, r.TypedSpec().VLAN.VID)
+						suite.Assert().EqualValues(0, r.TypedSpec().MTU)
 					}
 				case "eth2", "eth3":
 					suite.Assert().True(r.TypedSpec().Up)
@@ -343,12 +350,16 @@ func (suite *LinkConfigSuite) TestDefaultUp() {
 						DeviceInterface: "eth0",
 						DeviceVlans: []*v1alpha1.Vlan{
 							{
-								VlanID:   24,
-								VlanCIDR: "10.0.0.1/8",
+								VlanID: 24,
+								VlanAddresses: []string{
+									"10.0.0.1/8",
+								},
 							},
 							{
-								VlanID:   48,
-								VlanCIDR: "10.0.0.2/8",
+								VlanID: 48,
+								VlanAddresses: []string{
+									"10.0.0.2/8",
+								},
 							},
 						},
 					},

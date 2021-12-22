@@ -22,12 +22,13 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
 	k8sctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
 
 type ManifestSuite struct {
@@ -91,11 +92,17 @@ var defaultManifestSpec = config.K8sManifestsSpec{
 	Server:        "127.0.0.1",
 	ClusterDomain: "cluster.",
 
-	PodCIDRs:     constants.DefaultIPv4PodNet,
-	FirstPodCIDR: constants.DefaultIPv4PodNet,
+	PodCIDRs: []string{constants.DefaultIPv4PodNet},
 
 	ProxyEnabled: true,
 	ProxyImage:   "foo/bar",
+	ProxyArgs: []string{
+		fmt.Sprintf("--cluster-cidr=%s", constants.DefaultIPv4PodNet),
+		"--hostname-override=$(NODE_NAME)",
+		"--kubeconfig=/etc/kubernetes/kubeconfig",
+		"--proxy-mode=iptables",
+		"--conntrack-max-per-core=0",
+	},
 
 	CoreDNSEnabled: true,
 	CoreDNSImage:   "foo/bar",
@@ -105,10 +112,12 @@ var defaultManifestSpec = config.K8sManifestsSpec{
 	FlannelEnabled:  true,
 	FlannelImage:    "foo/bar",
 	FlannelCNIImage: "foo/bar",
+
+	PodSecurityPolicyEnabled: true,
 }
 
 func (suite *ManifestSuite) TestReconcileDefaults() {
-	rootSecrets := secrets.NewRoot(secrets.RootKubernetesID)
+	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
 	manifestConfig := config.NewK8sManifests()
 	manifestConfig.SetManifests(defaultManifestSpec)
 
@@ -123,7 +132,9 @@ func (suite *ManifestSuite) TestReconcileDefaults() {
 					"01-csr-approver-role-binding",
 					"01-csr-node-bootstrap",
 					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding", "03-default-pod-security-policy", "05-flannel",
+					"02-kube-system-sa-role-binding",
+					"03-default-pod-security-policy",
+					"05-flannel",
 					"10-kube-proxy",
 					"11-core-dns",
 					"11-core-dns-svc",
@@ -135,7 +146,7 @@ func (suite *ManifestSuite) TestReconcileDefaults() {
 }
 
 func (suite *ManifestSuite) TestReconcileDisableKubeProxy() {
-	rootSecrets := secrets.NewRoot(secrets.RootKubernetesID)
+	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
 	manifestConfig := config.NewK8sManifests()
 	spec := defaultManifestSpec
 	spec.ProxyEnabled = false
@@ -152,7 +163,9 @@ func (suite *ManifestSuite) TestReconcileDisableKubeProxy() {
 					"01-csr-approver-role-binding",
 					"01-csr-node-bootstrap",
 					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding", "03-default-pod-security-policy", "05-flannel",
+					"02-kube-system-sa-role-binding",
+					"03-default-pod-security-policy",
+					"05-flannel",
 					"11-core-dns",
 					"11-core-dns-svc",
 					"11-kube-config-in-cluster",
@@ -163,12 +176,10 @@ func (suite *ManifestSuite) TestReconcileDisableKubeProxy() {
 }
 
 func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
-	rootSecrets := secrets.NewRoot(secrets.RootKubernetesID)
+	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
 	manifestConfig := config.NewK8sManifests()
 	spec := defaultManifestSpec
-	spec.ProxyExtraArgs = map[string]string{
-		"bind-address": "\"::\"",
-	}
+	spec.ProxyArgs = append(spec.ProxyArgs, "--bind-address=\"::\"")
 	manifestConfig.SetManifests(spec)
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
@@ -182,7 +193,9 @@ func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
 					"01-csr-approver-role-binding",
 					"01-csr-node-bootstrap",
 					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding", "03-default-pod-security-policy", "05-flannel",
+					"02-kube-system-sa-role-binding",
+					"03-default-pod-security-policy",
+					"05-flannel",
 					"10-kube-proxy",
 					"11-core-dns",
 					"11-core-dns-svc",
@@ -196,15 +209,45 @@ func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
 	suite.Require().NoError(err)
 
 	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
-	suite.Assert().Len(manifest.Objects(), 3)
+	suite.Assert().Len(k8sadapter.Manifest(manifest).Objects(), 3)
 
-	suite.Assert().Equal("DaemonSet", manifest.Objects()[0].GetKind())
+	suite.Assert().Equal("DaemonSet", k8sadapter.Manifest(manifest).Objects()[0].GetKind())
 
-	ds := manifest.Objects()[0].Object
+	ds := k8sadapter.Manifest(manifest).Objects()[0].Object
 	containerSpec := ds["spec"].(map[string]interface{})["template"].(map[string]interface{})["spec"].(map[string]interface{})["containers"].([]interface{})[0]
 	args := containerSpec.(map[string]interface{})["command"].([]interface{}) //nolint:errcheck,forcetypeassert
 
 	suite.Assert().Equal("--bind-address=\"::\"", args[len(args)-1])
+}
+
+func (suite *ManifestSuite) TestReconcileDisablePSP() {
+	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
+	manifestConfig := config.NewK8sManifests()
+	spec := defaultManifestSpec
+	spec.PodSecurityPolicyEnabled = false
+	manifestConfig.SetManifests(spec)
+
+	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
+	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
+
+	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+		func() error {
+			return suite.assertManifests(
+				[]string{
+					"00-kubelet-bootstrapping-token",
+					"01-csr-approver-role-binding",
+					"01-csr-node-bootstrap",
+					"01-csr-renewal-role-binding",
+					"02-kube-system-sa-role-binding",
+					"05-flannel",
+					"10-kube-proxy",
+					"11-core-dns",
+					"11-core-dns-svc",
+					"11-kube-config-in-cluster",
+				},
+			)
+		},
+	))
 }
 
 func (suite *ManifestSuite) TearDownTest() {
@@ -215,7 +258,7 @@ func (suite *ManifestSuite) TearDownTest() {
 	suite.wg.Wait()
 
 	// trigger updates in resources to stop watch loops
-	suite.Assert().NoError(suite.state.Create(context.Background(), secrets.NewRoot(secrets.RootEtcdID)))
+	suite.Assert().NoError(suite.state.Create(context.Background(), secrets.NewKubernetesRoot("-")))
 	suite.Assert().NoError(suite.state.Create(context.Background(), config.NewK8sControlPlaneAPIServer()))
 }
 

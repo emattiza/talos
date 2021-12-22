@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -55,7 +56,7 @@ func (suite *RebootSuite) TestRebootNodeByNode() {
 		suite.T().Skip("cluster doesn't support reboots")
 	}
 
-	nodes := suite.DiscoverNodes().Nodes()
+	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
 	suite.Require().NotEmpty(nodes)
 
 	for _, node := range nodes {
@@ -75,7 +76,7 @@ func (suite *RebootSuite) TestRebootAllNodes() {
 		suite.T().Skip("cluster doesn't support reboots")
 	}
 
-	nodes := suite.DiscoverNodes().Nodes()
+	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
 	suite.Require().NotEmpty(nodes)
 
 	errCh := make(chan error, len(nodes))

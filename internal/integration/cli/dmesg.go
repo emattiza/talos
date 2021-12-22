@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_cli
 // +build integration_cli
 
 package cli
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -31,7 +33,7 @@ func (suite *DmesgSuite) TestHasOutput() {
 
 // TestClusterHasOutput verifies that each node in the cluster has some output.
 func (suite *DmesgSuite) TestClusterHasOutput() {
-	nodes := suite.DiscoverNodes().Nodes()
+	nodes := suite.DiscoverNodes(context.TODO()).Nodes()
 	suite.Require().NotEmpty(nodes)
 
 	matchers := make([]base.RunOption, 0, len(nodes))

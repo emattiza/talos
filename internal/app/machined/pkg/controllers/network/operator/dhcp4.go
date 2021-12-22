@@ -20,7 +20,7 @@ import (
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // DHCP4 implements the DHCPv4 network operator.
@@ -195,7 +195,7 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 			d.routes = append(d.routes, network.RouteSpecSpec{
 				Family:      nethelpers.FamilyInet4,
 				Destination: dst,
-				Source:      addr,
+				Source:      addr.IP(),
 				Gateway:     gw,
 				OutLinkName: d.linkName,
 				Table:       nethelpers.TableMain,
@@ -213,7 +213,7 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 			d.routes = append(d.routes, network.RouteSpecSpec{
 				Family:      nethelpers.FamilyInet4,
 				Gateway:     gw,
-				Source:      addr,
+				Source:      addr.IP(),
 				OutLinkName: d.linkName,
 				Table:       nethelpers.TableMain,
 				Priority:    d.routeMetric,
@@ -222,6 +222,22 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 				Protocol:    nethelpers.ProtocolBoot,
 				ConfigLayer: network.ConfigOperator,
 			})
+
+			if !addr.Contains(gw) {
+				// add an interface route for the gateway if it's not in the same network
+				d.routes = append(d.routes, network.RouteSpecSpec{
+					Family:      nethelpers.FamilyInet4,
+					Destination: netaddr.IPPrefixFrom(gw, gw.BitLen()),
+					Source:      addr.IP(),
+					OutLinkName: d.linkName,
+					Table:       nethelpers.TableMain,
+					Priority:    d.routeMetric,
+					Scope:       nethelpers.ScopeLink,
+					Type:        nethelpers.TypeUnicast,
+					Protocol:    nethelpers.ProtocolBoot,
+					ConfigLayer: network.ConfigOperator,
+				})
+			}
 		}
 	}
 

@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	grpclog "github.com/talos-systems/talos/pkg/grpc/middleware/log"
+	_ "github.com/talos-systems/talos/pkg/machinery/proto" //nolint:gci // register codec
 )
 
 // Registrator describes the set of methods required in order for a concrete
@@ -41,9 +42,9 @@ type Options struct {
 	ServerOptions      []grpc.ServerOption
 	UnaryInterceptors  []grpc.UnaryServerInterceptor
 	StreamInterceptors []grpc.StreamServerInterceptor
-	LogPrefix          string
-	LogDestination     io.Writer
 	Reflection         bool
+	logPrefix          string
+	logDestination     io.Writer
 }
 
 // Option is the functional option func.
@@ -101,15 +102,15 @@ func WithStreamInterceptor(i grpc.StreamServerInterceptor) Option {
 // WithLog sets up request logging to specified destination.
 func WithLog(prefix string, w io.Writer) Option {
 	return func(args *Options) {
-		args.LogPrefix = prefix
-		args.LogDestination = w
+		args.logPrefix = prefix
+		args.logDestination = w
 	}
 }
 
 // WithDefaultLog sets up request logging to default destination.
 func WithDefaultLog() Option {
 	return func(args *Options) {
-		args.LogDestination = log.Writer()
+		args.logDestination = log.Writer()
 	}
 }
 
@@ -143,8 +144,8 @@ func NewDefaultOptions(setters ...Option) *Options {
 
 	var logger *log.Logger
 
-	if opts.LogDestination != nil {
-		logger = log.New(opts.LogDestination, opts.LogPrefix, log.Flags())
+	if opts.logDestination != nil {
+		logger = log.New(opts.logDestination, opts.logPrefix, log.Flags())
 	}
 
 	// Recovery is installed as the the first middleware in the chain to handle panics (via defer and recover()) in all subsequent middlewares.

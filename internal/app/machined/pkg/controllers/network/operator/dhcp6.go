@@ -22,7 +22,7 @@ import (
 	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // DHCP6 implements the DHCPv6 network operator.
@@ -177,7 +177,7 @@ func (d *DHCP6) parseReply(reply *dhcpv6.Message) {
 		d.resolvers = nil
 	}
 
-	if len(reply.Options.FQDN().DomainName.Labels) > 0 {
+	if reply.Options.FQDN() != nil && len(reply.Options.FQDN().DomainName.Labels) > 0 {
 		d.hostname = []network.HostnameSpecSpec{
 			{
 				Hostname:    reply.Options.FQDN().DomainName.Labels[0],

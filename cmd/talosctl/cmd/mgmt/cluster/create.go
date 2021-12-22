@@ -22,6 +22,7 @@ import (
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
 	"github.com/talos-systems/go-blockdevice/blockdevice/encryption"
+	"github.com/talos-systems/go-procfs/procfs"
 	talosnet "github.com/talos-systems/net"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -104,11 +105,13 @@ var (
 	encryptStatePartition     bool
 	encryptEphemeralPartition bool
 	useVIP                    bool
+	enableKubeSpan            bool
+	enableClusterDiscovery    bool
 	configPatch               string
 	configPatchControlPlane   string
 	configPatchWorker         string
-	configPatchJoin           string
 	badRTC                    bool
+	extraBootKernelArgs       string
 )
 
 // createCmd represents the cluster up command.
@@ -124,14 +127,6 @@ var createCmd = &cobra.Command{
 
 //nolint:gocyclo,cyclop
 func create(ctx context.Context) (err error) {
-	if configPatchJoin != "" {
-		if configPatchWorker != "" {
-			return fmt.Errorf("both --config-patch-join and --config-patch-worker are passed")
-		}
-
-		configPatchWorker = configPatchJoin
-	}
-
 	if masters < 1 {
 		return fmt.Errorf("number of masters can't be less than 1")
 	}
@@ -284,6 +279,7 @@ func create(ctx context.Context) (err error) {
 			generate.WithInstallImage(nodeInstallImage),
 			generate.WithDebug(configDebug),
 			generate.WithDNSDomain(dnsDomain),
+			generate.WithClusterDiscovery(enableClusterDiscovery),
 		}
 
 		for _, registryMirror := range registryMirrors {
@@ -382,6 +378,23 @@ func create(ctx context.Context) (err error) {
 			)
 		}
 
+		if enableKubeSpan {
+			genOptions = append(genOptions,
+				generate.WithNetworkOptions(
+					v1alpha1.WithKubeSpan(),
+				),
+			)
+		}
+
+		if !bootloaderEnabled {
+			// disable kexec, as this would effectively use the bootloader
+			genOptions = append(genOptions,
+				generate.WithSysctls(map[string]string{
+					"kernel.kexec_load_disabled": "1",
+				}),
+			)
+		}
+
 		defaultInternalLB, defaultEndpoint := provisioner.GetLoadBalancers(request.Network)
 
 		if defaultInternalLB == "" {
@@ -404,7 +417,9 @@ func create(ctx context.Context) (err error) {
 			fallthrough
 		case forceEndpoint != "":
 			endpointList = []string{forceEndpoint}
+			// using non-default endpoints, provision additional cert SANs and fix endpoint list
 			provisionOptions = append(provisionOptions, provision.WithEndpoint(forceEndpoint))
+			genOptions = append(genOptions, generate.WithAdditionalSubjectAltNames(endpointList))
 		case forceInitNodeAsEndpoint:
 			endpointList = []string{ips[0][0].String()}
 		default:
@@ -481,6 +496,12 @@ func create(ctx context.Context) (err error) {
 		}
 	}
 
+	var extraKernelArgs *procfs.Cmdline
+
+	if extraBootKernelArgs != "" {
+		extraKernelArgs = procfs.NewCmdline(extraBootKernelArgs)
+	}
+
 	// Add talosconfig to provision options so we'll have it to parse there
 	provisionOptions = append(provisionOptions, provision.WithTalosConfig(configBundle.TalosConfig()))
 
@@ -502,6 +523,7 @@ func create(ctx context.Context) (err error) {
 			Disks:               disks,
 			SkipInjectingConfig: skipInjectingConfig,
 			BadRTC:              badRTC,
+			ExtraKernelArgs:     extraKernelArgs,
 		}
 
 		if i == 0 {
@@ -554,6 +576,7 @@ func create(ctx context.Context) (err error) {
 				Config:              cfg,
 				SkipInjectingConfig: skipInjectingConfig,
 				BadRTC:              badRTC,
+				ExtraKernelArgs:     extraKernelArgs,
 			})
 	}
 
@@ -724,7 +747,7 @@ func getDisks() ([]*provision.Disk, error) {
 				return nil, fmt.Errorf("user disk partitions can only be mounted into /var folder")
 			}
 
-			value, e := strconv.ParseInt(partitions[j+1], 10, -1)
+			value, e := strconv.ParseInt(partitions[j+1], 10, 0)
 			partitionSize := uint64(value)
 
 			if e != nil {
@@ -740,7 +763,7 @@ func getDisks() ([]*provision.Disk, error) {
 				DiskMountPoint: partitionPath,
 			}
 			diskSize += partitionSize
-			partitionIndex++ //nolint:wastedassign
+			partitionIndex++
 		}
 
 		disks = append(disks, &provision.Disk{
@@ -818,14 +841,13 @@ func init() {
 	createCmd.Flags().BoolVar(&encryptEphemeralPartition, "encrypt-ephemeral", false, "enable ephemeral partition encryption")
 	createCmd.Flags().StringVar(&talosVersion, "talos-version", "", "the desired Talos version to generate config for (if not set, defaults to image version)")
 	createCmd.Flags().BoolVar(&useVIP, "use-vip", false, "use a virtual IP for the controlplane endpoint instead of the loadbalancer")
+	createCmd.Flags().BoolVar(&enableClusterDiscovery, "with-cluster-discovery", true, "enable cluster discovery")
+	createCmd.Flags().BoolVar(&enableKubeSpan, "with-kubespan", false, "enable KubeSpan system")
 	createCmd.Flags().StringVar(&configPatch, "config-patch", "", "patch generated machineconfigs (applied to all node types)")
 	createCmd.Flags().StringVar(&configPatchControlPlane, "config-patch-control-plane", "", "patch generated machineconfigs (applied to 'init' and 'controlplane' types)")
 	createCmd.Flags().StringVar(&configPatchWorker, "config-patch-worker", "", "patch generated machineconfigs (applied to 'worker' type)")
 	createCmd.Flags().BoolVar(&badRTC, "bad-rtc", false, "launch VM with bad RTC state (QEMU only)")
-
-	// remove in 0.13: https://github.com/talos-systems/talos/issues/3910
-	createCmd.Flags().StringVar(&configPatchJoin, "config-patch-join", "", "")
-	cli.Should(createCmd.Flags().MarkDeprecated("config-patch-join", "use --config-patch-worker instead"))
+	createCmd.Flags().StringVar(&extraBootKernelArgs, "extra-boot-kernel-args", "", "add extra kernel args to the initial boot from vmlinuz and initramfs (QEMU only)")
 
 	Cmd.AddCommand(createCmd)
 }

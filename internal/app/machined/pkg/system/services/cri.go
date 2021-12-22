@@ -21,7 +21,7 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner/restart"
 	"github.com/talos-systems/talos/pkg/conditions"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // CRI implements the Service interface. It serves as the concrete type with
@@ -77,7 +77,8 @@ func (c *CRI) Runner(r runtime.Runtime) (runner.Runner, error) {
 		args,
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithEnv(env),
-		runner.WithOOMScoreAdj(-100),
+		runner.WithOOMScoreAdj(-500),
+		runner.WithCgroupPath(constants.CgroupPodRuntime),
 	),
 		restart.WithType(restart.Forever),
 	), nil

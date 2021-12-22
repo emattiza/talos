@@ -5,10 +5,14 @@
 package mount
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-blockdevice/blockdevice"
 	"github.com/talos-systems/go-blockdevice/blockdevice/filesystem"
 	"golang.org/x/sys/unix"
@@ -19,6 +23,8 @@ import (
 	"github.com/talos-systems/talos/internal/pkg/partition"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	runtimeres "github.com/talos-systems/talos/pkg/machinery/resources/runtime"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 var (
@@ -72,7 +78,7 @@ func SystemMountPointForLabel(device *blockdevice.BlockDevice, label string, opt
 	}
 
 	part, err := device.GetPartition(label)
-	if err != nil && err != os.ErrNotExist {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 
@@ -174,7 +180,9 @@ func SystemMountPointForLabel(device *blockdevice.BlockDevice, label string, opt
 }
 
 // SystemPartitionMount mounts a system partition by the label.
-func SystemPartitionMount(r runtime.Runtime, label string, opts ...Option) (err error) {
+//
+//nolint:gocyclo
+func SystemPartitionMount(r runtime.Runtime, logger *log.Logger, label string, opts ...Option) (err error) {
 	device := r.State().Machine().Disk(disk.WithPartitionLabel(label))
 	if device == nil {
 		return fmt.Errorf("failed to find device with partition labeled %s", label)
@@ -199,8 +207,29 @@ func SystemPartitionMount(r runtime.Runtime, label string, opts ...Option) (err 
 		return fmt.Errorf("no mountpoints for label %q", label)
 	}
 
-	if err = mountMountpoint(mountpoint); err != nil {
+	var skipMount bool
+
+	if skipMount, err = mountMountpoint(mountpoint); err != nil {
 		return err
+	}
+
+	if skipMount {
+		if logger != nil {
+			logger.Printf("mount skipped")
+		}
+
+		return
+	}
+
+	// record mount as the resource
+	mountStatus := runtimeres.NewMountStatus(v1alpha1.NamespaceName, label)
+	mountStatus.TypedSpec().Source = mountpoint.Source()
+	mountStatus.TypedSpec().Target = mountpoint.Target()
+	mountStatus.TypedSpec().FilesystemType = mountpoint.Fstype()
+
+	// ignore the error if the MountStatus already exists, as many mounts are silently skipped with the flag SkipIfMounted
+	if err = r.State().V1Alpha2().Resources().Create(context.Background(), mountStatus); err != nil && !state.IsConflictError(err) {
+		return fmt.Errorf("error creating mount status resource: %w", err)
 	}
 
 	mountpointsMutex.Lock()
@@ -212,18 +241,26 @@ func SystemPartitionMount(r runtime.Runtime, label string, opts ...Option) (err 
 }
 
 // SystemPartitionUnmount unmounts a system partition by the label.
-func SystemPartitionUnmount(r runtime.Runtime, label string) (err error) {
+func SystemPartitionUnmount(r runtime.Runtime, logger *log.Logger, label string) (err error) {
 	mountpointsMutex.RLock()
 	mountpoint, ok := mountpoints[label]
 	mountpointsMutex.RUnlock()
 
 	if !ok {
+		if logger != nil {
+			logger.Printf("unmount skipped")
+		}
+
 		return nil
 	}
 
 	err = mountpoint.Unmount()
 	if err != nil {
 		return err
+	}
+
+	if err = r.State().V1Alpha2().Resources().Destroy(context.Background(), runtimeres.NewMountStatus(v1alpha1.NamespaceName, label).Metadata()); err != nil {
+		return fmt.Errorf("error destroying mount status resource: %w", err)
 	}
 
 	mountpointsMutex.Lock()

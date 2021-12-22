@@ -2,12 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration
 // +build integration
 
 // Package base provides shared definition of base suites for tests
 package base
 
 import (
+	"context"
+
 	"github.com/talos-systems/talos/pkg/cluster"
 	"github.com/talos-systems/talos/pkg/provision"
 	"github.com/talos-systems/talos/pkg/provision/access"
@@ -36,7 +39,7 @@ type TalosSuite struct {
 // DiscoverNodes provides basic functionality to discover cluster nodes via test settings.
 //
 // This method is overridden in specific suites to allow for specific discovery.
-func (talosSuite *TalosSuite) DiscoverNodes() cluster.Info {
+func (talosSuite *TalosSuite) DiscoverNodes(ctx context.Context) cluster.Info {
 	if talosSuite.discoveredNodes == nil {
 		if talosSuite.Cluster != nil {
 			talosSuite.discoveredNodes = access.NewAdapter(talosSuite.Cluster).Info

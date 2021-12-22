@@ -51,6 +51,7 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 		},
 		MachineDisks:                in.MachineDisks,
 		MachineSystemDiskEncryption: in.SystemDiskEncryptionConfig,
+		MachineSysctls:              in.Sysctls,
 		MachineFeatures:             &v1alpha1.FeaturesConfig{},
 	}
 
@@ -66,7 +67,9 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 	}
 
 	cluster := &v1alpha1.ClusterConfig{
-		ClusterName: in.ClusterName,
+		ClusterID:     in.ClusterID,
+		ClusterName:   in.ClusterName,
+		ClusterSecret: in.ClusterSecret,
 		ControlPlane: &v1alpha1.ControlPlaneConfig{
 			Endpoint: &v1alpha1.Endpoint{URL: controlPlaneURL},
 		},
@@ -99,6 +102,9 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 		ClusterAESCBCEncryptionSecret: in.Secrets.AESCBCEncryptionSecret,
 		ExtraManifests:                []string{},
 		ClusterInlineManifests:        v1alpha1.ClusterInlineManifests{},
+		ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
+			DiscoveryEnabled: in.DiscoveryEnabled,
+		},
 	}
 
 	config.MachineConfig = machine

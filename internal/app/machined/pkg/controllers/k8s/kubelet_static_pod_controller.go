@@ -19,13 +19,14 @@ import (
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
 	"github.com/talos-systems/talos/pkg/kubernetes/kubelet"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // KubeletStaticPodController renders static pod definitions and manages k8s.StaticPodStatus.
@@ -45,7 +46,7 @@ func (ctrl *KubeletStaticPodController) Inputs() []controller.Input {
 			Kind:      controller.InputStrong,
 		},
 		{
-			Namespace: k8s.ControlPlaneNamespaceName,
+			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodenameType,
 			ID:        pointer.ToString(k8s.NodenameID),
 			Kind:      controller.InputWeak,
@@ -64,14 +65,8 @@ func (ctrl *KubeletStaticPodController) Inputs() []controller.Input {
 		},
 		{
 			Namespace: secrets.NamespaceName,
-			Type:      secrets.RootType,
-			ID:        pointer.ToString(secrets.RootKubernetesID),
-			Kind:      controller.InputWeak,
-		},
-		{
-			Namespace: v1alpha1.NamespaceName,
-			Type:      v1alpha1.BootstrapStatusType,
-			ID:        pointer.ToString(v1alpha1.BootstrapStatusID),
+			Type:      secrets.KubernetesRootType,
+			ID:        pointer.ToString(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -136,7 +131,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 			continue
 		}
 
-		rootSecretResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.RootType, secrets.RootKubernetesID, resource.VersionUndefined))
+		rootSecretResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				if err = ctrl.cleanupPods(logger, nil); err != nil {
@@ -149,7 +144,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 			return err
 		}
 
-		rootSecrets := rootSecretResource.(*secrets.Root).KubernetesSpec()
+		rootSecrets := rootSecretResource.(*secrets.KubernetesRoot).TypedSpec()
 
 		secretsResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesType, secrets.KubernetesID, resource.VersionUndefined))
 		if err != nil {
@@ -166,26 +161,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 
 		secrets := secretsResource.(*secrets.Kubernetes).Certs()
 
-		bootstrapStatus, err := r.Get(ctx, v1alpha1.NewBootstrapStatus().Metadata())
-		if err != nil {
-			if state.IsNotFoundError(err) {
-				continue
-			}
-
-			return err
-		}
-
-		if bootstrapStatus.(*v1alpha1.BootstrapStatus).TypedSpec().SelfHostedControlPlane {
-			logger.Info("skipped as running self-hosted control plane")
-
-			if err = ctrl.cleanupPods(logger, nil); err != nil {
-				return fmt.Errorf("error cleaning up static pods: %w", err)
-			}
-
-			continue
-		}
-
-		nodenameResource, err := r.Get(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
+		nodenameResource, err := r.Get(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
 		if err != nil {
 			// nodename should exist if the kubelet is running
 			return err
@@ -201,7 +177,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 		for _, staticPod := range staticPods.Items {
 			switch staticPod.Metadata().Phase() {
 			case resource.PhaseRunning:
-				if err = ctrl.writePod(ctx, r, logger, staticPod); err != nil {
+				if err = ctrl.writePod(logger, staticPod); err != nil {
 					return fmt.Errorf("error running pod: %w", err)
 				}
 			case resource.PhaseTearingDown:
@@ -232,13 +208,7 @@ func (ctrl *KubeletStaticPodController) podFilename(staticPod resource.Resource)
 	return fmt.Sprintf("%s%s.yaml", constants.TalosManifestPrefix, staticPod.Metadata().ID())
 }
 
-func (ctrl *KubeletStaticPodController) writePod(ctx context.Context, r controller.Runtime, logger *zap.Logger, staticPod resource.Resource) error {
-	staticPodStatus := k8s.NewStaticPodStatus(staticPod.Metadata().Namespace(), staticPod.Metadata().ID())
-
-	if err := r.AddFinalizer(ctx, staticPod.Metadata(), staticPodStatus.String()); err != nil {
-		return err
-	}
-
+func (ctrl *KubeletStaticPodController) writePod(logger *zap.Logger, staticPod resource.Resource) error {
 	renderedPod, err := yaml.Marshal(staticPod.Spec())
 	if err != nil {
 		return err
@@ -360,9 +330,7 @@ func (ctrl *KubeletStaticPodController) refreshPodStatus(ctx context.Context, r 
 		podsSeen[statusID] = struct{}{}
 
 		if err = r.Modify(ctx, k8s.NewStaticPodStatus(k8s.ControlPlaneNamespaceName, statusID), func(r resource.Resource) error {
-			r.(*k8s.StaticPodStatus).SetStatus(&pod.Status)
-
-			return nil
+			return k8sadapter.StaticPodStatus(r.(*k8s.StaticPodStatus)).SetStatus(&pod.Status)
 		}); err != nil {
 			return fmt.Errorf("error updating pod status: %w", err)
 		}

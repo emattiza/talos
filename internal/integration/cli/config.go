@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_cli
 // +build integration_cli
 
 package cli
@@ -68,7 +69,7 @@ func (suite *TalosconfigSuite) TestMerge() {
 
 // TestNew checks `talosctl config new`.
 func (suite *TalosconfigSuite) TestNew() {
-	stdout := suite.RunCLI([]string{"version", "--json"})
+	stdout := suite.RunCLI([]string{"version", "--json", "--nodes", suite.RandomDiscoveredNode()})
 
 	var v machineapi.Version
 	err := protojson.Unmarshal([]byte(stdout), &v)
@@ -130,8 +131,8 @@ func (suite *TalosconfigSuite) TestNew() {
 			},
 		},
 		{
-			args:      []string{"get", "rootsecret"},
-			adminOpts: []base.RunOption{base.StdoutShouldMatch(regexp.MustCompile(`RootSecret`))},
+			args:      []string{"get", "osrootsecret"},
+			adminOpts: []base.RunOption{base.StdoutShouldMatch(regexp.MustCompile(`OSRootSecret`))},
 			readerOpts: []base.RunOption{
 				base.StdoutEmpty(),
 				base.StderrShouldMatch(regexp.MustCompile(`\Qrpc error: code = PermissionDenied desc = not authorized`)),

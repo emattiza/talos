@@ -23,8 +23,8 @@ import (
 
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
-	"github.com/talos-systems/talos/pkg/resources/files"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/files"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type StatusSuite struct {
@@ -90,7 +90,7 @@ func (suite *StatusSuite) TestNone() {
 
 func (suite *StatusSuite) TestAddresses() {
 	nodeAddress := network.NewNodeAddress(network.NamespaceName, network.NodeAddressCurrentID)
-	nodeAddress.TypedSpec().Addresses = []netaddr.IP{netaddr.MustParseIP("10.0.0.1")}
+	nodeAddress.TypedSpec().Addresses = []netaddr.IPPrefix{netaddr.MustParseIPPrefix("10.0.0.1/24")}
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, nodeAddress))
 

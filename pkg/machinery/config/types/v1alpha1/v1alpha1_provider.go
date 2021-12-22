@@ -47,11 +47,19 @@ func (c *Config) Persist() bool {
 
 // Machine implements the config.Provider interface.
 func (c *Config) Machine() config.MachineConfig {
+	if c.MachineConfig == nil {
+		return &MachineConfig{}
+	}
+
 	return c.MachineConfig
 }
 
 // Cluster implements the config.Provider interface.
 func (c *Config) Cluster() config.ClusterConfig {
+	if c.ClusterConfig == nil {
+		return &ClusterConfig{}
+	}
+
 	return c.ClusterConfig
 }
 
@@ -95,18 +103,12 @@ func (c *Config) ApplyDynamicConfig(ctx context.Context, dynamicProvider config.
 
 	addrs, err := dynamicProvider.ExternalIPs(ctx)
 	if err != nil {
+		// TODO: use passed logger instead of the global one
 		log.Printf("certificates will be created without external IPs: %v", err)
 	}
 
 	if c.MachineConfig.MachineNetwork != nil {
-		for _, nc := range c.MachineConfig.MachineNetwork.NetworkInterfaces {
-			if nc.VIPConfig() != nil {
-				sharedIP := net.ParseIP(nc.VIPConfig().IP())
-				if sharedIP != nil {
-					addrs = append(addrs, sharedIP)
-				}
-			}
-		}
+		addrs = append(addrs, addressesFromMachineNetworkConfig(c.MachineConfig.MachineNetwork)...)
 	}
 
 	existingSANs := map[string]bool{}
@@ -190,6 +192,43 @@ func (m *MachineConfig) Time() config.Time {
 	}
 
 	return m.MachineTime
+}
+
+// Controlplane implements the config.Provider interface.
+func (m *MachineConfig) Controlplane() config.MachineControlPlane {
+	if m.MachineControlPlane == nil {
+		return &MachineControlPlaneConfig{}
+	}
+
+	return m.MachineControlPlane
+}
+
+// ControllerManager implements the config.Provider interface.
+func (m *MachineControlPlaneConfig) ControllerManager() config.MachineControllerManager {
+	if m.MachineControllerManager == nil {
+		return &MachineControllerManagerConfig{}
+	}
+
+	return m.MachineControllerManager
+}
+
+// Scheduler implements the config.Provider interface.
+func (m *MachineControlPlaneConfig) Scheduler() config.MachineScheduler {
+	if m.MachineScheduler == nil {
+		return &MachineSchedulerConfig{}
+	}
+
+	return m.MachineScheduler
+}
+
+// Disabled implements the config.Provider interface.
+func (m *MachineControllerManagerConfig) Disabled() bool {
+	return m.MachineControllerManagerDisabled
+}
+
+// Disabled implements the config.Provider interface.
+func (m *MachineSchedulerConfig) Disabled() bool {
+	return m.MachineSchedulerDisabled
 }
 
 // Kubelet implements the config.Provider interface.
@@ -276,6 +315,24 @@ func (m *MachineConfig) Features() config.Features {
 	return m.MachineFeatures
 }
 
+// Udev implements the config.MachineConfig interface.
+func (m *MachineConfig) Udev() config.UdevConfig {
+	if m.MachineUdev == nil {
+		return &UdevConfig{}
+	}
+
+	return m.MachineUdev
+}
+
+// Logging implements the config.MachineConfig interface.
+func (m *MachineConfig) Logging() config.Logging {
+	if m.MachineLogging == nil {
+		return &LoggingConfig{}
+	}
+
+	return m.MachineLogging
+}
+
 // Image implements the config.Provider interface.
 func (k *KubeletConfig) Image() string {
 	image := k.KubeletImage
@@ -323,6 +380,16 @@ func (k *KubeletConfig) ExtraMounts() []specs.Mount {
 // RegisterWithFQDN implements the config.Provider interface.
 func (k *KubeletConfig) RegisterWithFQDN() bool {
 	return k.KubeletRegisterWithFQDN
+}
+
+// NodeIP implements the config.Provider interface.
+func (k *KubeletConfig) NodeIP() config.KubeletNodeIP {
+	return k.KubeletNodeIP
+}
+
+// ValidSubnets implements the config.Provider interface.
+func (k KubeletNodeIPConfig) ValidSubnets() []string {
+	return k.KubeletNodeIPValidSubnets
 }
 
 // Mirrors implements the Registries interface.
@@ -476,6 +543,11 @@ func (n *NetworkConfig) ExtraHosts() []config.ExtraHost {
 	return hosts
 }
 
+// KubeSpan implements the config.Provider interface.
+func (n *NetworkConfig) KubeSpan() config.KubeSpan {
+	return n.NetworkKubeSpan
+}
+
 // IP implements the MachineNetwork interface.
 func (e *ExtraHost) IP() string {
 	return e.HostIP
@@ -491,9 +563,16 @@ func (d *Device) Interface() string {
 	return d.DeviceInterface
 }
 
-// CIDR implements the MachineNetwork interface.
-func (d *Device) CIDR() string {
-	return d.DeviceCIDR
+// Addresses implements the MachineNetwork interface.
+func (d *Device) Addresses() []string {
+	switch {
+	case len(d.DeviceAddresses) > 0:
+		return append([]string(nil), d.DeviceAddresses...)
+	case d.DeviceCIDR != "":
+		return []string{d.DeviceCIDR}
+	default:
+		return nil
+	}
 }
 
 // Routes implements the MachineNetwork interface.
@@ -571,6 +650,34 @@ func (d *Device) VIPConfig() config.VIPConfig {
 // IP implements the config.VIPConfig interface.
 func (d *DeviceVIPConfig) IP() string {
 	return d.SharedIP
+}
+
+// EquinixMetal implements the config.VIPConfig interface.
+func (d *DeviceVIPConfig) EquinixMetal() config.VIPEquinixMetal {
+	if d.EquinixMetalConfig == nil {
+		return nil
+	}
+
+	return d.EquinixMetalConfig
+}
+
+// APIToken implements the config.VIPEquinixMetal interface.
+func (v *VIPEquinixMetalConfig) APIToken() string {
+	return v.EquinixMetalAPIToken
+}
+
+// HCloud implements the config.VIPConfig interface.
+func (d *DeviceVIPConfig) HCloud() config.VIPHCloud {
+	if d.HCloudConfig == nil {
+		return nil
+	}
+
+	return d.HCloudConfig
+}
+
+// APIToken implements the config.VIPHCloud interface.
+func (v *VIPHCloudConfig) APIToken() string {
+	return v.HCloudAPIToken
 }
 
 // WireguardConfig implements the MachineNetwork interface.
@@ -659,6 +766,11 @@ func (r *Route) Network() string {
 // Gateway implements the MachineNetwork interface.
 func (r *Route) Gateway() string {
 	return r.RouteGateway
+}
+
+// Source implements the MachineNetwork interface.
+func (r *Route) Source() string {
+	return r.RouteSource
 }
 
 // Metric implements the MachineNetwork interface.
@@ -813,9 +925,30 @@ func (b *Bond) PeerNotifyDelay() uint32 {
 	return b.BondPeerNotifyDelay
 }
 
-// CIDR implements the MachineNetwork interface.
-func (v *Vlan) CIDR() string {
-	return v.VlanCIDR
+// Addresses implements the MachineNetwork interface.
+func (v *Vlan) Addresses() []string {
+	switch {
+	case len(v.VlanAddresses) > 0:
+		return append([]string(nil), v.VlanAddresses...)
+	case v.VlanCIDR != "":
+		return []string{v.VlanCIDR}
+	default:
+		return nil
+	}
+}
+
+// MTU implements the MachineNetwork interface.
+func (v *Vlan) MTU() uint32 {
+	return v.VlanMTU
+}
+
+// VIPConfig implements the MachineNetwork interface.
+func (v *Vlan) VIPConfig() config.VIPConfig {
+	if v.VlanVIP == nil {
+		return nil
+	}
+
+	return v.VlanVIP
 }
 
 // Routes implements the MachineNetwork interface.
@@ -839,6 +972,16 @@ func (v *Vlan) ID() uint16 {
 	return v.VlanID
 }
 
+// Enabled implements KubeSpan interface.
+func (k NetworkKubeSpan) Enabled() bool {
+	return k.KubeSpanEnabled
+}
+
+// ForceRouting implements KubeSpan interface.
+func (k NetworkKubeSpan) ForceRouting() bool {
+	return !k.KubeSpanAllowDownPeerBypass
+}
+
 // Disabled implements the config.Provider interface.
 func (t *TimeConfig) Disabled() bool {
 	return t.TimeDisabled
@@ -847,6 +990,11 @@ func (t *TimeConfig) Disabled() bool {
 // Servers implements the config.Provider interface.
 func (t *TimeConfig) Servers() []string {
 	return t.TimeServers
+}
+
+// BootTimeout implements the config.Provider interface.
+func (t *TimeConfig) BootTimeout() time.Duration {
+	return t.TimeBootTimeout
 }
 
 // Image implements the config.Provider interface.
@@ -1115,4 +1263,33 @@ func (v VolumeMountConfig) Name() string {
 // ReadOnly implements the config.VolumeMount interface.
 func (v VolumeMountConfig) ReadOnly() bool {
 	return v.VolumeReadOnly
+}
+
+// Rules implements config.Udev interface.
+func (u *UdevConfig) Rules() []string {
+	return u.UdevRules
+}
+
+func addressesFromMachineNetworkConfig(nc *NetworkConfig) []net.IP {
+	var addresses []net.IP
+
+	for _, networkConfig := range nc.NetworkInterfaces {
+		if networkConfig.VIPConfig() != nil {
+			sharedIP := net.ParseIP(networkConfig.VIPConfig().IP())
+			if sharedIP != nil {
+				addresses = append(addresses, sharedIP)
+			}
+
+			for _, vlan := range networkConfig.Vlans() {
+				if vlan.VIPConfig() != nil {
+					sharedIP := net.ParseIP(vlan.VIPConfig().IP())
+					if sharedIP != nil {
+						addresses = append(addresses, sharedIP)
+					}
+				}
+			}
+		}
+	}
+
+	return addresses
 }

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -67,9 +68,9 @@ func (suite *EtcdRecoverSuite) TestSnapshotRecover() {
 	}
 
 	// 'init' nodes are not compatible with etcd recovery
-	suite.Require().Empty(suite.DiscoverNodes().NodesByType(machine.TypeInit))
+	suite.Require().Empty(suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeInit))
 
-	controlPlaneNodes := suite.DiscoverNodes().NodesByType(machine.TypeControlPlane)
+	controlPlaneNodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
 	suite.Require().NotEmpty(controlPlaneNodes)
 
 	snapshotNode := suite.RandomDiscoveredNode(machine.TypeControlPlane)

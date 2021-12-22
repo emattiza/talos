@@ -8,7 +8,6 @@ package installer
 import (
 	"context"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -18,17 +17,16 @@ import (
 	"github.com/talos-systems/talos/internal/pkg/tui/components"
 	"github.com/talos-systems/talos/pkg/images"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
-	"github.com/talos-systems/talos/pkg/machinery/api/network"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
-const ciliumCustomCNI = "cilium"
+const canalCustomCNI = "canal"
 
 var customCNIPresets = map[string][]string{
-	ciliumCustomCNI: {
-		"https://raw.githubusercontent.com/cilium/cilium/v1.8/install/kubernetes/quick-install.yaml",
+	canalCustomCNI: {
+		"https://docs.projectcalico.org/archive/v3.20/manifests/canal.yaml",
 	},
 }
 
@@ -113,7 +111,7 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 		),
 	}
 
-	interfaces, err := conn.Interfaces()
+	links, err := conn.Links()
 	if err != nil {
 		return nil, err
 	}
@@ -121,14 +119,16 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 	addedInterfaces := false
 	opts.MachineConfig.NetworkConfig.Interfaces = []*machineapi.NetworkDeviceConfig{}
 
-	for _, iface := range interfaces.Messages[0].Interfaces {
+	for _, link := range links {
+		link := link
+
 		status := ""
 
-		if (net.Flags(iface.Flags)&net.FlagLoopback) != 0 || iface.Hardwareaddr == "" {
+		if !link.Physical {
 			continue
 		}
 
-		if (net.Flags(iface.Flags) & net.FlagUp) != 0 {
+		if link.Up {
 			status = " (UP)"
 		}
 
@@ -138,9 +138,9 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 		}
 
 		networkConfigItems = append(networkConfigItems, components.NewItem(
-			fmt.Sprintf("%s, %s%s", iface.Name, iface.Hardwareaddr, status),
+			fmt.Sprintf("%s, %s%s", link.Name, link.HardwareAddr, status),
 			"",
-			configureAdapter(installer, opts, iface),
+			configureAdapter(installer, opts, &link),
 		))
 	}
 
@@ -153,7 +153,7 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 				&state.cni,
 				components.NewTableHeaders("CNI", "description"),
 				constants.FlannelCNI, "CNI used by Talos by default",
-				ciliumCustomCNI, "Cillium 1.8 installed through quick-install.yaml",
+				canalCustomCNI, "Canal v3.20",
 				constants.NoneCNI, "CNI will not be installed",
 			))
 	}
@@ -237,7 +237,7 @@ func (s *State) GenConfig() (*machineapi.GenerateConfigurationResponse, error) {
 	return s.conn.GenerateConfiguration(s.opts)
 }
 
-func configureAdapter(installer *Installer, opts *machineapi.GenerateConfigurationRequest, adapter *network.Interface) func(item *components.Item) tview.Primitive {
+func configureAdapter(installer *Installer, opts *machineapi.GenerateConfigurationRequest, link *Link) func(item *components.Item) tview.Primitive {
 	return func(item *components.Item) tview.Primitive {
 		return components.NewFormModalButton(item.Name, "configure").
 			SetSelectedFunc(func() {
@@ -245,7 +245,7 @@ func configureAdapter(installer *Installer, opts *machineapi.GenerateConfigurati
 				var adapterSettings *machineapi.NetworkDeviceConfig
 
 				for i, iface := range opts.MachineConfig.NetworkConfig.Interfaces {
-					if iface.Interface == adapter.Name {
+					if iface.Interface == link.Name {
 						deviceIndex = i
 						adapterSettings = iface
 
@@ -255,15 +255,11 @@ func configureAdapter(installer *Installer, opts *machineapi.GenerateConfigurati
 
 				if adapterSettings == nil {
 					adapterSettings = &machineapi.NetworkDeviceConfig{
-						Interface:   adapter.Name,
+						Interface:   link.Name,
 						Dhcp:        true,
-						Mtu:         int32(adapter.Mtu),
+						Mtu:         int32(link.MTU),
 						Ignore:      false,
 						DhcpOptions: &machineapi.DHCPOptionsConfig{},
-					}
-
-					if len(adapter.Ipaddress) > 0 {
-						adapterSettings.Cidr = adapter.Ipaddress[0]
 					}
 				}
 
@@ -332,7 +328,7 @@ func configureAdapter(installer *Installer, opts *machineapi.GenerateConfigurati
 				flex.AddItem(adapterConfiguration, 0, 1, false)
 
 				installer.addPage(
-					fmt.Sprintf("Adapter %s Configuration", adapter.Name),
+					fmt.Sprintf("Adapter %s Configuration", link.Name),
 					flex,
 					true,
 					nil,

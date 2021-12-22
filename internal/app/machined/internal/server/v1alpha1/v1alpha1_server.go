@@ -49,7 +49,7 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/adv"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/grub"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
-	networkserver "github.com/talos-systems/talos/internal/app/networkd/pkg/server"
+	"github.com/talos-systems/talos/internal/app/resources"
 	storaged "github.com/talos-systems/talos/internal/app/storaged"
 	"github.com/talos-systems/talos/internal/pkg/configuration"
 	"github.com/talos-systems/talos/internal/pkg/containers"
@@ -58,6 +58,7 @@ import (
 	"github.com/talos-systems/talos/internal/pkg/containers/image"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
 	"github.com/talos-systems/talos/internal/pkg/kubeconfig"
+	"github.com/talos-systems/talos/internal/pkg/miniprocfs"
 	"github.com/talos-systems/talos/internal/pkg/mount"
 	"github.com/talos-systems/talos/pkg/archiver"
 	"github.com/talos-systems/talos/pkg/chunker"
@@ -66,7 +67,6 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/api/common"
 	"github.com/talos-systems/talos/pkg/machinery/api/inspect"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
-	"github.com/talos-systems/talos/pkg/machinery/api/network"
 	"github.com/talos-systems/talos/pkg/machinery/api/resource"
 	"github.com/talos-systems/talos/pkg/machinery/api/storage"
 	timeapi "github.com/talos-systems/talos/pkg/machinery/api/time"
@@ -75,8 +75,8 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/generate"
 	machinetype "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
 	"github.com/talos-systems/talos/pkg/machinery/role"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
 	"github.com/talos-systems/talos/pkg/version"
 )
 
@@ -116,11 +116,10 @@ func (s *Server) Register(obj *grpc.Server) {
 
 	machine.RegisterMachineServiceServer(obj, s)
 	cluster.RegisterClusterServiceServer(obj, s)
-	resource.RegisterResourceServiceServer(obj, &ResourceServer{server: s})
+	resource.RegisterResourceServiceServer(obj, &resources.Server{Resources: s.Controller.Runtime().State().V1Alpha2().Resources()})
 	inspect.RegisterInspectServiceServer(obj, &InspectServer{server: s})
 	storage.RegisterStorageServiceServer(obj, &storaged.Server{})
 	timeapi.RegisterTimeServiceServer(obj, &TimeServer{ConfigProvider: s.Controller.Runtime()})
-	network.RegisterNetworkServiceServer(obj, &networkserver.NetworkServer{})
 }
 
 // ApplyConfiguration implements machine.MachineService.
@@ -129,47 +128,42 @@ func (s *Server) Register(obj *grpc.Server) {
 func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfigurationRequest) (*machine.ApplyConfigurationResponse, error) {
 	log.Printf("apply config request: immediate %v, on reboot %v", in.Immediate, in.OnReboot)
 
-	applyDynamicConfig := func() ([]byte, error) {
-		cfg, err := s.Controller.Runtime().ValidateConfig(in.GetData())
-		if err != nil {
+	cfgProvider, err := s.Controller.Runtime().LoadAndValidateConfig(in.GetData())
+	if err != nil {
+		return nil, err
+	}
+
+	err = cfgProvider.ApplyDynamicConfig(ctx, s.Controller.Runtime().State().Platform())
+	if err != nil {
+		return nil, err
+	}
+
+	// --immediate
+	if in.Immediate {
+		if err = s.Controller.Runtime().CanApplyImmediate(cfgProvider); err != nil {
 			return nil, err
 		}
+	}
 
-		err = cfg.ApplyDynamicConfig(ctx, s.Controller.Runtime().State().Platform())
-		if err != nil {
-			return nil, err
-		}
+	cfg, err := cfgProvider.Bytes()
+	if err != nil {
+		return nil, err
+	}
 
-		return cfg.Bytes()
+	if err := ioutil.WriteFile(constants.ConfigPath, cfg, 0o600); err != nil {
+		return nil, err
 	}
 
 	switch {
 	// --immediate
 	case in.Immediate:
-		if err := s.Controller.Runtime().CanApplyImmediate(in.GetData()); err != nil {
+		if err := s.Controller.Runtime().SetConfig(cfgProvider); err != nil {
 			return nil, err
 		}
-
-		cfg, err := applyDynamicConfig()
-		if err != nil {
-			return nil, err
-		}
-
-		if err := s.Controller.Runtime().SetConfig(cfg); err != nil {
-			return nil, err
-		}
-
-		if err := ioutil.WriteFile(constants.ConfigPath, in.GetData(), 0o600); err != nil {
-			return nil, err
-		}
-	// default (no flags)
+	// default, no `--on-reboot`
 	case !in.OnReboot:
-		if err := s.Controller.Runtime().SetConfig(in.GetData()); err != nil {
-			return nil, err
-		}
-
 		go func() {
-			if err := s.Controller.Run(context.Background(), runtime.SequenceApplyConfiguration, in); err != nil {
+			if err := s.Controller.Run(context.Background(), runtime.SequenceReboot, nil, runtime.WithTakeover()); err != nil {
 				if !runtime.IsRebootError(err) {
 					log.Println("apply configuration failed:", err)
 				}
@@ -179,16 +173,6 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 				}
 			}
 		}()
-	// --no-reboot
-	case in.OnReboot:
-		cfg, err := applyDynamicConfig()
-		if err != nil {
-			return nil, err
-		}
-
-		if err = ioutil.WriteFile(constants.ConfigPath, cfg, 0o600); err != nil {
-			return nil, err
-		}
 	}
 
 	return &machine.ApplyConfigurationResponse{
@@ -210,7 +194,7 @@ func (s *Server) GenerateConfiguration(ctx context.Context, in *machine.Generate
 // Reboot implements the machine.MachineServer interface.
 //
 //nolint:dupl
-func (s *Server) Reboot(ctx context.Context, in *emptypb.Empty) (reply *machine.RebootResponse, err error) {
+func (s *Server) Reboot(ctx context.Context, in *machine.RebootRequest) (reply *machine.RebootResponse, err error) {
 	log.Printf("reboot via API received")
 
 	if err := s.checkSupported(runtime.Reboot); err != nil {
@@ -251,12 +235,12 @@ func (s *Server) Rollback(ctx context.Context, in *machine.RollbackRequest) (*ma
 	}
 
 	if err := func() error {
-		if err := mount.SystemPartitionMount(s.Controller.Runtime(), constants.BootPartitionLabel); err != nil {
+		if err := mount.SystemPartitionMount(s.Controller.Runtime(), nil, constants.BootPartitionLabel); err != nil {
 			return fmt.Errorf("error mounting boot partition: %w", err)
 		}
 
 		defer func() {
-			if err := mount.SystemPartitionUnmount(s.Controller.Runtime(), constants.BootPartitionLabel); err != nil {
+			if err := mount.SystemPartitionUnmount(s.Controller.Runtime(), nil, constants.BootPartitionLabel); err != nil {
 				log.Printf("failed unmounting boot partition: %s", err)
 			}
 		}()
@@ -322,6 +306,10 @@ func (s *Server) Bootstrap(ctx context.Context, in *machine.BootstrapRequest) (r
 
 	if err := timeresource.NewSyncCondition(s.Controller.Runtime().State().V1Alpha2().Resources()).Wait(timeCtx); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, "time is not in sync yet")
+	}
+
+	if entries, _ := os.ReadDir(constants.EtcdDataPath); len(entries) > 0 { //nolint:errcheck
+		return nil, status.Error(codes.AlreadyExists, "etcd data directory is not empty")
 	}
 
 	go func() {
@@ -407,10 +395,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 			return nil, fmt.Errorf("failed to acquire upgrade mutex: %w", err)
 		}
 
-		// TODO: after we upgrade to v3.4, we can use mu.TryLock() here, to fail
-		// immediately if the lock is not available, instead of blocking here until
-		// the context times out or the upgrade lock comes available.
-		if err = mu.Lock(ctx); err != nil {
+		if err = mu.TryLock(ctx); err != nil {
 			return nil, fmt.Errorf("failed to acquire upgrade lock: %w", err)
 		}
 
@@ -420,6 +405,8 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 			return nil, fmt.Errorf("error validating etcd for upgrade: %w", err)
 		}
 	}
+
+	runCtx := context.Background()
 
 	if in.GetStage() {
 		meta, err := bootloader.NewMeta()
@@ -456,7 +443,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 				defer mu.Unlock(ctx) //nolint:errcheck
 			}
 
-			if err := s.Controller.Run(context.Background(), runtime.SequenceStageUpgrade, in); err != nil {
+			if err := s.Controller.Run(runCtx, runtime.SequenceStageUpgrade, in); err != nil {
 				if !runtime.IsRebootError(err) {
 					log.Println("reboot for staged upgrade failed:", err)
 				}
@@ -474,7 +461,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 				defer mu.Unlock(ctx) //nolint:errcheck
 			}
 
-			if err := s.Controller.Run(context.Background(), runtime.SequenceUpgrade, in); err != nil {
+			if err := s.Controller.Run(runCtx, runtime.SequenceUpgrade, in); err != nil {
 				if !runtime.IsRebootError(err) {
 					log.Println("upgrade failed:", err)
 				}
@@ -782,6 +769,8 @@ func (s *Server) List(req *machine.ListRequest, obj machine.MachineService_ListS
 				Modified:     fi.FileInfo.ModTime().Unix(),
 				IsDir:        fi.FileInfo.IsDir(),
 				Link:         fi.Link,
+				Uid:          fi.FileInfo.Sys().(*syscall.Stat_t).Uid,
+				Gid:          fi.FileInfo.Sys().(*syscall.Stat_t).Gid,
 			})
 		}
 
@@ -1260,7 +1249,7 @@ func (s *Server) Events(req *machine.EventsRequest, l machine.MachineService_Eve
 		opts = append(opts, runtime.WithTailDuration(time.Duration(req.TailSeconds)*time.Second))
 	}
 
-	if err := s.Controller.Runtime().Events().Watch(func(events <-chan runtime.Event) {
+	if err := s.Controller.Runtime().Events().Watch(func(events <-chan runtime.EventInfo) {
 		errCh <- func() error {
 			for {
 				select {
@@ -1544,56 +1533,24 @@ func (s *Server) Dmesg(req *machine.DmesgRequest, srv machine.MachineService_Dme
 
 // Processes implements the machine.MachineServer interface.
 func (s *Server) Processes(ctx context.Context, in *emptypb.Empty) (reply *machine.ProcessesResponse, err error) {
-	procs, err := procfs.AllProcs()
+	var processes []*machine.ProcessInfo
+
+	procs, err := miniprocfs.NewProcesses()
 	if err != nil {
 		return nil, err
 	}
 
-	processes := make([]*machine.ProcessInfo, 0, len(procs))
-
-	var (
-		command    string
-		executable string
-		args       []string
-		stats      procfs.ProcStat
-	)
-
-	for _, proc := range procs {
-		// due to race condition, reading process info might fail if process has already terminated
-		command, err = proc.Comm()
+	for {
+		info, err := procs.Next()
 		if err != nil {
-			continue
+			return nil, err
 		}
 
-		executable, err = proc.Executable()
-		if err != nil {
-			continue
+		if info == nil {
+			break
 		}
 
-		args, err = proc.CmdLine()
-		if err != nil {
-			continue
-		}
-
-		stats, err = proc.Stat()
-		if err != nil {
-			continue
-		}
-
-		p := &machine.ProcessInfo{
-			Pid:            int32(proc.PID),
-			Ppid:           int32(stats.PPID),
-			State:          stats.State,
-			Threads:        int32(stats.NumThreads),
-			CpuTime:        stats.CPUTime(),
-			VirtualMemory:  uint64(stats.VirtualMemory()),
-			ResidentMemory: uint64(stats.ResidentMemory()),
-			Command:        command,
-			Executable:     executable,
-			Args:           strings.Join(args, " "),
-		}
-
-		processes = append(processes, p)
+		processes = append(processes, info)
 	}
 
 	reply = &machine.ProcessesResponse{
@@ -1715,6 +1672,7 @@ func (s *Server) EtcdMemberList(ctx context.Context, in *machine.EtcdMemberListR
 				Hostname:   member.GetName(),
 				PeerUrls:   member.GetPeerURLs(),
 				ClientUrls: member.GetClientURLs(),
+				IsLearner:  member.GetIsLearner(),
 			},
 		)
 
@@ -1894,33 +1852,6 @@ func (s *Server) EtcdRecover(srv machine.MachineService_EtcdRecoverServer) error
 			{},
 		},
 	})
-}
-
-// RemoveBootkubeInitializedKey implements machine.MachineService.
-//
-// Temporary API only used when converting from self-hosted to Talos-managed control plane.
-// This API can be removed once the conversion process is no longer needed (Talos 0.11?).
-func (s *Server) RemoveBootkubeInitializedKey(ctx context.Context, in *emptypb.Empty) (*machine.RemoveBootkubeInitializedKeyResponse, error) {
-	client, err := etcd.NewLocalClient()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create etcd client: %w", err)
-	}
-
-	//nolint:errcheck
-	defer client.Close()
-
-	ctx = clientv3.WithRequireLeader(ctx)
-
-	_, err = client.Delete(ctx, constants.InitializedKey)
-	if err != nil {
-		return nil, fmt.Errorf("error deleting initialized key: %w", err)
-	}
-
-	return &machine.RemoveBootkubeInitializedKeyResponse{
-		Messages: []*machine.RemoveBootkubeInitializedKey{
-			{},
-		},
-	}, nil
 }
 
 // GenerateClientConfiguration implements the machine.MachineServer interface.

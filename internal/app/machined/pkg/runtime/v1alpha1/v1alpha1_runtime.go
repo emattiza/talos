@@ -16,7 +16,7 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 )
 
 // Runtime implements the Runtime interface.
@@ -42,8 +42,8 @@ func (r *Runtime) Config() config.Provider {
 	return r.c
 }
 
-// ValidateConfig implements the Runtime interface.
-func (r *Runtime) ValidateConfig(b []byte) (config.Provider, error) {
+// LoadAndValidateConfig implements the Runtime interface.
+func (r *Runtime) LoadAndValidateConfig(b []byte) (config.Provider, error) {
 	cfg, err := configloader.NewFromBytes(b)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
@@ -57,24 +57,14 @@ func (r *Runtime) ValidateConfig(b []byte) (config.Provider, error) {
 }
 
 // SetConfig implements the Runtime interface.
-func (r *Runtime) SetConfig(b []byte) error {
-	cfg, err := r.ValidateConfig(b)
-	if err != nil {
-		return err
-	}
-
+func (r *Runtime) SetConfig(cfg config.Provider) error {
 	r.c = cfg
 
 	return r.s.V1Alpha2().SetConfig(cfg)
 }
 
 // CanApplyImmediate implements the Runtime interface.
-func (r *Runtime) CanApplyImmediate(b []byte) error {
-	cfg, err := r.ValidateConfig(b)
-	if err != nil {
-		return err
-	}
-
+func (r *Runtime) CanApplyImmediate(cfg config.Provider) error {
 	// serialize and load back current config to remove any changes made
 	// to the config in-memory while the node was running
 	currentBytes, err := r.Config().Bytes()
@@ -97,23 +87,34 @@ func (r *Runtime) CanApplyImmediate(b []byte) error {
 		return fmt.Errorf("new config is not v1alpha1")
 	}
 
+	// copy the config as we're going to modify it
+	newConfig = newConfig.DeepCopy()
+
 	// the config changes allowed to be applied immediately are:
-	// * cluster config
-	// * .machine.debug
+	// * .debug
+	// * .cluster
 	// * .machine.time
-	// * .machine.network
 	// * .machine.certCANs
-	newConfig.ClusterConfig = currentConfig.ClusterConfig
+	// * .machine.network
+	// * .machine.sysctls
+	// * .machine.logging
+	// * .machine.controlplane
+	// * .machine.kubelet
 	newConfig.ConfigDebug = currentConfig.ConfigDebug
+	newConfig.ClusterConfig = currentConfig.ClusterConfig
 
 	if newConfig.MachineConfig != nil && currentConfig.MachineConfig != nil {
 		newConfig.MachineConfig.MachineTime = currentConfig.MachineConfig.MachineTime
 		newConfig.MachineConfig.MachineCertSANs = currentConfig.MachineConfig.MachineCertSANs
 		newConfig.MachineConfig.MachineNetwork = currentConfig.MachineConfig.MachineNetwork
+		newConfig.MachineConfig.MachineSysctls = currentConfig.MachineConfig.MachineSysctls
+		newConfig.MachineConfig.MachineLogging = currentConfig.MachineConfig.MachineLogging
+		newConfig.MachineConfig.MachineControlPlane = currentConfig.MachineConfig.MachineControlPlane
+		newConfig.MachineConfig.MachineKubelet = currentConfig.MachineConfig.MachineKubelet
 	}
 
 	if !reflect.DeepEqual(currentConfig, newConfig) {
-		diff := cmp.Diff(currentConfig, newConfig)
+		diff := cmp.Diff(currentConfig, newConfig, cmp.AllowUnexported(v1alpha1.InstallDiskSizeMatcher{}))
 
 		return fmt.Errorf("this config change can't be applied in immediate mode\ndiff: %s", diff)
 	}
@@ -138,7 +139,7 @@ func (r *Runtime) Logging() runtime.LoggingManager {
 
 // NodeName implements the Runtime interface.
 func (r *Runtime) NodeName() (string, error) {
-	nodenameResource, err := r.s.V1Alpha2().Resources().Get(context.Background(), resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
+	nodenameResource, err := r.s.V1Alpha2().Resources().Get(context.Background(), resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
 	if err != nil {
 		return "", fmt.Errorf("error getting nodename resource: %w", err)
 	}

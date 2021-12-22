@@ -17,10 +17,15 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/container"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/digitalocean"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/gcp"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/hcloud"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/metal"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/nocloud"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/openstack"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/packet"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/scaleway"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/upcloud"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/vmware"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/vultr"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
@@ -48,6 +53,7 @@ func NewPlatform(platform string) (p runtime.Platform, err error) {
 	return newPlatform(platform)
 }
 
+//nolint:gocyclo
 func newPlatform(platform string) (p runtime.Platform, err error) {
 	switch platform {
 	case "aws":
@@ -60,14 +66,24 @@ func newPlatform(platform string) (p runtime.Platform, err error) {
 		p = &digitalocean.DigitalOcean{}
 	case "gcp":
 		p = &gcp.GCP{}
+	case "hcloud":
+		p = &hcloud.Hcloud{}
 	case "metal":
 		p = &metal.Metal{}
 	case "openstack":
 		p = &openstack.Openstack{}
+	case "nocloud":
+		p = &nocloud.Nocloud{}
 	case "packet":
 		p = &packet.Packet{}
+	case "scaleway":
+		p = &scaleway.Scaleway{}
+	case "upcloud":
+		p = &upcloud.UpCloud{}
 	case "vmware":
 		p = &vmware.VMware{}
+	case "vultr":
+		p = &vultr.Vultr{}
 	default:
 		return nil, fmt.Errorf("unknown platform: %q", platform)
 	}

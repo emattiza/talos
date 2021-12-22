@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/proto"
 
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // EventsOptionFunc defines the options for the Events API.
@@ -76,7 +76,7 @@ func (c *Client) EventsWatch(ctx context.Context, watchFunc func(<-chan Event), 
 		return err
 	}
 
-	defaultNode := RemotePeer(stream.Context())
+	defaultNode := RemotePeer(stream.Context()) //nolint:contextcheck
 
 	var wg sync.WaitGroup
 
@@ -112,6 +112,9 @@ func (c *Client) EventsWatch(ctx context.Context, watchFunc func(<-chan Event), 
 			&machineapi.PhaseEvent{},
 			&machineapi.TaskEvent{},
 			&machineapi.ServiceStateEvent{},
+			&machineapi.ConfigLoadErrorEvent{},
+			&machineapi.ConfigValidationErrorEvent{},
+			&machineapi.AddressEvent{},
 		} {
 			if typeURL == "talos/runtime/"+string(eventType.ProtoReflect().Descriptor().FullName()) {
 				msg = eventType

@@ -14,9 +14,9 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"go.uber.org/zap"
 
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // NodenameController renders manifests based on templates and config/secrets.
@@ -88,7 +88,7 @@ func (ctrl *NodenameController) Run(ctx context.Context, r controller.Runtime, l
 
 		if err = r.Modify(
 			ctx,
-			k8s.NewNodename(k8s.ControlPlaneNamespaceName, k8s.NodenameID),
+			k8s.NewNodename(k8s.NamespaceName, k8s.NodenameID),
 			func(r resource.Resource) error {
 				nodename := r.(*k8s.Nodename) //nolint:errcheck,forcetypeassert
 

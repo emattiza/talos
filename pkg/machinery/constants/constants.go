@@ -13,7 +13,7 @@ import (
 
 const (
 	// DefaultKernelVersion is the default Linux kernel version.
-	DefaultKernelVersion = "5.10.52-talos"
+	DefaultKernelVersion = "5.15.6-talos"
 
 	// KernelParamConfig is the kernel parameter name for specifying the URL.
 	// to the config.
@@ -29,6 +29,14 @@ const (
 	// KernelParamBoard is the kernel parameter name for specifying the
 	// SBC.
 	KernelParamBoard = "talos.board"
+
+	// KernelParamEventsSink is the kernel parameter name for specifying the
+	// events sink server.
+	KernelParamEventsSink = "talos.events.sink"
+
+	// KernelParamLoggingKernel is the kernel parameter name for specifying the
+	// kernel log delivery destination.
+	KernelParamLoggingKernel = "talos.logging.kernel"
 
 	// BoardNone indicates that the install is not for a specific board.
 	BoardNone = "none"
@@ -65,12 +73,8 @@ const (
 	// KernelParamPanic is the kernel parameter name for specifying the time to wait until rebooting after kernel panic (0 disables reboot).
 	KernelParamPanic = "panic"
 
-	// KernelCurrentRoot is the kernel parameter name for specifying the
-	// current root partition.
-	//
-	// Deprecated: Talos now expects to use an entire disk; this constant will be removed in 0.12
-	// (https://github.com/talos-systems/talos/issues/3909).
-	KernelCurrentRoot = "talos.root"
+	// KernelParamSideroLink is the kernel paramater name to specify SideroLink API endpoint.
+	KernelParamSideroLink = "siderolink.api"
 
 	// NewRoot is the path where the switchroot target is mounted.
 	NewRoot = "/root"
@@ -132,9 +136,6 @@ const (
 
 	// KubernetesCACert is the path to the root CA certificate.
 	KubernetesCACert = DefaultCertificatesDir + "/" + "ca.crt"
-
-	// KubernetesCAKey is the path to the root CA private key.
-	KubernetesCAKey = DefaultCertificatesDir + "/" + "ca.key"
 
 	// KubernetesEtcdCACert is the path to the etcd CA certificate.
 	KubernetesEtcdCACert = EtcdPKIPath + "/" + "ca.crt"
@@ -203,6 +204,9 @@ const (
 	// KubeletPort is the kubelet port for secure API.
 	KubeletPort = 10250
 
+	// KubeletOOMScoreAdj oom_score_adj config.
+	KubeletOOMScoreAdj = -450
+
 	// KubeletPKIDir is the path to the directory where kubelet stores issued certificates and keys.
 	KubeletPKIDir = "/var/lib/kubelet/pki"
 
@@ -210,7 +214,7 @@ const (
 	SystemKubeletPKIDir = "/system/secrets/kubelet"
 
 	// DefaultKubernetesVersion is the default target version of the control plane.
-	DefaultKubernetesVersion = "1.21.3"
+	DefaultKubernetesVersion = "1.23.1"
 
 	// DefaultControlPlanePort is the default port to use for the control plane.
 	DefaultControlPlanePort = 6443
@@ -237,7 +241,7 @@ const (
 	CoreDNSImage = "docker.io/coredns/coredns"
 
 	// DefaultCoreDNSVersion is the default version for the CoreDNS.
-	DefaultCoreDNSVersion = "1.8.4"
+	DefaultCoreDNSVersion = "1.8.6"
 
 	// LabelNodeRoleMaster is the node label required by a control plane node.
 	LabelNodeRoleMaster = "node-role.kubernetes.io/master"
@@ -254,8 +258,20 @@ const (
 	// KubeletKubeconfig is the generated kubeconfig for kubelet.
 	KubeletKubeconfig = "/etc/kubernetes/kubeconfig-kubelet"
 
+	// KubeletSystemReservedCPU cpu system reservation value for kubelet kubeconfig.
+	KubeletSystemReservedCPU = "50m"
+
+	// KubeletSystemReservedMemory memory system reservation value for kubelet kubeconfig.
+	KubeletSystemReservedMemory = "128Mi"
+
+	// KubeletSystemReservedPid pid system reservation value for kubelet kubeconfig.
+	KubeletSystemReservedPid = "100"
+
+	// KubeletSystemReservedEphemeralStorage ephemeral-storage system reservation value for kubelet kubeconfig.
+	KubeletSystemReservedEphemeralStorage = "256Mi"
+
 	// DefaultEtcdVersion is the default target version of etcd.
-	DefaultEtcdVersion = "v3.4.16"
+	DefaultEtcdVersion = "v3.5.1"
 
 	// EtcdRootTalosKey is the root etcd key for Talos-specific storage.
 	EtcdRootTalosKey = "talos:v1"
@@ -270,13 +286,16 @@ const (
 	EtcdImage = "gcr.io/etcd-development/etcd"
 
 	// EtcdPKIPath is the path to the etcd PKI directory.
-	EtcdPKIPath = DefaultCertificatesDir + "/etcd"
+	EtcdPKIPath = "/system/secrets/etcd"
 
 	// EtcdDataPath is the path where etcd stores its' data.
 	EtcdDataPath = "/var/lib/etcd"
 
 	// EtcdRecoverySnapshotPath is the path where etcd snapshot is uploaded for recovery.
 	EtcdRecoverySnapshotPath = "/var/lib/etcd.snapshot"
+
+	// EtcdUserID is the user ID for the etcd process.
+	EtcdUserID = 60
 
 	// ConfigPath is the path to the downloaded config.
 	ConfigPath = StateMountPoint + "/config.yaml"
@@ -308,11 +327,17 @@ const (
 	// ApidPort is the port for the apid service.
 	ApidPort = 50000
 
+	// ApidUserID is the user ID for apid.
+	ApidUserID = 50
+
 	// TrustdPort is the port for the trustd service.
 	TrustdPort = 50001
 
+	// TrustdUserID is the user ID for trustd.
+	TrustdUserID = 51
+
 	// DefaultContainerdVersion is the default container runtime version.
-	DefaultContainerdVersion = "1.5.4"
+	DefaultContainerdVersion = "1.5.8"
 
 	// SystemContainerdNamespace is the Containerd namespace for Talos services.
 	SystemContainerdNamespace = "system"
@@ -387,6 +412,24 @@ const (
 	// SystemLibexecPath is the path to the system libexec directory.
 	SystemLibexecPath = SystemPath + "/libexec"
 
+	// CgroupMountPath is the default mount path for unified cgroupsv2 setup.
+	CgroupMountPath = "/sys/fs/cgroup"
+
+	// CgroupInit is the cgroup name for init process.
+	CgroupInit = "/init"
+
+	// CgroupSystem is the cgroup name for system processes.
+	CgroupSystem = "/system"
+
+	// CgroupRuntime is the cgroup name for containerd runtime processes.
+	CgroupRuntime = CgroupSystem + "/runtime"
+
+	// CgroupPodRuntime is the cgroup name for kubernetes containerd runtime processes.
+	CgroupPodRuntime = "/podruntime/runtime"
+
+	// CgroupKubelet is the cgroup name for kubelet process.
+	CgroupKubelet = "/podruntime/kubelet"
+
 	// FlannelCNI is the string to use Tanos-managed Flannel CNI (default).
 	FlannelCNI = "flannel"
 
@@ -411,12 +454,13 @@ const (
 	// DefaultDNSDomain is the default DNS domain.
 	DefaultDNSDomain = "cluster.local"
 
-	// InitializedKey is the key used to indicate if the cluster has been
-	// initialized.
-	InitializedKey = "initialized"
-
 	// BootTimeout is the timeout to run all services.
-	BootTimeout = 15 * time.Minute
+	BootTimeout = 35 * time.Minute
+
+	// EtcdJoinTimeout is the timeout for etcd to join the existing cluster.
+	//
+	// BootTimeout should be higher than EtcdJoinTimeout.
+	EtcdJoinTimeout = 30 * time.Minute
 
 	// NodeReadyTimeout is the timeout to wait for the node to be ready (CNI to be running).
 	// For bootstrap API, this includes time to run bootstrap.
@@ -445,6 +489,78 @@ const (
 
 	// DefaultSecondaryResolver is the default secondary DNS server.
 	DefaultSecondaryResolver = "8.8.8.8"
+
+	// DefaultClusterIDSize is the default size in bytes for the cluster ID token.
+	DefaultClusterIDSize = 32
+
+	// DefaultClusterSecretSize is the default size in bytes for the cluster secret.
+	DefaultClusterSecretSize = 32
+
+	// DefaultNodeIdentitySize is the default size in bytes for the node ID.
+	DefaultNodeIdentitySize = 32
+
+	// NodeIdentityFilename is the filename to cache node identity across reboots.
+	NodeIdentityFilename = "node-identity.yaml"
+
+	// DefaultDiscoveryServiceEndpoint is the default endpoint for Talos discovery service.
+	DefaultDiscoveryServiceEndpoint = "https://discovery.talos.dev/"
+
+	// KubeSpanIdentityFilename is the filename to cache KubeSpan identity across reboots.
+	KubeSpanIdentityFilename = "kubespan-identity.yaml"
+
+	// KubeSpanDefaultPort is the default Wireguard listening port for incoming connections.
+	KubeSpanDefaultPort = 51820
+
+	// KubeSpanDefaultRoutingTable is the default routing table for KubeSpan LAN targets.
+	//
+	// This specifies the routing table which will be used for Wireguard-available destinations.
+	KubeSpanDefaultRoutingTable = 180
+
+	// KubeSpanDefaultFirewallMark is the default firewall mark to use for Wireguard encrypted egress packets.
+	//
+	// Normal Wireguard configurations will NOT use this firewall mark.
+	KubeSpanDefaultFirewallMark = 0x51820
+
+	// KubeSpanDefaultForceFirewallMark is the default firewall mark to use for packets destined to IPs serviced by KubeSpan.
+	//
+	// It is used to signal that matching packets should be forced into the Wireguard interface.
+	KubeSpanDefaultForceFirewallMark = 0x51821
+
+	// KubeSpanDefaultPeerKeepalive is the interval at which Wireguard Peer Keepalives should be sent.
+	KubeSpanDefaultPeerKeepalive = 25 * time.Second
+
+	// NetworkSelfIPsAnnotation is the node annotation used to list the (comma-separated) IP addresses of the host, as discovered by Talos tooling.
+	NetworkSelfIPsAnnotation = "networking.talos.dev/self-ips"
+
+	// ClusterNodeIDAnnotation is the node annotation used to represent node ID.
+	ClusterNodeIDAnnotation = "cluster.talos.dev/node-id"
+
+	// KubeSpanIPAnnotation is the node annotation to be used for indicating the Wireguard IP of the node.
+	KubeSpanIPAnnotation = "networking.talos.dev/kubespan-ip"
+
+	// KubeSpanPublicKeyAnnotation is the node annotation to be used for indicating the Wireguard Public Key of the node.
+	KubeSpanPublicKeyAnnotation = "networking.talos.dev/kubespan-public-key"
+
+	// KubeSpanAssignedPrefixesAnnotation is the node annotation use to list the (comma-separated) set of IP prefixes for which the annotated node should be responsible.
+	KubeSpanAssignedPrefixesAnnotation = "networking.talos.dev/assigned-prefixes"
+
+	// KubeSpanKnownEndpointsAnnotation is the node annotation used to list the (comma-separated) known-good Wireguard endpoints for the node, as seen by other peers.
+	KubeSpanKnownEndpointsAnnotation = "networking.talos.dev/kubespan-endpoints"
+
+	// KubeSpanLinkName is the link name for the KubeSpan Wireguard interface.
+	KubeSpanLinkName = "kubespan"
+
+	// UdevRulesPath rules file path.
+	UdevRulesPath = "/usr/etc/udev/rules.d/99-talos.rules"
+
+	// LoggingFormatJSONLines represents "JSON lines" logging format.
+	LoggingFormatJSONLines = "json_lines"
+
+	// SideroLinkName is the interface name for SideroLink.
+	SideroLinkName = "siderolink"
+
+	// SideroLinkDefaultPeerKeepalive is the interval at which Wireguard Peer Keepalives should be sent.
+	SideroLinkDefaultPeerKeepalive = 25 * time.Second
 )
 
 // See https://linux.die.net/man/3/klogctl

@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
@@ -17,7 +19,7 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/operator"
 	v1alpha1runtime "github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // OperatorSpecController applies network.OperatorSpec to the actual interfaces.
@@ -91,7 +93,7 @@ type operatorRunState struct {
 	wg     sync.WaitGroup
 }
 
-func (state *operatorRunState) Start(ctx context.Context, notifyCh chan<- struct{}) {
+func (state *operatorRunState) Start(ctx context.Context, notifyCh chan<- struct{}, logger *zap.Logger, id string) {
 	state.wg.Add(1)
 
 	ctx, state.cancel = context.WithCancel(ctx)
@@ -99,8 +101,46 @@ func (state *operatorRunState) Start(ctx context.Context, notifyCh chan<- struct
 	go func() {
 		defer state.wg.Done()
 
-		state.Operator.Run(ctx, notifyCh)
+		state.runWithRestarts(ctx, notifyCh, logger, id)
 	}()
+}
+
+func (state *operatorRunState) runWithRestarts(ctx context.Context, notifyCh chan<- struct{}, logger *zap.Logger, id string) {
+	backoff := backoff.NewExponentialBackOff()
+
+	// disable number of retries limit
+	backoff.MaxElapsedTime = 0
+
+	for ctx.Err() == nil {
+		if err := state.runWithPanicHandler(ctx, notifyCh, logger, id); err == nil {
+			// operator finished without an error
+			return
+		}
+
+		interval := backoff.NextBackOff()
+
+		logger.Debug("restarting operator", zap.Duration("interval", interval), zap.String("operator", id))
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
+}
+
+func (state *operatorRunState) runWithPanicHandler(ctx context.Context, notifyCh chan<- struct{}, logger *zap.Logger, id string) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v", p)
+
+			logger.Error("operator panicked", zap.Stack("stack"), zap.Error(err), zap.String("operator", id))
+		}
+	}()
+
+	state.Operator.Run(ctx, notifyCh)
+
+	return nil
 }
 
 func (state *operatorRunState) Stop() {
@@ -210,7 +250,7 @@ func (ctrl *OperatorSpecController) reconcileOperators(ctx context.Context, r co
 			}
 
 			logger.Debug("starting operator", zap.String("operator", id))
-			ctrl.operators[id].Start(ctx, notifyCh)
+			ctrl.operators[id].Start(ctx, notifyCh, logger, id)
 		}
 	}
 
@@ -260,7 +300,7 @@ func (ctrl *OperatorSpecController) reconcileOperatorOutputs(ctx context.Context
 			if err := apply(
 				network.NewRouteSpec(
 					network.ConfigNamespaceName,
-					fmt.Sprintf("%s/%s", op.Operator.Prefix(), network.RouteID(routeSpec.Destination, routeSpec.Gateway)),
+					fmt.Sprintf("%s/%s", op.Operator.Prefix(), network.RouteID(routeSpec.Table, routeSpec.Family, routeSpec.Destination, routeSpec.Gateway, routeSpec.Priority)),
 				),
 				func(r resource.Resource) {
 					*r.(*network.RouteSpec).TypedSpec() = routeSpec
@@ -389,9 +429,7 @@ func (ctrl *OperatorSpecController) newOperator(logger *zap.Logger, spec *networ
 	case network.OperatorVIP:
 		logger = logger.With(zap.String("operator", "vip"))
 
-		return operator.NewVIP(logger, spec.LinkName, spec.VIP.IP, ctrl.State)
-	case network.OperatorWgLAN:
-		panic("not implemented")
+		return operator.NewVIP(logger, spec.LinkName, spec.VIP, ctrl.State)
 	default:
 		panic(fmt.Sprintf("unexpected operator %s", spec.Operator))
 	}

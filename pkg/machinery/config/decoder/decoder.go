@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
 )
@@ -59,6 +59,13 @@ func (d *Decoder) decode() ([]interface{}, error) {
 }
 
 func parse(source []byte) (decoded []interface{}, err error) {
+	// Recover from yaml.v3 panics because we rely on machine configuration loading _a lot_.
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("recovered: %v", p)
+		}
+	}()
+
 	decoded = []interface{}{}
 
 	r := bytes.NewReader(source)
@@ -95,7 +102,7 @@ func parse(source []byte) (decoded []interface{}, err error) {
 	}
 }
 
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func decode(manifest *yaml.Node) (target interface{}, err error) {
 	var (
 		version string
@@ -136,6 +143,10 @@ func decode(manifest *yaml.Node) (target interface{}, err error) {
 				return nil, fmt.Errorf("deprecated decode: %w", err)
 			}
 
+			if err = checkUnknownKeys(target, manifest); err != nil {
+				return nil, err
+			}
+
 			return target, nil
 		}
 	}
@@ -162,6 +173,10 @@ func decode(manifest *yaml.Node) (target interface{}, err error) {
 
 	if err = spec.Decode(target); err != nil {
 		return nil, fmt.Errorf("spec decode: %w", err)
+	}
+
+	if err = checkUnknownKeys(target, spec); err != nil {
+		return nil, err
 	}
 
 	return target, nil

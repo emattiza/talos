@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_k8s
 // +build integration_k8s
 
 package base
@@ -22,10 +23,7 @@ import (
 )
 
 //nolint:gocyclo
-func discoverNodesK8s(client *client.Client, suite *TalosSuite) (cluster.Info, error) {
-	ctx, ctxCancel := context.WithTimeout(context.Background(), time.Minute)
-	defer ctxCancel()
-
+func discoverNodesK8s(ctx context.Context, client *client.Client, suite *TalosSuite) (cluster.Info, error) {
 	kubeconfig, err := client.Kubeconfig(ctx)
 	if err != nil {
 		return nil, err

@@ -28,12 +28,6 @@ const (
 	// TypeWorker designates the node as a worker node.
 	// This means it will be an available compute node for scheduling workloads.
 	TypeWorker // worker
-
-	// TypeJoin is the same as TypeWorker.
-	//
-	// Deprecated: use TypeWorker instead; this constant will be removed in 0.13
-	// (https://github.com/talos-systems/talos/issues/3910).
-	TypeJoin = TypeWorker
 )
 
 // ParseType parses string constant as Type.
@@ -45,7 +39,23 @@ func ParseType(s string) (Type, error) {
 		return TypeControlPlane, nil
 	case "worker", "join", "":
 		return TypeWorker, nil
+	case "unknown":
+		return TypeUnknown, nil
 	default:
 		return TypeUnknown, fmt.Errorf("invalid machine type: %q", s)
 	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (t Type) MarshalText() (text []byte, err error) {
+	return []byte(t.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (t *Type) UnmarshalText(text []byte) error {
+	var err error
+
+	*t, err = ParseType(string(text))
+
+	return err
 }

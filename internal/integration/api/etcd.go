@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/talos-systems/talos/internal/integration/base"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
@@ -58,7 +58,7 @@ func (suite *EtcdSuite) TestEtcdForfeitLeadership() {
 		suite.T().Skip("without full cluster state etcd test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	nodes := suite.DiscoverNodes().NodesByType(machine.TypeControlPlane)
+	nodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
 
 	if len(nodes) < 3 {
 		suite.T().Skip("test only can be run on HA etcd clusters")
@@ -90,7 +90,7 @@ func (suite *EtcdSuite) TestEtcdLeaveCluster() {
 		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	nodes := suite.DiscoverNodes().NodesByType(machine.TypeControlPlane)
+	nodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
 
 	if len(nodes) < 3 {
 		suite.T().Skip("test only can be run on HA etcd clusters")
@@ -136,7 +136,7 @@ func (suite *EtcdSuite) TestEtcdLeaveCluster() {
 	// NB: Reboot the node so that it can rejoin the etcd cluster. This allows us
 	// to check the cluster health and catch any issues in rejoining.
 	suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-		_, err = suite.Client.MachineClient.Reboot(nodeCtx, &emptypb.Empty{})
+		_, err = suite.Client.MachineClient.Reboot(nodeCtx, &machineapi.RebootRequest{})
 
 		return err
 	}, 10*time.Minute)

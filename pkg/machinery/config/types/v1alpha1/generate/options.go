@@ -5,6 +5,8 @@
 package generate
 
 import (
+	"github.com/AlekSi/pointer"
+
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	v1alpha1 "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/role"
@@ -203,6 +205,30 @@ func WithRoles(roles role.Set) GenOption {
 	}
 }
 
+// WithClusterDiscovery enables cluster discovery feature.
+func WithClusterDiscovery(enabled bool) GenOption {
+	return func(o *GenOptions) error {
+		o.DiscoveryEnabled = pointer.ToBool(enabled)
+
+		return nil
+	}
+}
+
+// WithSysctls merges list of sysctls with new values.
+func WithSysctls(params map[string]string) GenOption {
+	return func(o *GenOptions) error {
+		if o.Sysctls == nil {
+			o.Sysctls = make(map[string]string)
+		}
+
+		for k, v := range params {
+			o.Sysctls[k] = v
+		}
+
+		return nil
+	}
+}
+
 // GenOptions describes generate parameters.
 type GenOptions struct {
 	EndpointList               []string
@@ -214,6 +240,7 @@ type GenOptions struct {
 	CNIConfig                  *v1alpha1.CNIConfig
 	RegistryMirrors            map[string]*v1alpha1.RegistryMirrorConfig
 	RegistryConfig             map[string]*v1alpha1.RegistryConfig
+	Sysctls                    map[string]string
 	DNSDomain                  string
 	Debug                      bool
 	Persist                    bool
@@ -222,12 +249,14 @@ type GenOptions struct {
 	VersionContract            *config.VersionContract
 	SystemDiskEncryptionConfig *v1alpha1.SystemDiskEncryptionConfig
 	Roles                      role.Set
+	DiscoveryEnabled           *bool
 }
 
 // DefaultGenOptions returns default options.
 func DefaultGenOptions() GenOptions {
 	return GenOptions{
-		Persist: true,
-		Roles:   role.MakeSet(role.Admin),
+		DNSDomain: "cluster.local",
+		Persist:   true,
+		Roles:     role.MakeSet(role.Admin),
 	}
 }

@@ -22,8 +22,9 @@ import (
 	"github.com/talos-systems/talos/internal/app/maintenance/server"
 	"github.com/talos-systems/talos/pkg/grpc/factory"
 	"github.com/talos-systems/talos/pkg/grpc/gen"
+	"github.com/talos-systems/talos/pkg/grpc/middleware/authz"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // Run executes the configuration receiver, returning any configuration it receives.
@@ -41,7 +42,7 @@ func Run(ctx context.Context, logger *log.Logger, r runtime.Runtime) ([]byte, er
 		return nil, fmt.Errorf("error getting node addresses: %w", err)
 	}
 
-	ips := currentAddresses.(*network.NodeAddress).TypedSpec().Addresses
+	ips := currentAddresses.(*network.NodeAddress).TypedSpec().IPs()
 
 	hostnameStatus, err := r.State().V1Alpha2().Resources().Get(ctx, resource.NewMetadata(network.NamespaceName, network.HostnameStatusType, network.HostnameID, resource.VersionUndefined))
 	if err != nil {
@@ -69,6 +70,11 @@ func Run(ctx context.Context, logger *log.Logger, r runtime.Runtime) ([]byte, er
 
 	s := server.New(r, logger, cfgCh)
 
+	injector := &authz.Injector{
+		Mode:   authz.ReadOnly,
+		Logger: log.New(logger.Writer(), "machined/authz/injector ", log.Flags()).Printf,
+	}
+
 	// Start the server.
 	server := factory.NewServer(
 		s,
@@ -78,6 +84,9 @@ func Run(ctx context.Context, logger *log.Logger, r runtime.Runtime) ([]byte, er
 				credentials.NewTLS(tlsConfig),
 			),
 		),
+
+		factory.WithUnaryInterceptor(injector.UnaryInterceptor()),
+		factory.WithStreamInterceptor(injector.StreamInterceptor()),
 	)
 
 	listener, err := factory.NewListener(factory.Port(constants.ApidPort))

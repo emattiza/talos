@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/cmd/util/editor"
 	"k8s.io/kubectl/pkg/cmd/util/editor/crlf"
@@ -22,13 +22,126 @@ import (
 	"github.com/talos-systems/talos/pkg/cli"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
-	"github.com/talos-systems/talos/pkg/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
 var editCmdFlags struct {
 	namespace string
 	immediate bool
 	onReboot  bool
+}
+
+//nolint:gocyclo
+func editFn(c *client.Client) func(context.Context, client.ResourceResponse) error {
+	var lastError string
+
+	edit := editor.NewDefaultEditor([]string{
+		"TALOS_EDITOR",
+		"EDITOR",
+	})
+
+	return func(ctx context.Context, msg client.ResourceResponse) error {
+		if msg.Definition != nil {
+			if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
+				return fmt.Errorf("only the machineconfig resource can be edited")
+			}
+		}
+
+		if msg.Resource == nil {
+			return nil
+		}
+
+		for {
+			var (
+				buf bytes.Buffer
+				w   io.Writer = &buf
+				id  string
+			)
+
+			metadata := msg.Resource.Metadata()
+
+			if metadata != nil {
+				id = metadata.ID()
+			}
+
+			if runtime.GOOS == "windows" {
+				w = crlf.NewCRLFWriter(w)
+			}
+
+			_, err := w.Write([]byte(
+				fmt.Sprintf(
+					"# Editing %s/%s at node %s\n", msg.Resource.Metadata().Type(), id, msg.Metadata.GetHostname(),
+				),
+			))
+			if err != nil {
+				return err
+			}
+
+			if lastError != "" {
+				lines := strings.Split(lastError, "\n")
+
+				_, err = w.Write([]byte(
+					fmt.Sprintf("#\n# %s\n", strings.Join(lines, "\n# ")),
+				))
+				if err != nil {
+					return err
+				}
+			}
+
+			body, err := yaml.Marshal(msg.Resource.Spec())
+			if err != nil {
+				return err
+			}
+
+			_, err = w.Write(body)
+			if err != nil {
+				return err
+			}
+
+			edited, _, err := edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", msg.Resource.Metadata().Type(), id), ".yaml", &buf)
+			if err != nil {
+				return err
+			}
+
+			editedWithoutComments := bytes.TrimSpace(cmdutil.StripComments(edited))
+
+			if len(bytes.TrimSpace(editedWithoutComments)) == 0 {
+				fmt.Println("Apply was skipped: empty file.")
+
+				break
+			}
+
+			if bytes.Equal(
+				editedWithoutComments,
+				bytes.TrimSpace(cmdutil.StripComments(body)),
+			) {
+				fmt.Println("Apply was skipped: no changes detected.")
+
+				break
+			}
+
+			resp, err := c.ApplyConfiguration(ctx, &machine.ApplyConfigurationRequest{
+				Data:      edited,
+				Immediate: editCmdFlags.immediate,
+				OnReboot:  editCmdFlags.onReboot,
+			})
+			if err != nil {
+				lastError = err.Error()
+
+				continue
+			}
+
+			for _, m := range resp.GetMessages() {
+				for _, w := range m.GetWarnings() {
+					cli.Warning("%s", w)
+				}
+			}
+
+			break
+		}
+
+		return nil
+	}
 }
 
 // editCmd represents the edit command.
@@ -44,118 +157,9 @@ or EDITOR environment variables, or fall back to 'vi' for Linux
 or 'notepad' for Windows.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
-			edit := editor.NewDefaultEditor([]string{
-				"TALOS_EDITOR",
-				"EDITOR",
-			})
-
-			resourceType := args[0]
-
-			var lastError string
-
-			editFn := func(parentCtx context.Context, msg client.ResourceResponse) error {
-				if msg.Resource == nil {
-					if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
-						return fmt.Errorf("only the machineconfig resource can be edited")
-					}
-
-					return nil
-				}
-
-				for {
-					var (
-						buf bytes.Buffer
-						w   io.Writer = &buf
-						id  string
-					)
-
-					metadata := msg.Resource.Metadata()
-
-					if metadata != nil {
-						id = metadata.ID()
-					}
-
-					if runtime.GOOS == "windows" {
-						w = crlf.NewCRLFWriter(w)
-					}
-
-					_, err := w.Write([]byte(
-						fmt.Sprintf(
-							"# Editing %s/%s at node %s\n", msg.Resource.Metadata().Type(), id, msg.Metadata.GetHostname(),
-						),
-					))
-					if err != nil {
-						return err
-					}
-
-					if lastError != "" {
-						lines := strings.Split(lastError, "\n")
-
-						_, err = w.Write([]byte(
-							fmt.Sprintf("#\n# %s\n", strings.Join(lines, "\n# ")),
-						))
-						if err != nil {
-							return err
-						}
-					}
-
-					body, err := yaml.Marshal(msg.Resource.Spec())
-					if err != nil {
-						return err
-					}
-
-					_, err = w.Write(body)
-					if err != nil {
-						return err
-					}
-
-					edited, _, err := edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", resourceType, id), ".yaml", &buf)
-					if err != nil {
-						return err
-					}
-
-					editedWithoutComments := bytes.TrimSpace(cmdutil.StripComments(edited))
-
-					if len(bytes.TrimSpace(editedWithoutComments)) == 0 {
-						fmt.Println("Apply was skipped: empty file.")
-
-						break
-					}
-
-					if bytes.Equal(
-						editedWithoutComments,
-						bytes.TrimSpace(cmdutil.StripComments(body)),
-					) {
-						fmt.Println("Apply was skipped: no changes detected.")
-
-						break
-					}
-
-					resp, err := c.ApplyConfiguration(parentCtx, &machine.ApplyConfigurationRequest{
-						Data:      edited,
-						Immediate: editCmdFlags.immediate,
-						OnReboot:  editCmdFlags.onReboot,
-					})
-					if err != nil {
-						lastError = err.Error()
-
-						continue
-					}
-					for _, m := range resp.GetMessages() {
-						for _, w := range m.GetWarnings() {
-							cli.Warning("%s", w)
-						}
-					}
-
-					break
-				}
-
-				return nil
-			}
-
 			for _, node := range Nodes {
 				nodeCtx := client.WithNodes(ctx, node)
-				if err := helpers.ForEachResource(nodeCtx, c, editFn, editCmdFlags.namespace, args...); err != nil {
+				if err := helpers.ForEachResource(nodeCtx, c, editFn(c), editCmdFlags.namespace, args...); err != nil {
 					return err
 				}
 			}

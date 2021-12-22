@@ -45,35 +45,6 @@ func (p PhaseList) AppendList(list PhaseList) PhaseList {
 	return append(p, list...)
 }
 
-// ApplyConfiguration defines a sequence which applies a new machine configuration to the node, rebooting to make it active.
-func (*Sequencer) ApplyConfiguration(r runtime.Runtime, req *machineapi.ApplyConfigurationRequest) []runtime.Phase {
-	phases := PhaseList{}
-
-	phases = phases.Append(
-		"saveStateEncryptionConfig",
-		SaveStateEncryptionConfig,
-	).Append(
-		"mountState",
-		MountStatePartition,
-	).Append(
-		"saveConfig",
-		SaveConfig,
-	).Append(
-		"unmountState",
-		UnmountStatePartition,
-	).Append(
-		"cleanup",
-		StopAllPods,
-	).AppendList(
-		stopAllPhaselist(r),
-	).Append(
-		"reboot",
-		Reboot,
-	)
-
-	return phases
-}
-
 // Initialize is the initialize sequence. The primary goals of this sequence is
 // to load the config and enforce kernel security requirements.
 func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
@@ -86,10 +57,10 @@ func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
 			SetupLogger,
 		).Append(
 			"systemRequirements",
-			WriteRequiredSysctlsForContainer,
 			SetupSystemDirectory,
 		).Append(
 			"etc",
+			CreateSystemCgroups,
 			CreateOSReleaseFile,
 		).Append(
 			"config",
@@ -102,17 +73,18 @@ func (*Sequencer) Initialize(r runtime.Runtime) []runtime.Phase {
 		).Append(
 			"systemRequirements",
 			EnforceKSPPRequirements,
-			WriteRequiredSysctls,
 			SetupSystemDirectory,
 			MountBPFFS,
 			MountCgroups,
 			MountPseudoFilesystems,
 			SetRLimit,
+			DropCapabilities,
 		).Append(
 			"integrity",
 			WriteIMAPolicy,
 		).Append(
 			"etc",
+			CreateSystemCgroups,
 			CreateOSReleaseFile,
 		).AppendWhen(
 			r.State().Machine().Installed(),
@@ -168,6 +140,15 @@ func (*Sequencer) Install(r runtime.Runtime) []runtime.Phase {
 				"stopEverything",
 				StopAllServices,
 			).Append(
+				"mountBoot",
+				MountBootPartition,
+			).Append(
+				"kexec",
+				KexecPrepare,
+			).Append(
+				"unmountBoot",
+				UnmountBootPartition,
+			).Append(
 				"reboot",
 				Reboot,
 			)
@@ -222,6 +203,9 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 		r.State().Platform().Mode() != runtime.ModeContainer,
 		"overlay",
 		MountOverlayFilesystems,
+	).Append(
+		"udevSetup",
+		WriteUdevRules,
 	).AppendWhen(
 		r.State().Platform().Mode() != runtime.ModeContainer,
 		"udevd",
@@ -233,7 +217,6 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 	).Append(
 		"userSetup",
 		WriteUserFiles,
-		WriteUserSysctls,
 	).AppendWhen(
 		r.State().Platform().Mode() != runtime.ModeContainer,
 		"lvm",
@@ -253,10 +236,6 @@ func (*Sequencer) Boot(r runtime.Runtime) []runtime.Phase {
 		r.State().Platform().Mode() != runtime.ModeContainer,
 		"bootloader",
 		UpdateBootloader,
-	).AppendWhen(
-		r.Config().Machine().Type() != machine.TypeWorker,
-		"checkControlPlaneStatus",
-		CheckControlPlaneStatus,
 	)
 
 	return phases
@@ -281,7 +260,7 @@ func (*Sequencer) Reboot(r runtime.Runtime) []runtime.Phase {
 		"cleanup",
 		StopAllPods,
 	).
-		AppendList(stopAllPhaselist(r)).
+		AppendList(stopAllPhaselist(r, true)).
 		Append("reboot", Reboot)
 
 	return phases
@@ -293,7 +272,7 @@ func (*Sequencer) Reset(r runtime.Runtime, in runtime.ResetOptions) []runtime.Ph
 
 	switch r.State().Platform().Mode() { //nolint:exhaustive
 	case runtime.ModeContainer:
-		phases = phases.AppendList(stopAllPhaselist(r)).
+		phases = phases.AppendList(stopAllPhaselist(r, false)).
 			Append(
 				"shutdown",
 				Shutdown,
@@ -316,7 +295,7 @@ func (*Sequencer) Reset(r runtime.Runtime, in runtime.ResetOptions) []runtime.Ph
 			"leave",
 			LeaveEtcd,
 		).AppendList(
-			stopAllPhaselist(r),
+			stopAllPhaselist(r, false),
 		).AppendWhen(
 			len(in.GetSystemDiskTargets()) == 0,
 			"reset",
@@ -346,7 +325,7 @@ func (*Sequencer) Shutdown(r runtime.Runtime) []runtime.Phase {
 			"cleanup",
 			StopAllPods,
 		).
-		AppendList(stopAllPhaselist(r)).
+		AppendList(stopAllPhaselist(r, false)).
 		Append("shutdown", Shutdown)
 
 	return phases
@@ -368,7 +347,7 @@ func (*Sequencer) StageUpgrade(r runtime.Runtime, in *machineapi.UpgradeRequest)
 			"leave",
 			LeaveEtcd,
 		).AppendList(
-			stopAllPhaselist(r),
+			stopAllPhaselist(r, true),
 		).Append(
 			"reboot",
 			Reboot,
@@ -428,6 +407,15 @@ func (*Sequencer) Upgrade(r runtime.Runtime, in *machineapi.UpgradeRequest) []ru
 			"stopEverything",
 			StopAllServices,
 		).Append(
+			"mountBoot",
+			MountBootPartition,
+		).Append(
+			"kexec",
+			KexecPrepare,
+		).Append(
+			"unmountBoot",
+			UnmountBootPartition,
+		).Append(
 			"reboot",
 			Reboot,
 		)
@@ -436,7 +424,7 @@ func (*Sequencer) Upgrade(r runtime.Runtime, in *machineapi.UpgradeRequest) []ru
 	return phases
 }
 
-func stopAllPhaselist(r runtime.Runtime) PhaseList {
+func stopAllPhaselist(r runtime.Runtime, enableKexec bool) PhaseList {
 	phases := PhaseList{}
 
 	switch r.State().Platform().Mode() { //nolint:exhaustive
@@ -463,6 +451,18 @@ func stopAllPhaselist(r runtime.Runtime) PhaseList {
 			"unmountSystem",
 			UnmountEphemeralPartition,
 			UnmountStatePartition,
+		).AppendWhen(
+			enableKexec,
+			"mountBoot",
+			MountBootPartition,
+		).AppendWhen(
+			enableKexec,
+			"kexec",
+			KexecPrepare,
+		).AppendWhen(
+			enableKexec,
+			"unmountBoot",
+			UnmountBootPartition,
 		)
 	}
 

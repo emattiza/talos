@@ -24,6 +24,7 @@ import (
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	containerdrunner "github.com/talos-systems/talos/internal/app/machined/pkg/system/runner/containerd"
+	"github.com/talos-systems/talos/internal/pkg/capability"
 	"github.com/talos-systems/talos/internal/pkg/containers/image"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -32,7 +33,7 @@ import (
 
 // RunInstallerContainer performs an installation via the installer container.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func RunInstallerContainer(disk, platform, ref string, configBytes []byte, reg config.Registries, opts ...Option) error {
 	options := DefaultInstallOptions()
 
@@ -101,7 +102,19 @@ func RunInstallerContainer(disk, platform, ref string, configBytes []byte, reg c
 	}
 
 	for _, arg := range options.ExtraKernelArgs {
-		args = append(args, []string{"--extra-kernel-arg", arg}...)
+		args = append(args, "--extra-kernel-arg", arg)
+	}
+
+	if c := procfs.ProcCmdline().Get(constants.KernelParamSideroLink).First(); c != nil {
+		args = append(args, "--extra-kernel-arg", fmt.Sprintf("%s=%s", constants.KernelParamSideroLink, *c))
+	}
+
+	if c := procfs.ProcCmdline().Get(constants.KernelParamEventsSink).First(); c != nil {
+		args = append(args, "--extra-kernel-arg", fmt.Sprintf("%s=%s", constants.KernelParamEventsSink, *c))
+	}
+
+	if c := procfs.ProcCmdline().Get(constants.KernelParamLoggingKernel).First(); c != nil {
+		args = append(args, "--extra-kernel-arg", fmt.Sprintf("%s=%s", constants.KernelParamLoggingKernel, *c))
 	}
 
 	specOpts := []oci.SpecOpts{
@@ -113,7 +126,14 @@ func RunInstallerContainer(disk, platform, ref string, configBytes []byte, reg c
 		oci.WithHostHostsFile,
 		oci.WithHostResolvconf,
 		oci.WithParentCgroupDevices,
-		oci.WithPrivileged,
+		oci.WithCapabilities(capability.AllGrantableCapabilities()),
+		oci.WithMaskedPaths(nil),
+		oci.WithReadonlyPaths(nil),
+		oci.WithWriteableSysfs,
+		oci.WithWriteableCgroupfs,
+		oci.WithSelinuxLabel(""),
+		oci.WithApparmorProfile(""),
+		oci.WithSeccompUnconfined,
 		oci.WithAllDevicesAllowed,
 	}
 

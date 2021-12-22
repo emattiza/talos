@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/AlekSi/pointer"
@@ -20,9 +21,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
+	"github.com/talos-systems/talos/pkg/argsbuilder"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // ControlPlaneStaticPodController manages k8s.StaticPod based on control plane configuration.
@@ -45,6 +49,12 @@ func (ctrl *ControlPlaneStaticPodController) Inputs() []controller.Input {
 			Namespace: k8s.ControlPlaneNamespaceName,
 			Type:      k8s.SecretsStatusType,
 			ID:        pointer.ToString(k8s.StaticPodSecretsStaticPodID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: v1alpha1.NamespaceName,
+			Type:      v1alpha1.ServiceType,
+			ID:        pointer.ToString("etcd"),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -71,6 +81,24 @@ func (ctrl *ControlPlaneStaticPodController) Run(ctx context.Context, r controll
 		case <-r.EventCh():
 		}
 
+		// wait for etcd to be healthy as kube-apiserver is using local etcd instance
+		etcdResource, err := r.Get(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "etcd", resource.VersionUndefined))
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				if err = ctrl.teardownAll(ctx, r); err != nil {
+					return fmt.Errorf("error tearing down: %w", err)
+				}
+
+				continue
+			}
+
+			return err
+		}
+
+		if !etcdResource.(*v1alpha1.Service).Healthy() {
+			continue
+		}
+
 		secretsStatusResource, err := r.Get(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.SecretsStatusType, k8s.StaticPodSecretsStaticPodID, resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
@@ -86,8 +114,10 @@ func (ctrl *ControlPlaneStaticPodController) Run(ctx context.Context, r controll
 
 		secretsVersion := secretsStatusResource.(*k8s.SecretsStatus).TypedSpec().Version
 
+		touchedIDs := map[string]struct{}{}
+
 		for _, pod := range []struct {
-			f  func(context.Context, controller.Runtime, *zap.Logger, *config.K8sControlPlane, string) error
+			f  func(context.Context, controller.Runtime, *zap.Logger, *config.K8sControlPlane, string) (string, error)
 			id resource.ID
 		}{
 			{
@@ -112,8 +142,32 @@ func (ctrl *ControlPlaneStaticPodController) Run(ctx context.Context, r controll
 				return fmt.Errorf("error getting control plane config: %w", err)
 			}
 
-			if err = pod.f(ctx, r, logger, res.(*config.K8sControlPlane), secretsVersion); err != nil {
+			var podID string
+
+			if podID, err = pod.f(ctx, r, logger, res.(*config.K8sControlPlane), secretsVersion); err != nil {
 				return fmt.Errorf("error updating static pod for %q: %w", pod.id, err)
+			}
+
+			if podID != "" {
+				touchedIDs[podID] = struct{}{}
+			}
+		}
+
+		// clean up static pods which haven't been touched
+		{
+			list, err := r.List(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.StaticPodType, "", resource.VersionUndefined))
+			if err != nil {
+				return err
+			}
+
+			for _, res := range list.Items {
+				if _, ok := touchedIDs[res.Metadata().ID()]; ok {
+					continue
+				}
+
+				if err = r.Destroy(ctx, res.Metadata()); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -167,61 +221,94 @@ func volumes(volumes []config.K8sExtraVolume) []v1.Volume {
 	return result
 }
 
-func (ctrl *ControlPlaneStaticPodController) manageAPIServer(ctx context.Context, r controller.Runtime, logger *zap.Logger, configResource *config.K8sControlPlane, secretsVersion string) error {
+func (ctrl *ControlPlaneStaticPodController) manageAPIServer(ctx context.Context, r controller.Runtime, logger *zap.Logger,
+	configResource *config.K8sControlPlane, secretsVersion string) (string, error) {
 	cfg := configResource.APIServer()
+
+	enabledAdmissionPlugins := []string{"NodeRestriction"}
+
+	if cfg.PodSecurityPolicyEnabled {
+		enabledAdmissionPlugins = append(enabledAdmissionPlugins, "PodSecurityPolicy")
+	}
 
 	args := []string{
 		"/usr/local/bin/kube-apiserver",
-		"--enable-admission-plugins=PodSecurityPolicy,NamespaceLifecycle,LimitRanger,ServiceAccount,PersistentVolumeClaimResize,DefaultStorageClass,DefaultTolerationSeconds,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota,Priority,NodeRestriction", //nolint:lll
-		"--advertise-address=$(POD_IP)",
-		"--allow-privileged=true",
-		fmt.Sprintf("--api-audiences=%s", cfg.ControlPlaneEndpoint),
-		"--authorization-mode=Node,RBAC",
-		"--bind-address=0.0.0.0",
-		fmt.Sprintf("--client-ca-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "ca.crt")),
-		fmt.Sprintf("--requestheader-client-ca-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "aggregator-ca.crt")),
-		"--requestheader-allowed-names=front-proxy-client",
-		"--requestheader-extra-headers-prefix=X-Remote-Extra-",
-		"--requestheader-group-headers=X-Remote-Group",
-		"--requestheader-username-headers=X-Remote-User",
-		fmt.Sprintf("--proxy-client-cert-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "front-proxy-client.crt")),
-		fmt.Sprintf("--proxy-client-key-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "front-proxy-client.key")),
-		"--enable-bootstrap-token-auth=true",
-		"--tls-cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_GCM_SHA256", //nolint:lll
-		fmt.Sprintf("--encryption-provider-config=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "encryptionconfig.yaml")),
-		fmt.Sprintf("--audit-policy-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "auditpolicy.yaml")),
-		"--audit-log-path=-",
-		"--audit-log-maxage=30",
-		"--audit-log-maxbackup=3",
-		"--audit-log-maxsize=50",
-		"--profiling=false",
-		fmt.Sprintf("--etcd-cafile=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client-ca.crt")),
-		fmt.Sprintf("--etcd-certfile=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client.crt")),
-		fmt.Sprintf("--etcd-keyfile=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client.key")),
-		fmt.Sprintf("--etcd-servers=%s", strings.Join(cfg.EtcdServers, ",")),
-		"--insecure-port=0",
-		fmt.Sprintf("--kubelet-client-certificate=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver-kubelet-client.crt")),
-		fmt.Sprintf("--kubelet-client-key=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver-kubelet-client.key")),
-		fmt.Sprintf("--secure-port=%d", cfg.LocalPort),
-		fmt.Sprintf("--service-account-issuer=%s", cfg.ControlPlaneEndpoint),
-		fmt.Sprintf("--service-account-key-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "service-account.pub")),
-		fmt.Sprintf("--service-account-signing-key-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "service-account.key")),
-		fmt.Sprintf("--service-cluster-ip-range=%s", cfg.ServiceCIDR),
-		fmt.Sprintf("--tls-cert-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver.crt")),
-		fmt.Sprintf("--tls-private-key-file=%s", filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver.key")),
-		"--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
+	}
+
+	builder := argsbuilder.Args{
+		"enable-admission-plugins":           strings.Join(enabledAdmissionPlugins, ","),
+		"advertise-address":                  "$(POD_IP)",
+		"allow-privileged":                   "true",
+		"api-audiences":                      cfg.ControlPlaneEndpoint,
+		"authorization-mode":                 "Node,RBAC",
+		"bind-address":                       "0.0.0.0",
+		"client-ca-file":                     filepath.Join(constants.KubernetesAPIServerSecretsDir, "ca.crt"),
+		"requestheader-client-ca-file":       filepath.Join(constants.KubernetesAPIServerSecretsDir, "aggregator-ca.crt"),
+		"requestheader-allowed-names":        "front-proxy-client",
+		"requestheader-extra-headers-prefix": "X-Remote-Extra-",
+		"requestheader-group-headers":        "X-Remote-Group",
+		"requestheader-username-headers":     "X-Remote-User",
+		"proxy-client-cert-file":             filepath.Join(constants.KubernetesAPIServerSecretsDir, "front-proxy-client.crt"),
+		"proxy-client-key-file":              filepath.Join(constants.KubernetesAPIServerSecretsDir, "front-proxy-client.key"),
+		"enable-bootstrap-token-auth":        "true",
+		"tls-cipher-suites":                  "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_256_GCM_SHA384,TLS_RSA_WITH_AES_128_GCM_SHA256", //nolint:lll
+		"encryption-provider-config":         filepath.Join(constants.KubernetesAPIServerSecretsDir, "encryptionconfig.yaml"),
+		"audit-policy-file":                  filepath.Join(constants.KubernetesAPIServerSecretsDir, "auditpolicy.yaml"),
+		"audit-log-path":                     "-",
+		"audit-log-maxage":                   "30",
+		"audit-log-maxbackup":                "3",
+		"audit-log-maxsize":                  "50",
+		"profiling":                          "false",
+		"etcd-cafile":                        filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client-ca.crt"),
+		"etcd-certfile":                      filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client.crt"),
+		"etcd-keyfile":                       filepath.Join(constants.KubernetesAPIServerSecretsDir, "etcd-client.key"),
+		"etcd-servers":                       strings.Join(cfg.EtcdServers, ","),
+		"kubelet-client-certificate":         filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver-kubelet-client.crt"),
+		"kubelet-client-key":                 filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver-kubelet-client.key"),
+		"secure-port":                        strconv.FormatInt(int64(cfg.LocalPort), 10),
+		"service-account-issuer":             cfg.ControlPlaneEndpoint,
+		"service-account-key-file":           filepath.Join(constants.KubernetesAPIServerSecretsDir, "service-account.pub"),
+		"service-account-signing-key-file":   filepath.Join(constants.KubernetesAPIServerSecretsDir, "service-account.key"),
+		"service-cluster-ip-range":           strings.Join(cfg.ServiceCIDRs, ","),
+		"tls-cert-file":                      filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver.crt"),
+		"tls-private-key-file":               filepath.Join(constants.KubernetesAPIServerSecretsDir, "apiserver.key"),
+		"kubelet-preferred-address-types":    "InternalIP,ExternalIP,Hostname",
 	}
 
 	if cfg.CloudProvider != "" {
-		args = append(args, fmt.Sprintf("--cloud-provider=%s", cfg.CloudProvider))
+		builder.Set("cloud-provider", cfg.CloudProvider)
 	}
 
-	for k, v := range cfg.ExtraArgs {
-		args = append(args, fmt.Sprintf("--%s=%s", k, v))
+	mergePolicies := argsbuilder.MergePolicies{
+		"enable-admission-plugins": argsbuilder.MergeAdditive,
+		"authorization-mode":       argsbuilder.MergeAdditive,
+		"tls-cipher-suites":        argsbuilder.MergeAdditive,
+
+		"etcd-servers":                     argsbuilder.MergeDenied,
+		"client-ca-file":                   argsbuilder.MergeDenied,
+		"requestheader-client-ca-file":     argsbuilder.MergeDenied,
+		"proxy-client-cert-file":           argsbuilder.MergeDenied,
+		"proxy-client-key-file":            argsbuilder.MergeDenied,
+		"encryption-provider-config":       argsbuilder.MergeDenied,
+		"etcd-cafile":                      argsbuilder.MergeDenied,
+		"etcd-certfile":                    argsbuilder.MergeDenied,
+		"etcd-keyfile":                     argsbuilder.MergeDenied,
+		"kubelet-client-certificate":       argsbuilder.MergeDenied,
+		"kubelet-client-key":               argsbuilder.MergeDenied,
+		"service-account-key-file":         argsbuilder.MergeDenied,
+		"service-account-signing-key-file": argsbuilder.MergeDenied,
+		"tls-cert-file":                    argsbuilder.MergeDenied,
+		"tls-private-key-file":             argsbuilder.MergeDenied,
 	}
 
-	return r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, "kube-apiserver", nil), func(r resource.Resource) error {
-		r.(*k8s.StaticPod).SetPod(&v1.Pod{
+	if err := builder.Merge(cfg.ExtraArgs, argsbuilder.WithMergePolicies(mergePolicies)); err != nil {
+		return "", err
+	}
+
+	args = append(args, builder.Args()...)
+
+	return config.K8sControlPlaneAPIServerID, r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, config.K8sControlPlaneAPIServerID), func(r resource.Resource) error {
+		return k8sadapter.StaticPod(r.(*k8s.StaticPod)).SetPod(&v1.Pod{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
 				Kind:       "Pod",
@@ -287,46 +374,66 @@ func (ctrl *ControlPlaneStaticPodController) manageAPIServer(ctx context.Context
 				}, volumes(cfg.ExtraVolumes)...),
 			},
 		})
-
-		return nil
 	})
 }
 
 func (ctrl *ControlPlaneStaticPodController) manageControllerManager(ctx context.Context, r controller.Runtime,
-	logger *zap.Logger, configResource *config.K8sControlPlane, secretsVersion string) error {
+	logger *zap.Logger, configResource *config.K8sControlPlane, secretsVersion string) (string, error) {
 	cfg := configResource.ControllerManager()
+
+	if !cfg.Enabled {
+		return "", nil
+	}
 
 	args := []string{
 		"/usr/local/bin/kube-controller-manager",
-		"--allocate-node-cidrs=true",
-		"--bind-address=127.0.0.1",
-		"--port=0",
-		fmt.Sprintf("--cluster-cidr=%s", cfg.PodCIDR),
-		fmt.Sprintf("--service-cluster-ip-range=%s", cfg.ServiceCIDR),
-		fmt.Sprintf("--cluster-signing-cert-file=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.crt")),
-		fmt.Sprintf("--cluster-signing-key-file=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.key")),
-		"--configure-cloud-routes=false",
-		fmt.Sprintf("--kubeconfig=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig")),
-		fmt.Sprintf("--authentication-kubeconfig=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig")),
-		fmt.Sprintf("--authorization-kubeconfig=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig")),
-		"--leader-elect=true",
-		fmt.Sprintf("--root-ca-file=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.crt")),
-		fmt.Sprintf("--service-account-private-key-file=%s", filepath.Join(constants.KubernetesControllerManagerSecretsDir, "service-account.key")),
-		"--profiling=false",
 		"--use-service-account-credentials",
 	}
 
-	if cfg.CloudProvider != "" {
-		args = append(args, fmt.Sprintf("--cloud-provider=%s", cfg.CloudProvider))
+	builder := argsbuilder.Args{
+		"allocate-node-cidrs":              "true",
+		"bind-address":                     "127.0.0.1",
+		"port":                             "0",
+		"cluster-cidr":                     strings.Join(cfg.PodCIDRs, ","),
+		"service-cluster-ip-range":         strings.Join(cfg.ServiceCIDRs, ","),
+		"cluster-signing-cert-file":        filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.crt"),
+		"cluster-signing-key-file":         filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.key"),
+		"controllers":                      "*,tokencleaner",
+		"configure-cloud-routes":           "false",
+		"kubeconfig":                       filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig"),
+		"authentication-kubeconfig":        filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig"),
+		"authorization-kubeconfig":         filepath.Join(constants.KubernetesControllerManagerSecretsDir, "kubeconfig"),
+		"leader-elect":                     "true",
+		"root-ca-file":                     filepath.Join(constants.KubernetesControllerManagerSecretsDir, "ca.crt"),
+		"service-account-private-key-file": filepath.Join(constants.KubernetesControllerManagerSecretsDir, "service-account.key"),
+		"profiling":                        "false",
 	}
 
-	for k, v := range cfg.ExtraArgs {
-		args = append(args, fmt.Sprintf("--%s=%s", k, v))
+	if cfg.CloudProvider != "" {
+		builder.Set("cloud-provider", cfg.CloudProvider)
 	}
+
+	mergePolicies := argsbuilder.MergePolicies{
+		"service-cluster-ip-range": argsbuilder.MergeAdditive,
+		"controllers":              argsbuilder.MergeAdditive,
+
+		"cluster-signing-cert-file":        argsbuilder.MergeDenied,
+		"cluster-signing-key-file":         argsbuilder.MergeDenied,
+		"authentication-kubeconfig":        argsbuilder.MergeDenied,
+		"authorization-kubeconfig":         argsbuilder.MergeDenied,
+		"root-ca-file":                     argsbuilder.MergeDenied,
+		"service-account-private-key-file": argsbuilder.MergeDenied,
+	}
+
+	if err := builder.Merge(cfg.ExtraArgs, argsbuilder.WithMergePolicies(mergePolicies)); err != nil {
+		return "", err
+	}
+
+	args = append(args, builder.Args()...)
 
 	//nolint:dupl
-	return r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, "kube-controller-manager", nil), func(r resource.Resource) error {
-		r.(*k8s.StaticPod).SetPod(&v1.Pod{
+	return config.K8sControlPlaneControllerManagerID, r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, config.K8sControlPlaneControllerManagerID), func(r resource.Resource) error {
+		return k8sadapter.StaticPod(r.(*k8s.StaticPod)).SetPod(&v1.Pod{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
 				Kind:       "Pod",
@@ -358,7 +465,7 @@ func (ctrl *ControlPlaneStaticPodController) manageControllerManager(ctx context
 							},
 						}, volumeMounts(cfg.ExtraVolumes)...),
 						LivenessProbe: &v1.Probe{
-							Handler: v1.Handler{
+							ProbeHandler: v1.ProbeHandler{
 								HTTPGet: &v1.HTTPGetAction{
 									Path:   "/healthz",
 									Host:   "localhost",
@@ -394,34 +501,47 @@ func (ctrl *ControlPlaneStaticPodController) manageControllerManager(ctx context
 				}, volumes(cfg.ExtraVolumes)...),
 			},
 		})
-
-		return nil
 	})
 }
 
 func (ctrl *ControlPlaneStaticPodController) manageScheduler(ctx context.Context, r controller.Runtime,
-	logger *zap.Logger, configResource *config.K8sControlPlane, secretsVersion string) error {
+	logger *zap.Logger, configResource *config.K8sControlPlane, secretsVersion string) (string, error) {
 	cfg := configResource.Scheduler()
+
+	if !cfg.Enabled {
+		return "", nil
+	}
 
 	args := []string{
 		"/usr/local/bin/kube-scheduler",
-		fmt.Sprintf("--kubeconfig=%s", filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig")),
-		"--authentication-tolerate-lookup-failure=false",
-		fmt.Sprintf("--authentication-kubeconfig=%s", filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig")),
-		fmt.Sprintf("--authorization-kubeconfig=%s", filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig")),
-		"--bind-address=127.0.0.1",
-		"--port=0",
-		"--leader-elect=true",
-		"--profiling=false",
 	}
 
-	for k, v := range cfg.ExtraArgs {
-		args = append(args, fmt.Sprintf("--%s=%s", k, v))
+	builder := argsbuilder.Args{
+		"kubeconfig":                             filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig"),
+		"authentication-tolerate-lookup-failure": "false",
+		"authentication-kubeconfig":              filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig"),
+		"authorization-kubeconfig":               filepath.Join(constants.KubernetesSchedulerSecretsDir, "kubeconfig"),
+		"bind-address":                           "127.0.0.1",
+		"port":                                   "0",
+		"leader-elect":                           "true",
+		"profiling":                              "false",
 	}
+
+	mergePolicies := argsbuilder.MergePolicies{
+		"kubeconfig":                argsbuilder.MergeDenied,
+		"authentication-kubeconfig": argsbuilder.MergeDenied,
+		"authorization-kubeconfig":  argsbuilder.MergeDenied,
+	}
+
+	if err := builder.Merge(cfg.ExtraArgs, argsbuilder.WithMergePolicies(mergePolicies)); err != nil {
+		return "", err
+	}
+
+	args = append(args, builder.Args()...)
 
 	//nolint:dupl
-	return r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, "kube-scheduler", nil), func(r resource.Resource) error {
-		r.(*k8s.StaticPod).SetPod(&v1.Pod{
+	return config.K8sControlPlaneSchedulerID, r.Modify(ctx, k8s.NewStaticPod(k8s.ControlPlaneNamespaceName, config.K8sControlPlaneSchedulerID), func(r resource.Resource) error {
+		return k8sadapter.StaticPod(r.(*k8s.StaticPod)).SetPod(&v1.Pod{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
 				Kind:       "Pod",
@@ -453,7 +573,7 @@ func (ctrl *ControlPlaneStaticPodController) manageScheduler(ctx context.Context
 							},
 						}, volumeMounts(cfg.ExtraVolumes)...),
 						LivenessProbe: &v1.Probe{
-							Handler: v1.Handler{
+							ProbeHandler: v1.ProbeHandler{
 								HTTPGet: &v1.HTTPGetAction{
 									Path:   "/healthz",
 									Host:   "localhost",
@@ -489,7 +609,5 @@ func (ctrl *ControlPlaneStaticPodController) manageScheduler(ctx context.Context
 				}, volumes(cfg.ExtraVolumes)...),
 			},
 		})
-
-		return nil
 	})
 }

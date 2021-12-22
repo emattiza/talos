@@ -14,7 +14,7 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
@@ -22,7 +22,7 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 	"github.com/talos-systems/talos/pkg/machinery/config/configpatcher"
-	"github.com/talos-systems/talos/pkg/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
 var patchCmdFlags struct {
@@ -31,6 +31,57 @@ var patchCmdFlags struct {
 	patchFile string
 	immediate bool
 	onReboot  bool
+}
+
+func patchFn(c *client.Client, patch jsonpatch.Patch) func(context.Context, client.ResourceResponse) error {
+	return func(ctx context.Context, msg client.ResourceResponse) error {
+		if msg.Resource == nil {
+			if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
+				return fmt.Errorf("only the machineconfig resource can be edited")
+			}
+
+			return nil
+		}
+
+		body, err := yaml.Marshal(msg.Resource.Spec())
+		if err != nil {
+			return err
+		}
+
+		patched, err := configpatcher.JSON6902(body, patch)
+		if err != nil {
+			return err
+		}
+
+		resp, err := c.ApplyConfiguration(ctx, &machine.ApplyConfigurationRequest{
+			Data:      patched,
+			Immediate: patchCmdFlags.immediate,
+			OnReboot:  patchCmdFlags.onReboot,
+		})
+
+		if bytes.Equal(
+			bytes.TrimSpace(cmdutil.StripComments(patched)),
+			bytes.TrimSpace(cmdutil.StripComments(body)),
+		) {
+			fmt.Println("Apply was skipped: no changes detected.")
+
+			return nil
+		}
+
+		fmt.Printf("patched %s/%s at the node %s\n",
+			msg.Resource.Metadata().Type(),
+			msg.Resource.Metadata().ID(),
+			msg.Metadata.GetHostname(),
+		)
+
+		for _, m := range resp.GetMessages() {
+			for _, w := range m.GetWarnings() {
+				cli.Warning("%s", w)
+			}
+		}
+
+		return err
+	}
 }
 
 // patchCmd represents the edit command.
@@ -67,54 +118,9 @@ var patchCmd = &cobra.Command{
 				return err
 			}
 
-			patchFn := func(parentCtx context.Context, msg client.ResourceResponse) error {
-				if msg.Resource == nil {
-					if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
-						return fmt.Errorf("only the machineconfig resource can be edited")
-					}
-
-					return nil
-				}
-
-				body, err := yaml.Marshal(msg.Resource.Spec())
-				if err != nil {
-					return err
-				}
-
-				patched, err := configpatcher.JSON6902(body, patch)
-				if err != nil {
-					return err
-				}
-
-				resp, err := c.ApplyConfiguration(ctx, &machine.ApplyConfigurationRequest{
-					Data:      patched,
-					Immediate: patchCmdFlags.immediate,
-					OnReboot:  patchCmdFlags.onReboot,
-				})
-
-				if bytes.Equal(
-					bytes.TrimSpace(cmdutil.StripComments(patched)),
-					bytes.TrimSpace(cmdutil.StripComments(body)),
-				) {
-					fmt.Println("Apply was skipped: no changes detected.")
-
-					return nil
-				}
-
-				fmt.Printf("patched %s at the node %s\n", args[0], msg.Metadata.GetHostname())
-
-				for _, m := range resp.GetMessages() {
-					for _, w := range m.GetWarnings() {
-						cli.Warning("%s", w)
-					}
-				}
-
-				return err
-			}
-
 			for _, node := range Nodes {
 				nodeCtx := client.WithNodes(ctx, node)
-				if err := helpers.ForEachResource(nodeCtx, c, patchFn, patchCmdFlags.namespace, args...); err != nil {
+				if err := helpers.ForEachResource(nodeCtx, c, patchFn(c, patch), patchCmdFlags.namespace, args...); err != nil {
 					return err
 				}
 			}

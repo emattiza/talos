@@ -201,13 +201,24 @@ func run() error {
 	}
 
 	// Initialize the controller without a config.
-	c, err := v1alpha1runtime.NewController(nil)
+	c, err := v1alpha1runtime.NewController()
 	if err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	drainer := runtime.NewDrainer()
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), time.Second*10)
+
+		defer cancel()
+
+		if e := drainer.Drain(c); e != nil {
+			log.Printf("WARNING: failed to drain controllers: %s", e)
+		}
+	}()
 
 	go runDebugServer(ctx)
 
@@ -223,7 +234,7 @@ func run() error {
 
 	// Start v2 controller runtime.
 	go func() {
-		if e := c.V1Alpha2().Run(ctx); e != nil {
+		if e := c.V1Alpha2().Run(ctx, drainer); e != nil {
 			errCh <- fmt.Errorf("fatal controller runtime error: %s", e)
 		}
 
@@ -249,7 +260,7 @@ func run() error {
 	}
 
 	// Watch and handle runtime events.
-	_ = c.Runtime().Events().Watch(func(events <-chan runtime.Event) { //nolint:errcheck
+	_ = c.Runtime().Events().Watch(func(events <-chan runtime.EventInfo) { //nolint:errcheck
 		for {
 			for event := range events {
 				switch msg := event.Payload.(type) {

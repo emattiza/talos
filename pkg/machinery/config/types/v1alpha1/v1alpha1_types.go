@@ -134,6 +134,11 @@ var (
 		Key: []byte("LS0tLS1CRUdJTiBFRDI1NTE5IFBSSVZBVEUgS0VZLS0tLS0KTUM..."),
 	}
 
+	machineControlplaneExample = &MachineControlPlaneConfig{
+		MachineControllerManager: &MachineControllerManagerConfig{},
+		MachineScheduler:         &MachineSchedulerConfig{MachineSchedulerDisabled: true},
+	}
+
 	machineKubeletExample = &KubeletConfig{
 		KubeletImage: (&KubeletConfig{}).Image(),
 		KubeletExtraArgs: map[string]string{
@@ -148,7 +153,7 @@ var (
 		NetworkInterfaces: []*Device{
 			{
 				DeviceInterface: "eth0",
-				DeviceCIDR:      "192.168.2.0/24",
+				DeviceAddresses: []string{"192.168.2.0/24"},
 				DeviceMTU:       1500,
 				DeviceRoutes: []*Route{
 					{
@@ -225,7 +230,8 @@ var (
 	}
 
 	machineTimeExample = &TimeConfig{
-		TimeServers: []string{"time.cloudflare.com"},
+		TimeServers:     []string{"time.cloudflare.com"},
+		TimeBootTimeout: 2 * time.Minute,
 	}
 
 	machineSysctlsExample = map[string]string{
@@ -247,6 +253,10 @@ var (
 
 	machineFeaturesExample = &FeaturesConfig{
 		RBAC: pointer.ToBool(true),
+	}
+
+	machineUdevExample = &UdevConfig{
+		UdevRules: []string{"SUBSYSTEM==\"drm\", KERNEL==\"renderD*\", GROUP=\"44\", MODE=\"0660\""},
 	}
 
 	clusterConfigExample = struct {
@@ -330,6 +340,8 @@ var (
 
 	clusterEtcdImageExample = (&EtcdConfig{}).Image()
 
+	clusterEtcdSubnetExample = (&EtcdConfig{EtcdSubnet: "10.0.0.0/8"}).Subnet()
+
 	clusterCoreDNSExample = &CoreDNS{
 		CoreDNSImage: (&CoreDNS{}).Image(),
 	}
@@ -354,14 +366,17 @@ var (
 		mustParseURL("https://cluster1.internal:6443"),
 	}
 
-	kubeletExtraMountsExample = []specs.Mount{
+	kubeletExtraMountsExample = []ExtraMount{
 		{
-			Source:      "/var/lib/example",
-			Destination: "/var/lib/example",
-			Type:        "bind",
-			Options: []string{
-				"rshared",
-				"rw",
+			specs.Mount{
+				Source:      "/var/lib/example",
+				Destination: "/var/lib/example",
+				Type:        "bind",
+				Options: []string{
+					"bind",
+					"rshared",
+					"rw",
+				},
 			},
 		},
 	}
@@ -428,7 +443,7 @@ var (
 	clusterCustomCNIExample = &CNIConfig{
 		CNIName: constants.CustomCNI,
 		CNIUrls: []string{
-			"https://raw.githubusercontent.com/cilium/cilium/v1.8/install/kubernetes/quick-install.yaml",
+			"https://docs.projectcalico.org/archive/v3.20/manifests/canal.yaml",
 		},
 	}
 
@@ -441,6 +456,44 @@ kind: Namespace
 metadata:
 	name: ci
 `),
+		},
+	}
+
+	networkKubeSpanExample = NetworkKubeSpan{
+		KubeSpanEnabled: true,
+	}
+
+	clusterDiscoveryExample = ClusterDiscoveryConfig{
+		DiscoveryEnabled: true,
+		DiscoveryRegistries: DiscoveryRegistriesConfig{
+			RegistryService: RegistryServiceConfig{
+				RegistryEndpoint: constants.DefaultDiscoveryServiceEndpoint,
+			},
+		},
+	}
+
+	kubeletNodeIPExample = KubeletNodeIPConfig{
+		KubeletNodeIPValidSubnets: []string{
+			"10.0.0.0/8",
+			"!10.0.0.3/32",
+			"fdc7::/16",
+		},
+	}
+
+	loggingEndpointExample1 = &Endpoint{
+		mustParseURL("udp://127.0.0.1:12345"),
+	}
+
+	loggingEndpointExample2 = &Endpoint{
+		mustParseURL("tcp://1.2.3.4:12345"),
+	}
+
+	machineLoggingExample = LoggingConfig{
+		LoggingDestinations: []LoggingDestination{
+			{
+				LoggingEndpoint: loggingEndpointExample2,
+				LoggingFormat:   constants.LoggingFormatJSONLines,
+			},
 		},
 	}
 )
@@ -534,6 +587,12 @@ type MachineConfig struct {
 	//       value: '[]string{"10.0.0.10", "172.16.0.10", "192.168.0.10"}'
 	MachineCertSANs []string `yaml:"certSANs"`
 	//   description: |
+	//     Provides machine specific contolplane configuration options.
+	//   examples:
+	//     - name: ControlPlane definition example.
+	//       value: machineControlplaneExample
+	MachineControlPlane *MachineControlPlaneConfig `yaml:"controlPlane,omitempty"`
+	//   description: |
 	//     Used to provide additional options to the kubelet.
 	//   examples:
 	//     - name: Kubelet definition example.
@@ -625,6 +684,16 @@ type MachineConfig struct {
 	//   examples:
 	//     - value: machineFeaturesExample
 	MachineFeatures *FeaturesConfig `yaml:"features,omitempty"`
+	//   description: |
+	//     Configures the udev system.
+	//   examples:
+	//     - value: machineUdevExample
+	MachineUdev *UdevConfig `yaml:"udev,omitempty"`
+	//   description: |
+	//     Configures the logging system.
+	//   examples:
+	//     - value: machineLoggingExample
+	MachineLogging *LoggingConfig `yaml:"logging,omitempty"`
 }
 
 // ClusterConfig represents the cluster-wide config values.
@@ -632,6 +701,13 @@ type MachineConfig struct {
 //  examples:
 //     - value: clusterConfigExample
 type ClusterConfig struct {
+	//   description: |
+	//     Globally unique identifier for this cluster (base64 encoded random 32 bytes).
+	ClusterID string `yaml:"id,omitempty"`
+	//   description: |
+	//     Shared secret of cluster (base64 encoded random 32 bytes).
+	//     This secret is shared among cluster members but should never be sent over the network.
+	ClusterSecret string `yaml:"secret,omitempty"`
 	//   description: |
 	//     Provides control plane specific configuration options.
 	//   examples:
@@ -700,6 +776,11 @@ type ClusterConfig struct {
 	//     - value: clusterSchedulerExample
 	SchedulerConfig *SchedulerConfig `yaml:"scheduler,omitempty"`
 	//   description: |
+	//     Configures cluster member discovery.
+	//   examples:
+	//     - value: clusterDiscoveryExample
+	ClusterDiscoveryConfig ClusterDiscoveryConfig `yaml:"discovery,omitempty"`
+	//   description: |
 	//     Etcd specific configuration options.
 	//   examples:
 	//     - value: clusterEtcdExample
@@ -757,7 +838,7 @@ type ClusterConfig struct {
 
 // ExtraMount wraps OCI Mount specification.
 type ExtraMount struct {
-	specs.Mount
+	specs.Mount `yaml:",inline"`
 }
 
 // DeepCopyInto is an autogenerated deepcopy function, copying the receiver, writing into out. in must be non-nil.
@@ -775,6 +856,30 @@ func (in *ExtraMount) DeepCopy() *ExtraMount {
 	in.DeepCopyInto(out)
 
 	return out
+}
+
+// MachineControlPlaneConfig machine specific configuration options.
+type MachineControlPlaneConfig struct {
+	//   description: |
+	//     Controller manager machine specific configuration options.
+	MachineControllerManager *MachineControllerManagerConfig `yaml:"controllerManager,omitempty"`
+	//   description: |
+	//     Scheduler machine specific configuration options.
+	MachineScheduler *MachineSchedulerConfig `yaml:"scheduler,omitempty"`
+}
+
+// MachineControllerManagerConfig represents the machine specific ControllerManager config values.
+type MachineControllerManagerConfig struct {
+	//   description: |
+	//     Disable kube-controller-manager on the node.
+	MachineControllerManagerDisabled bool `yaml:"disabled"`
+}
+
+// MachineSchedulerConfig represents the machine specific Scheduler config values.
+type MachineSchedulerConfig struct {
+	//   description: |
+	//     Disable kube-scheduler on the node.
+	MachineSchedulerDisabled bool `yaml:"disabled"`
 }
 
 // KubeletConfig represents the kubelet config values.
@@ -799,6 +904,7 @@ type KubeletConfig struct {
 	KubeletExtraArgs map[string]string `yaml:"extraArgs,omitempty"`
 	//   description: |
 	//     The `extraMounts` field is used to add additional mounts to the kubelet container.
+	//     Note that either `bind` or `rbind` are required in the `options`.
 	//   examples:
 	//     - value: kubeletExtraMountsExample
 	KubeletExtraMounts []ExtraMount `yaml:"extraMounts,omitempty"`
@@ -811,6 +917,23 @@ type KubeletConfig struct {
 	//     - false
 	//     - no
 	KubeletRegisterWithFQDN bool `yaml:"registerWithFQDN,omitempty"`
+	//   description: |
+	//     The `nodeIP` field is used to configure `--node-ip` flag for the kubelet.
+	//     This is used when a node has multiple addresses to choose from.
+	//   examples:
+	//     - value: kubeletNodeIPExample
+	KubeletNodeIP KubeletNodeIPConfig `yaml:"nodeIP,omitempty"`
+}
+
+// KubeletNodeIPConfig represents the kubelet node IP configuration.
+type KubeletNodeIPConfig struct {
+	//  description: |
+	//    The `validSubnets` field configures the networks to pick kubelet node IP from.
+	//    For dual stack configuration, there should be two subnets: one for IPv4, another for IPv6.
+	//    IPs can be excluded from the list by using negative match with `!`, e.g `!10.0.0.0/8`.
+	//    Negative subnet matches should be specified last to filter out IPs picked by positive matches.
+	//    If not specified, node IP is picked based on cluster podCIDRs: IPv4/IPv6 address or both.
+	KubeletNodeIPValidSubnets []string `yaml:"validSubnets,omitempty"`
 }
 
 // NetworkConfig represents the machine's networking config values.
@@ -836,6 +959,11 @@ type NetworkConfig struct {
 	//   examples:
 	//     - value: networkConfigExtraHostsExample
 	ExtraHostEntries []*ExtraHost `yaml:"extraHostEntries,omitempty"`
+	//   description: |
+	//     Configures KubeSpan feature.
+	//   examples:
+	//     - value: networkKubeSpanExample
+	NetworkKubeSpan NetworkKubeSpan `yaml:"kubespan,omitempty"`
 }
 
 // InstallConfig represents the installation options for preparing a node.
@@ -847,7 +975,7 @@ type InstallConfig struct {
 	//     - value: '"/dev/nvme0"'
 	InstallDisk string `yaml:"disk,omitempty"`
 	//   description: |
-	//     Look up disk using disk characteristics like model, size, serial and others.
+	//     Look up disk using disk attributes like model, size, serial and others.
 	//     Always has priority over `disk`.
 	//   examples:
 	//     - value: machineInstallDiskSelectorExample
@@ -888,10 +1016,9 @@ type InstallConfig struct {
 }
 
 // InstallDiskSizeMatcher disk size condition parser.
+// docgen:nodoc
 type InstallDiskSizeMatcher struct {
-	// docgen:nodoc
-	Matcher disk.Matcher
-	// docgen:nodoc
+	Matcher   disk.Matcher
 	condition string
 }
 
@@ -1030,7 +1157,12 @@ type TimeConfig struct {
 	//   description: |
 	//     Specifies time (NTP) servers to use for setting the system time.
 	//     Defaults to `pool.ntp.org`
-	TimeServers []string `yaml:"servers,omitempty"` // This parameter only supports a single time server.
+	TimeServers []string `yaml:"servers,omitempty"`
+	//   description: |
+	//     Specifies the timeout when the node time is considered to be in sync unlocking the boot sequence.
+	//     NTP sync will be still running in the background.
+	//     Defaults to "infinity" (waiting forever for time sync)
+	TimeBootTimeout time.Duration `yaml:"bootTimeout,omitempty"`
 }
 
 // RegistriesConfig represents the image pull options.
@@ -1157,6 +1289,9 @@ type APIServerConfig struct {
 	//   description: |
 	//     Extra certificate subject alternative names for the API server's certificate.
 	CertSANs []string `yaml:"certSANs,omitempty"`
+	//   description: |
+	//     Disable PodSecurityPolicy in the API server and default manifests.
+	DisablePodSecurityPolicyConfig bool `yaml:"disablePodSecurityPolicy,omitempty"`
 }
 
 // ControllerManagerConfig represents the kube controller manager configuration options.
@@ -1246,6 +1381,12 @@ type EtcdConfig struct {
 	//           "advertise-client-urls": "https://1.2.3.4:2379",
 	//         }
 	EtcdExtraArgs map[string]string `yaml:"extraArgs,omitempty"`
+	//   description: |
+	//     The subnet from which the advertise URL should be.
+	//
+	//   examples:
+	//     - value: clusterEtcdSubnetExample
+	EtcdSubnet string `yaml:"subnet,omitempty"`
 }
 
 // ClusterNetworkConfig represents kube networking configuration options.
@@ -1274,7 +1415,6 @@ type ClusterNetworkConfig struct {
 	PodSubnet []string `yaml:"podSubnets"`
 	//   description: |
 	//     The service subnet CIDR.
-	//   examples:
 	//   examples:
 	//     -  value: >
 	//          []string{"10.96.0.0/12"}
@@ -1400,15 +1540,30 @@ type EncryptionConfig struct {
 	//   description: >
 	//     Cipher kind to use for the encryption.
 	//     Depends on the encryption provider.
+	//   values:
+	//     - aes-xts-plain64
+	//     - xchacha12,aes-adiantum-plain64
+	//     - xchacha20,aes-adiantum-plain64
+	//   examples:
+	//     - value: '"aes-xts-plain64"'
 	EncryptionCipher string `yaml:"cipher,omitempty"`
 	//   description: >
 	//     Defines the encryption key length.
 	EncryptionKeySize uint `yaml:"keySize,omitempty"`
 	//   description: >
 	//     Defines the encryption sector size.
+	//   examples:
+	//     - value: '4096'
 	EncryptionBlockSize uint64 `yaml:"blockSize,omitempty"`
 	//   description: >
 	//     Additional --perf parameters for the LUKS2 encryption.
+	//   values:
+	//     - no_read_workqueue
+	//     - no_write_workqueue
+	//     - same_cpu_crypt
+	//   examples:
+	//     -  value: >
+	//          []string{"no_read_workqueue","no_write_workqueue"}
 	EncryptionPerfOptions []string `yaml:"options,omitempty"`
 }
 
@@ -1486,12 +1641,12 @@ type Device struct {
 	//     - value: '"eth0"'
 	DeviceInterface string `yaml:"interface"`
 	//   description: |
-	//     Assigns a static IP address to the interface.
-	//     This should be in proper CIDR notation.
-	//
-	//     > Note: This option is mutually exclusive with DHCP option.
+	//     Assigns static IP addresses to the interface.
+	//     An address can be specified either in proper CIDR notation or as a standalone address (netmask of all ones is assumed).
 	//   examples:
-	//     - value: '"10.5.0.0/16"'
+	//     - value: '[]string{"10.5.0.0/16", "192.168.3.7"}'
+	DeviceAddresses []string `yaml:"addresses,omitempty"`
+	// docgen:nodoc
 	DeviceCIDR string `yaml:"cidr,omitempty"`
 	//   description: |
 	//     A list of routes associated with the interface.
@@ -1518,11 +1673,6 @@ type Device struct {
 	//     - `OptionDNSDomainSearchList`
 	//     - `OptionHostName`
 	//
-	//     > Note: This option is mutually exclusive with CIDR.
-	//     >
-	//     > Note: To configure an interface with *only* IPv6 SLAAC addressing, CIDR should be set to "" and DHCP to false
-	//     > in order for Talos to skip configuration of addresses.
-	//     > All other options will still apply.
 	//   examples:
 	//     - value: true
 	DeviceDHCP bool `yaml:"dhcp,omitempty"`
@@ -1598,6 +1748,22 @@ type DeviceWireguardPeer struct {
 type DeviceVIPConfig struct {
 	// description: Specifies the IP address to be used.
 	SharedIP string `yaml:"ip,omitempty"`
+	// description: Specifies the Equinix Metal API settings to assign VIP to the node.
+	EquinixMetalConfig *VIPEquinixMetalConfig `yaml:"equinixMetal,omitempty"`
+	// description: Specifies the Hetzner Cloud API settings to assign VIP to the node.
+	HCloudConfig *VIPHCloudConfig `yaml:"hcloud,omitempty"`
+}
+
+// VIPEquinixMetalConfig contains settings for Equinix Metal VIP management.
+type VIPEquinixMetalConfig struct {
+	// description: Specifies the Equinix Metal API Token.
+	EquinixMetalAPIToken string `yaml:"apiToken"`
+}
+
+// VIPHCloudConfig contains settings for Hetzner Cloud VIP management.
+type VIPHCloudConfig struct {
+	// description: Specifies the Hetzner Cloud API Token.
+	HCloudAPIToken string `yaml:"apiToken"`
 }
 
 // Bond contains the various options for configuring a bonded interface.
@@ -1714,14 +1880,20 @@ type Bond struct {
 
 // Vlan represents vlan settings for a device.
 type Vlan struct {
-	//   description: The CIDR to use.
-	VlanCIDR string `yaml:"cidr"`
+	//   description: The addresses in CIDR notation or as plain IPs to use.
+	VlanAddresses []string `yaml:"addresses,omitempty"`
+	// docgen:nodoc
+	VlanCIDR string `yaml:"cidr,omitempty"`
 	//   description: A list of routes associated with the VLAN.
 	VlanRoutes []*Route `yaml:"routes"`
 	//   description: Indicates if DHCP should be used.
 	VlanDHCP bool `yaml:"dhcp"`
 	//   description: The VLAN's ID.
 	VlanID uint16 `yaml:"vlanId"`
+	//   description: The VLAN's MTU.
+	VlanMTU uint32 `yaml:"mtu,omitempty"`
+	//   description: The VLAN's virtual IP address configuration.
+	VlanVIP *DeviceVIPConfig `yaml:"vip,omitempty"`
 }
 
 // Route represents a network route.
@@ -1730,6 +1902,8 @@ type Route struct {
 	RouteNetwork string `yaml:"network"`
 	//   description: The route's gateway.
 	RouteGateway string `yaml:"gateway"`
+	//   description: The route's source address (optional).
+	RouteSource string `yaml:"source,omitempty"`
 	//   description: The optional metric for the route.
 	RouteMetric uint32 `yaml:"metric,omitempty"`
 }
@@ -1846,4 +2020,88 @@ type ClusterInlineManifest struct {
 	//   examples:
 	//     - value: '"/etc/kubernetes/auth"'
 	InlineManifestContents string `yaml:"contents"`
+}
+
+// NetworkKubeSpan struct describes KubeSpan configuration.
+type NetworkKubeSpan struct {
+	// description: |
+	//   Enable the KubeSpan feature.
+	//   Cluster discovery should be enabled with .cluster.discovery.enabled for KubeSpan to be enabled.
+	KubeSpanEnabled bool `yaml:"enabled"`
+	// description: |
+	//   Skip sending traffic via KubeSpan if the peer connection state is not up.
+	//   This provides configurable choice between connectivity and security: either traffic is always
+	//   forced to go via KubeSpan (even if Wireguard peer connection is not up), or traffic can go directly
+	//   to the peer if Wireguard connection can't be established.
+	KubeSpanAllowDownPeerBypass bool `yaml:"allowDownPeerBypass,omitempty"`
+}
+
+// ClusterDiscoveryConfig struct configures cluster membership discovery.
+type ClusterDiscoveryConfig struct {
+	// description: |
+	//   Enable the cluster membership discovery feature.
+	//   Cluster discovery is based on individual registries which are configured under the registries field.
+	DiscoveryEnabled bool `yaml:"enabled"`
+	// description: |
+	//   Configure registries used for cluster member discovery.
+	DiscoveryRegistries DiscoveryRegistriesConfig `yaml:"registries"`
+}
+
+// DiscoveryRegistriesConfig struct configures cluster membership discovery.
+type DiscoveryRegistriesConfig struct {
+	// description: |
+	//   Kubernetes registry uses Kubernetes API server to discover cluster members and stores additional information
+	//   as annotations on the Node resources.
+	RegistryKubernetes RegistryKubernetesConfig `yaml:"kubernetes"`
+	// description: |
+	//   Service registry is using an external service to push and pull information about cluster members.
+	RegistryService RegistryServiceConfig `yaml:"service"`
+}
+
+// RegistryKubernetesConfig struct configures Kubernetes discovery registry.
+type RegistryKubernetesConfig struct {
+	// description: |
+	//   Disable Kubernetes discovery registry.
+	RegistryDisabled bool `yaml:"disabled,omitempty"`
+}
+
+// RegistryServiceConfig struct configures Kubernetes discovery registry.
+type RegistryServiceConfig struct {
+	// description: |
+	//   Disable external service discovery registry.
+	RegistryDisabled bool `yaml:"disabled,omitempty"`
+	// description: |
+	//   External service endpoint.
+	// examples:
+	//   - value: constants.DefaultDiscoveryServiceEndpoint
+	RegistryEndpoint string `yaml:"endpoint,omitempty"`
+}
+
+// UdevConfig describes how the udev system should be configured.
+type UdevConfig struct {
+	//   description: |
+	//     List of udev rules to apply to the udev system
+	UdevRules []string `yaml:"rules,omitempty"`
+}
+
+// LoggingConfig struct configures Talos logging.
+type LoggingConfig struct {
+	// description: |
+	//   Logging destination.
+	LoggingDestinations []LoggingDestination `yaml:"destinations"`
+}
+
+// LoggingDestination struct configures Talos logging destination.
+type LoggingDestination struct {
+	// description: |
+	//   Where to send logs. Supported protocols are "tcp" and "udp".
+	// examples:
+	//   - value: loggingEndpointExample1
+	//   - value: loggingEndpointExample2
+	LoggingEndpoint *Endpoint `yaml:"endpoint"`
+	// description: |
+	//   Logs format.
+	// values:
+	//   - json_lines
+	LoggingFormat string `yaml:"format"`
 }

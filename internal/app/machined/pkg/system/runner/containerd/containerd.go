@@ -15,10 +15,10 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
+	"github.com/containerd/containerd/contrib/seccomp"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
-	"github.com/containerd/containerd/sys"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner"
@@ -57,7 +57,7 @@ func NewRunner(debug bool, args *runner.Args, setters ...runner.Option) runner.R
 }
 
 // Open implements the Runner interface.
-func (c *containerdRunner) Open(ctx context.Context) error {
+func (c *containerdRunner) Open() error {
 	// Create the containerd client.
 	var err error
 
@@ -134,6 +134,14 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 		err  error
 	)
 
+	// attempt to clean up a task if it already exists
+	task, err = c.container.Task(c.ctx, nil)
+	if err == nil {
+		if _, err = task.Delete(c.ctx); err != nil {
+			return fmt.Errorf("failed to clean up task %q: %w", c.args.ID, err)
+		}
+	}
+
 	logW, err = c.opts.LoggingManager.ServiceLog(c.args.ID).Writer()
 	if err != nil {
 		return fmt.Errorf("error creating log: %w", err)
@@ -169,21 +177,6 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 
 	if err = task.Start(c.ctx); err != nil {
 		return fmt.Errorf("failed to start task: %q: %w", c.args.ID, err)
-	}
-
-	if c.opts.OOMScoreAdj != 0 {
-		var processes []containerd.ProcessInfo
-
-		processes, err = task.Pids(c.ctx)
-		if err != nil {
-			eventSink(events.StateRunning, "Failed to get task %q childs: %w", c.args.ID, err)
-		}
-
-		for _, p := range processes {
-			if err = sys.AdjustOOMScore(int(p.Pid), c.opts.OOMScoreAdj); err != nil {
-				eventSink(events.StateRunning, "Failed to change OOMScoreAdj to process %s", p.Pid)
-			}
-		}
 	}
 
 	eventSink(events.StateRunning, "Started task %s (PID %d) for container %s", task.ID(), task.Pid(), c.container.ID())
@@ -275,11 +268,34 @@ func (c *containerdRunner) newOCISpecOpts(image oci.Image) []oci.SpecOpts {
 		oci.WithEnv(c.opts.Env),
 		oci.WithHostHostsFile,
 		oci.WithHostResolvconf,
+		oci.WithNoNewPrivileges,
 	)
+
+	if c.opts.OOMScoreAdj != 0 {
+		specOpts = append(specOpts,
+			WithOOMScoreAdj(c.opts.OOMScoreAdj),
+		)
+	}
+
+	if c.opts.CgroupPath != "" {
+		specOpts = append(specOpts,
+			oci.WithCgroup(c.opts.CgroupPath),
+		)
+	}
 
 	specOpts = append(specOpts,
 		c.opts.OCISpecOpts...,
 	)
+
+	if c.opts.OverrideSeccompProfile != nil {
+		specOpts = append(specOpts,
+			WithCustomSeccompProfile(c.opts.OverrideSeccompProfile),
+		)
+	} else {
+		specOpts = append(specOpts,
+			seccomp.WithDefaultProfile(), // add seccomp profile last, as it depends on process capabilities
+		)
+	}
 
 	return specOpts
 }

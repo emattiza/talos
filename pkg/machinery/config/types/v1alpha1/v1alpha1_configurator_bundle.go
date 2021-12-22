@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 
 	clientconfig "github.com/talos-systems/talos/pkg/machinery/client/config"
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -42,14 +42,6 @@ func (c *ConfigBundle) ControlPlane() config.Provider {
 
 // Worker implements the ProviderBundle interface.
 func (c *ConfigBundle) Worker() config.Provider {
-	return c.WorkerCfg
-}
-
-// Join implements the ProviderBundle interface.
-//
-// Deprecated: use Worker instead; this method will be removed in 0.13
-// (https://github.com/talos-systems/talos/issues/3910).
-func (c *ConfigBundle) Join() config.Provider {
 	return c.WorkerCfg
 }
 

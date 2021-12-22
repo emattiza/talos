@@ -39,6 +39,7 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 			KubeletImage: emptyIf(fmt.Sprintf("%s:v%s", constants.KubeletImage, in.KubernetesVersion), in.KubernetesVersion),
 		},
 		MachineNetwork: networkConfig,
+		MachineCA:      &x509.PEMEncodedCertificateAndKey{Crt: in.Certs.OS.Crt},
 		MachineInstall: &v1alpha1.InstallConfig{
 			InstallDisk:            in.InstallDisk,
 			InstallImage:           in.InstallImage,
@@ -51,6 +52,7 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 		},
 		MachineDisks:                in.MachineDisks,
 		MachineSystemDiskEncryption: in.SystemDiskEncryptionConfig,
+		MachineSysctls:              in.Sysctls,
 		MachineFeatures:             &v1alpha1.FeaturesConfig{},
 	}
 
@@ -64,6 +66,8 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 	}
 
 	cluster := &v1alpha1.ClusterConfig{
+		ClusterID:      in.ClusterID,
+		ClusterSecret:  in.ClusterSecret,
 		ClusterCA:      &x509.PEMEncodedCertificateAndKey{Crt: in.Certs.K8s.Crt},
 		BootstrapToken: in.Secrets.BootstrapToken,
 		ControlPlane: &v1alpha1.ControlPlaneConfig{
@@ -74,6 +78,9 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 			PodSubnet:     in.PodNet,
 			ServiceSubnet: in.ServiceNet,
 			CNI:           in.CNIConfig,
+		},
+		ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
+			DiscoveryEnabled: in.DiscoveryEnabled,
 		},
 	}
 

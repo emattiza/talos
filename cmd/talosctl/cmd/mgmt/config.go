@@ -15,11 +15,10 @@ import (
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
 	talosnet "github.com/talos-systems/net"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/talos-systems/talos/cmd/talosctl/cmd/mgmt/gen"
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/mgmt/helpers"
-	"github.com/talos-systems/talos/pkg/cli"
 	"github.com/talos-systems/talos/pkg/images"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
@@ -42,11 +41,12 @@ var genConfigCmdFlags struct {
 	configPatch             string
 	configPatchControlPlane string
 	configPatchWorker       string
-	configPatchJoin         string
 	registryMirrors         []string
 	persistConfig           bool
 	withExamples            bool
 	withDocs                bool
+	withClusterDiscovery    bool
+	withKubeSpan            bool
 }
 
 // genConfigCmd represents the `gen config` command.
@@ -59,14 +59,6 @@ this is the port that the API server binds to on every control plane node. For a
 setup, usually involving a load balancer, use the IP and port of the load balancer.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if genConfigCmdFlags.configPatchJoin != "" {
-			if genConfigCmdFlags.configPatchWorker != "" {
-				return fmt.Errorf("both --config-patch-join and --config-patch-worker are passed")
-			}
-
-			genConfigCmdFlags.configPatchWorker = genConfigCmdFlags.configPatchJoin
-		}
-
 		// Validate url input to ensure it has https:// scheme before we attempt to gen
 		u, err := url.Parse(args[1])
 		if err != nil {
@@ -218,12 +210,21 @@ func writeV1Alpha1Config(args []string) error {
 		genOptions = append(genOptions, generate.WithVersionContract(versionContract))
 	}
 
+	if genConfigCmdFlags.withKubeSpan {
+		genOptions = append(genOptions,
+			generate.WithNetworkOptions(
+				v1alpha1.WithKubeSpan(),
+			),
+		)
+	}
+
 	genOptions = append(genOptions,
 		generate.WithInstallDisk(genConfigCmdFlags.installDisk),
 		generate.WithInstallImage(genConfigCmdFlags.installImage),
 		generate.WithAdditionalSubjectAltNames(genConfigCmdFlags.additionalSANs),
 		generate.WithDNSDomain(genConfigCmdFlags.dnsDomain),
 		generate.WithPersist(genConfigCmdFlags.persistConfig),
+		generate.WithClusterDiscovery(genConfigCmdFlags.withClusterDiscovery),
 	)
 
 	commentsFlags := encoder.CommentsDisabled
@@ -283,10 +284,8 @@ func init() {
 	genConfigCmd.Flags().BoolVarP(&genConfigCmdFlags.persistConfig, "persist", "p", true, "the desired persist value for configs")
 	genConfigCmd.Flags().BoolVarP(&genConfigCmdFlags.withExamples, "with-examples", "", true, "renders all machine configs with the commented examples")
 	genConfigCmd.Flags().BoolVarP(&genConfigCmdFlags.withDocs, "with-docs", "", true, "renders all machine configs adding the documentation for each field")
-
-	// remove in 0.13: https://github.com/talos-systems/talos/issues/3910
-	genConfigCmd.Flags().StringVar(&genConfigCmdFlags.configPatchJoin, "config-patch-join", "", "")
-	cli.Should(genConfigCmd.Flags().MarkDeprecated("config-patch-join", "use --config-patch-worker instead"))
+	genConfigCmd.Flags().BoolVarP(&genConfigCmdFlags.withClusterDiscovery, "with-cluster-discovery", "", true, "enable cluster discovery feature")
+	genConfigCmd.Flags().BoolVarP(&genConfigCmdFlags.withKubeSpan, "with-kubespan", "", false, "enable KubeSpan feature")
 
 	gen.Cmd.AddCommand(genConfigCmd)
 }

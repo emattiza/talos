@@ -22,15 +22,27 @@ module.exports = {
     },
     dropdownOptions: [
       {
+        version: "v0.14",
+        url: "/docs/v0.14/",
+        latest: true,
+        prerelease: false,
+      },
+      {
+        version: "v0.13",
+        url: "/docs/v0.13/",
+        latest: false,
+        prerelease: false,
+      },
+      {
         version: "v0.12",
         url: "/docs/v0.12/",
         latest: false,
-        prerelease: true,
+        prerelease: false,
       },
       {
         version: "v0.11",
         url: "/docs/v0.11/",
-        latest: true,
+        latest: false,
         prerelease: false,
       },
       {
@@ -148,6 +160,28 @@ module.exports = {
             { title: "Learn More", method: "weighted" },
           ],
           "v0.12": [
+            { title: "Introduction", method: "weighted" },
+            { title: "Bare Metal Platforms", method: "alphabetical" },
+            { title: "Virtualized Platforms", method: "alphabetical" },
+            { title: "Cloud Platforms", method: "alphabetical" },
+            { title: "Local Platforms", method: "alphabetical" },
+            { title: "Single Board Computers", method: "alphabetical" },
+            { title: "Guides", method: "alphabetical" },
+            { title: "Reference", method: "alphabetical" },
+            { title: "Learn More", method: "weighted" },
+          ],
+          "v0.13": [
+            { title: "Introduction", method: "weighted" },
+            { title: "Bare Metal Platforms", method: "alphabetical" },
+            { title: "Virtualized Platforms", method: "alphabetical" },
+            { title: "Cloud Platforms", method: "alphabetical" },
+            { title: "Local Platforms", method: "alphabetical" },
+            { title: "Single Board Computers", method: "alphabetical" },
+            { title: "Guides", method: "alphabetical" },
+            { title: "Reference", method: "alphabetical" },
+            { title: "Learn More", method: "weighted" },
+          ],
+          "v0.14": [
             { title: "Introduction", method: "weighted" },
             { title: "Bare Metal Platforms", method: "alphabetical" },
             { title: "Virtualized Platforms", method: "alphabetical" },

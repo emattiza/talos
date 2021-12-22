@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -72,7 +73,7 @@ func (suite *GenerateConfigSuite) TestGenerate() {
 				CniConfig: &machineapi.CNIConfig{
 					Name: constants.CustomCNI,
 					Urls: []string{
-						"https://raw.githubusercontent.com/cilium/cilium/v1.8/install/kubernetes/quick-install.yaml",
+						"https://docs.projectcalico.org/archive/v3.20/manifests/canal.yaml",
 					},
 				},
 			},

@@ -28,8 +28,8 @@ import (
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type HostnameConfigSuite struct {
@@ -118,7 +118,7 @@ func (suite *HostnameConfigSuite) TestDefaults() {
 	suite.startRuntime()
 
 	defaultAddress := network.NewNodeAddress(network.NamespaceName, network.NodeAddressDefaultID)
-	defaultAddress.TypedSpec().Addresses = []netaddr.IP{netaddr.MustParseIP("33.11.22.44")}
+	defaultAddress.TypedSpec().Addresses = []netaddr.IPPrefix{netaddr.MustParseIPPrefix("33.11.22.44/32")}
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, defaultAddress))
 

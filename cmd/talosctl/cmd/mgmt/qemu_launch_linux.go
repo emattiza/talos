@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build linux
 // +build linux
 
 package mgmt
@@ -15,7 +16,7 @@ import (
 // qemuLaunchCmd represents the qemu-launch command.
 var qemuLaunchCmd = &cobra.Command{
 	Use:    "qemu-launch",
-	Short:  "Internal command used by Firecracker provisioner",
+	Short:  "Internal command used by QEMU provisioner",
 	Long:   ``,
 	Args:   cobra.NoArgs,
 	Hidden: true,

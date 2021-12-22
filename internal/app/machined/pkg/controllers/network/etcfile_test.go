@@ -26,9 +26,9 @@ import (
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/files"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/files"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type EtcFileConfigSuite struct {
@@ -91,7 +91,7 @@ func (suite *EtcFileConfigSuite) SetupTest() {
 	})
 
 	suite.defaultAddress = network.NewNodeAddress(network.NamespaceName, network.NodeAddressDefaultID)
-	suite.defaultAddress.TypedSpec().Addresses = []netaddr.IP{netaddr.MustParseIP("33.11.22.44")}
+	suite.defaultAddress.TypedSpec().Addresses = []netaddr.IPPrefix{netaddr.MustParseIPPrefix("33.11.22.44/32")}
 
 	suite.hostnameStatus = network.NewHostnameStatus(network.NamespaceName, network.HostnameID)
 	suite.hostnameStatus.TypedSpec().Hostname = "foo"

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//go:build integration_api
 // +build integration_api
 
 package api
@@ -56,6 +57,9 @@ func (suite *EventsSuite) TestEventsWatch() {
 		suite.Assert().NoError(suite.Client.EventsWatch(watchCtx, func(ch <-chan client.Event) {
 			defer watchCtxCancel()
 
+			timer := time.NewTimer(500 * time.Millisecond)
+			defer timer.Stop()
+
 			for {
 				select {
 				case event, ok := <-ch:
@@ -64,7 +68,7 @@ func (suite *EventsSuite) TestEventsWatch() {
 					}
 
 					result = append(result, event)
-				case <-time.After(100 * time.Millisecond):
+				case <-timer.C:
 					return
 				}
 			}

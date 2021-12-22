@@ -7,8 +7,10 @@ package generate
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"time"
@@ -56,7 +58,9 @@ type Input struct {
 	AdditionalSubjectAltNames []string
 	AdditionalMachineCertSANs []string
 
+	ClusterID         string
 	ClusterName       string
+	ClusterSecret     string
 	ServiceDomain     string
 	PodNet            []string
 	ServiceNet        []string
@@ -77,10 +81,12 @@ type Input struct {
 	RegistryConfig             map[string]*v1alpha1.RegistryConfig
 	MachineDisks               []*v1alpha1.MachineDisk
 	SystemDiskEncryptionConfig *v1alpha1.SystemDiskEncryptionConfig
+	Sysctls                    map[string]string
 
 	Debug                    bool
 	Persist                  bool
 	AllowSchedulingOnMasters bool
+	DiscoveryEnabled         bool
 }
 
 // GetAPIServerEndpoint returns the formatted host:port of the API server endpoint.
@@ -128,6 +134,12 @@ type Certs struct {
 	OS                *x509.PEMEncodedCertificateAndKey
 }
 
+// Cluster holds Talos cluster-wide secrets.
+type Cluster struct {
+	ID     string
+	Secret string
+}
+
 // Secrets holds the sensitive kubeadm data.
 type Secrets struct {
 	BootstrapToken         string
@@ -141,7 +153,8 @@ type TrustdInfo struct {
 
 // SecretsBundle holds trustd, kubeadm and certs information.
 type SecretsBundle struct {
-	Clock      Clock
+	Clock      Clock `yaml:"-" json:"-"`
+	Cluster    *Cluster
 	Secrets    *Secrets
 	TrustdInfo *TrustdInfo
 	Certs      *Certs
@@ -199,18 +212,18 @@ func NewSecretsBundle(clock Clock, opts ...GenOption) (*SecretsBundle, error) {
 		err            error
 	)
 
-	etcd, err = NewEtcdCA(clock.Now(), !options.VersionContract.SupportsECDSAKeys())
+	etcd, err = NewEtcdCA(clock.Now(), options.VersionContract)
 	if err != nil {
 		return nil, err
 	}
 
-	kubernetesCA, err = NewKubernetesCA(clock.Now(), !options.VersionContract.SupportsECDSAKeys())
+	kubernetesCA, err = NewKubernetesCA(clock.Now(), options.VersionContract)
 	if err != nil {
 		return nil, err
 	}
 
 	if options.VersionContract.SupportsAggregatorCA() {
-		aggregatorCA, err = NewAggregatorCA(clock.Now())
+		aggregatorCA, err = NewAggregatorCA(clock.Now(), options.VersionContract)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +262,21 @@ func NewSecretsBundle(clock Clock, opts ...GenOption) (*SecretsBundle, error) {
 		return nil, err
 	}
 
+	clusterID, err := randBytes(constants.DefaultClusterIDSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate cluster ID: %w", err)
+	}
+
+	clusterSecret, err := randBytes(constants.DefaultClusterSecretSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate cluster secret: %w", err)
+	}
+
 	result := &SecretsBundle{
+		Cluster: &Cluster{
+			ID:     base64.URLEncoding.EncodeToString(clusterID),
+			Secret: base64.StdEncoding.EncodeToString(clusterSecret),
+		},
 		Clock:      clock,
 		Secrets:    kubeadmTokens,
 		TrustdInfo: trustdInfo,
@@ -295,6 +322,11 @@ func NewSecretsBundleFromConfig(clock Clock, c config.Provider) *SecretsBundle {
 		OS:                c.Machine().Security().CA(),
 	}
 
+	cluster := &Cluster{
+		ID:     c.Cluster().ID(),
+		Secret: c.Cluster().Secret(),
+	}
+
 	trustd := &TrustdInfo{
 		Token: c.Machine().Security().Token(),
 	}
@@ -312,6 +344,7 @@ func NewSecretsBundleFromConfig(clock Clock, c config.Provider) *SecretsBundle {
 
 	return &SecretsBundle{
 		Clock:      clock,
+		Cluster:    cluster,
 		Secrets:    secrets,
 		TrustdInfo: trustd,
 		Certs:      certs,
@@ -319,46 +352,60 @@ func NewSecretsBundleFromConfig(clock Clock, c config.Provider) *SecretsBundle {
 }
 
 // NewEtcdCA generates a CA for the Etcd PKI.
-func NewEtcdCA(currentTime time.Time, useRSA bool) (ca *x509.CertificateAuthority, err error) {
+func NewEtcdCA(currentTime time.Time, contract *config.VersionContract) (ca *x509.CertificateAuthority, err error) {
 	opts := []x509.Option{
 		x509.Organization("etcd"),
 		x509.NotAfter(currentTime.Add(87600 * time.Hour)),
 		x509.NotBefore(currentTime),
 	}
 
-	if useRSA {
+	if !contract.SupportsECDSAKeys() {
 		opts = append(opts, x509.RSA(true))
 	} else {
-		opts = append(opts, x509.ECDSA(true))
+		if contract.SupportsECDSASHA256() {
+			opts = append(opts, x509.ECDSA(true))
+		} else {
+			opts = append(opts, x509.ECDSASHA512(true))
+		}
 	}
 
 	return x509.NewSelfSignedCertificateAuthority(opts...)
 }
 
 // NewKubernetesCA generates a CA for the Kubernetes PKI.
-func NewKubernetesCA(currentTime time.Time, useRSA bool) (ca *x509.CertificateAuthority, err error) {
+func NewKubernetesCA(currentTime time.Time, contract *config.VersionContract) (ca *x509.CertificateAuthority, err error) {
 	opts := []x509.Option{
 		x509.Organization("kubernetes"),
 		x509.NotAfter(currentTime.Add(87600 * time.Hour)),
 		x509.NotBefore(currentTime),
 	}
 
-	if useRSA {
+	if !contract.SupportsECDSAKeys() {
 		opts = append(opts, x509.RSA(true))
 	} else {
-		opts = append(opts, x509.ECDSA(true))
+		if contract.SupportsECDSASHA256() {
+			opts = append(opts, x509.ECDSA(true))
+		} else {
+			opts = append(opts, x509.ECDSASHA512(true))
+		}
 	}
 
 	return x509.NewSelfSignedCertificateAuthority(opts...)
 }
 
 // NewAggregatorCA generates a CA for the Kubernetes aggregator/front-proxy.
-func NewAggregatorCA(currentTime time.Time) (ca *x509.CertificateAuthority, err error) {
+func NewAggregatorCA(currentTime time.Time, contract *config.VersionContract) (ca *x509.CertificateAuthority, err error) {
 	opts := []x509.Option{
 		x509.ECDSA(true),
 		x509.CommonName("front-proxy"),
 		x509.NotAfter(currentTime.Add(87600 * time.Hour)),
 		x509.NotBefore(currentTime),
+	}
+
+	if contract.SupportsECDSASHA256() {
+		opts = append(opts, x509.ECDSA(true))
+	} else {
+		opts = append(opts, x509.ECDSASHA512(true))
 	}
 
 	return x509.NewSelfSignedCertificateAuthority(opts...)
@@ -428,16 +475,17 @@ func NewInput(clustername, endpoint, kubernetesVersion string, secrets *SecretsB
 		return nil, err
 	}
 
-	var additionalSubjectAltNames []string
+	additionalSubjectAltNames := append([]string(nil), options.AdditionalSubjectAltNames...)
 
-	var additionalMachineCertSANs []string
-
-	if len(options.EndpointList) > 0 {
-		additionalSubjectAltNames = options.EndpointList
-		additionalMachineCertSANs = options.EndpointList
+	if !options.VersionContract.SupportsDynamicCertSANs() {
+		additionalSubjectAltNames = append(additionalSubjectAltNames, options.EndpointList...)
 	}
 
-	additionalSubjectAltNames = append(additionalSubjectAltNames, options.AdditionalSubjectAltNames...)
+	discoveryEnabled := options.VersionContract.ClusterDiscoveryEnabled()
+
+	if options.DiscoveryEnabled != nil {
+		discoveryEnabled = *options.DiscoveryEnabled
+	}
 
 	input = &Input{
 		Certs:                      secrets.Certs,
@@ -446,12 +494,14 @@ func NewInput(clustername, endpoint, kubernetesVersion string, secrets *SecretsB
 		PodNet:                     []string{podNet},
 		ServiceNet:                 []string{serviceNet},
 		ServiceDomain:              options.DNSDomain,
+		ClusterID:                  secrets.Cluster.ID,
 		ClusterName:                clustername,
+		ClusterSecret:              secrets.Cluster.Secret,
 		KubernetesVersion:          kubernetesVersion,
 		Secrets:                    secrets.Secrets,
 		TrustdInfo:                 secrets.TrustdInfo,
 		AdditionalSubjectAltNames:  additionalSubjectAltNames,
-		AdditionalMachineCertSANs:  additionalMachineCertSANs,
+		AdditionalMachineCertSANs:  additionalSubjectAltNames,
 		InstallDisk:                options.InstallDisk,
 		InstallImage:               options.InstallImage,
 		InstallExtraKernelArgs:     options.InstallExtraKernelArgs,
@@ -459,19 +509,21 @@ func NewInput(clustername, endpoint, kubernetesVersion string, secrets *SecretsB
 		CNIConfig:                  options.CNIConfig,
 		RegistryMirrors:            options.RegistryMirrors,
 		RegistryConfig:             options.RegistryConfig,
+		Sysctls:                    options.Sysctls,
 		Debug:                      options.Debug,
 		Persist:                    options.Persist,
 		AllowSchedulingOnMasters:   options.AllowSchedulingOnMasters,
 		MachineDisks:               options.MachineDisks,
 		SystemDiskEncryptionConfig: options.SystemDiskEncryptionConfig,
+		DiscoveryEnabled:           discoveryEnabled,
 	}
 
 	return input, nil
 }
 
-// randBytes returns a random string consisting of the characters in
+// randBootstrapTokenString returns a random string consisting of the characters in
 // validBootstrapTokenChars, with the length customized by the parameter.
-func randBytes(length int) (string, error) {
+func randBootstrapTokenString(length int) (string, error) {
 	// validBootstrapTokenChars defines the characters a bootstrap token can consist of
 	const validBootstrapTokenChars = "0123456789abcdefghijklmnopqrstuvwxyz"
 
@@ -512,12 +564,12 @@ func genToken(lenFirst, lenSecond int) (string, error) {
 
 	tokenTemp := make([]string, 2)
 
-	tokenTemp[0], err = randBytes(lenFirst)
+	tokenTemp[0], err = randBootstrapTokenString(lenFirst)
 	if err != nil {
 		return "", err
 	}
 
-	tokenTemp[1], err = randBytes(lenSecond)
+	tokenTemp[1], err = randBootstrapTokenString(lenSecond)
 	if err != nil {
 		return "", err
 	}
@@ -532,4 +584,19 @@ func emptyIf(str, check string) string {
 	}
 
 	return str
+}
+
+func randBytes(size int) ([]byte, error) {
+	buf := make([]byte, size)
+
+	n, err := io.ReadFull(rand.Reader, buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read from random generator: %w", err)
+	}
+
+	if n != size {
+		return nil, fmt.Errorf("failed to generate sufficient number of random bytes (%d != %d)", n, size)
+	}
+
+	return buf, nil
 }

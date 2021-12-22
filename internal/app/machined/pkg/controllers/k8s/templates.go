@@ -37,16 +37,19 @@ stringData:
   token-id: "{{ .Secrets.BootstrapTokenID }}"
   token-secret: "{{ .Secrets.BootstrapTokenSecret }}"
   usage-bootstrap-authentication: "true"
+
+  # Extra groups to authenticate the token as. Must start with "system:bootstrappers:"
+  auth-extra-groups: system:bootstrappers:nodes
 `)
 
 // csrNodeBootstrapTemplate lets bootstrapping tokens and nodes request CSRs.
-var csrNodeBootstrapTemplate = []byte(`kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
+var csrNodeBootstrapTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
 metadata:
   name: system-bootstrap-node-bootstrapper
 subjects:
 - kind: Group
-  name: system:bootstrappers
+  name: system:bootstrappers:nodes
   apiGroup: rbac.authorization.k8s.io
 - kind: Group
   name: system:nodes
@@ -62,13 +65,13 @@ roleRef:
 // credentials.
 //
 // This binding should be removed to disable CSR auto-approval.
-var csrApproverRoleBindingTemplate = []byte(`kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
+var csrApproverRoleBindingTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
 metadata:
   name: system-bootstrap-approve-node-client-csr
 subjects:
 - kind: Group
-  name: system:bootstrappers
+  name: system:bootstrappers:nodes
   apiGroup: rbac.authorization.k8s.io
 roleRef:
   kind: ClusterRole
@@ -83,8 +86,8 @@ roleRef:
 // This binding should be altered in the future to hold a list of node
 // names instead of targeting `system:nodes` so we can revoke individual
 // node's ability to renew its certs.
-var csrRenewalRoleBindingTemplate = []byte(`kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
+var csrRenewalRoleBindingTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
 metadata:
   name: system-bootstrap-node-renewal
 subjects:
@@ -135,13 +138,8 @@ spec:
         image: {{ .ProxyImage }}
         command:
         - /usr/local/bin/kube-proxy
-        - --cluster-cidr={{ .PodCIDRs }}
-        - --hostname-override=$(NODE_NAME)
-        - --kubeconfig=/etc/kubernetes/kubeconfig
-        - --proxy-mode={{ .ProxyMode }}
-        - --conntrack-max-per-core=0
-        {{- range $k, $v := .ProxyExtraArgs }}
-        - {{ printf "--%s=%s" $k $v | json }}
+        {{- range $arg := .ProxyArgs }}
+        - {{ $arg | json }}
         {{- end }}
         env:
           - name: NODE_NAME
@@ -235,7 +233,15 @@ data:
         user: service-account
 `)
 
-var coreDNSTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
+var coreDNSTemplate = []byte(`apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    kubernetes.io/cluster-service: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: system:coredns
@@ -290,18 +296,22 @@ data:
     .:53 {
         errors
         health {
-          lameduck 5s
+            lameduck 5s
         }
         ready
         log . {
             class error
         }
+        prometheus :9153
+
         kubernetes {{ .ClusterDomain }} in-addr.arpa ip6.arpa {
             pods insecure
             fallthrough in-addr.arpa ip6.arpa
         }
-        prometheus :9153
         forward . /etc/resolv.conf
+        {{- if not .DNSServiceIPv6 }}
+        rewrite stop type AAAA A
+        {{- end }}
         cache 30
         loop
         reload
@@ -407,14 +417,6 @@ spec:
             items:
             - key: Corefile
               path: Corefile
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: coredns
-  namespace: kube-system
-  labels:
-    kubernetes.io/cluster-service: "true"
 `)
 
 var coreDNSSvcTemplate = []byte(`apiVersion: v1
@@ -432,33 +434,26 @@ metadata:
 spec:
   selector:
     k8s-app: kube-dns
-  clusterIP: {{ .DNSServiceIP }}
-  ports:
-    - name: dns
-      port: 53
-      protocol: UDP
-    - name: dns-tcp
-      port: 53
-      protocol: TCP
-`)
-
-var coreDNSv6SvcTemplate = []byte(`apiVersion: v1
-kind: Service
-metadata:
-  name: kube-dnsv6
-  namespace: kube-system
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "9153"
-  labels:
-    k8s-app: kube-dns
-    kubernetes.io/cluster-service: "true"
-    kubernetes.io/name: "CoreDNS"
-spec:
-  selector:
-    k8s-app: kube-dns
-  clusterIP: {{ .DNSServiceIPv6 }}
-  ipFamily: IPv6
+  clusterIP: {{ or .DNSServiceIP .DNSServiceIPv6 }}
+  clusterIPs:
+  {{- if .DNSServiceIP }}
+    - {{ .DNSServiceIP }}
+  {{- end }}
+  {{- if .DNSServiceIPv6 }}
+    - {{ .DNSServiceIPv6 }}
+  {{- end }}
+  ipFamilies:
+  {{- if .DNSServiceIP }}
+    - IPv4
+  {{- end }}
+  {{- if .DNSServiceIPv6 }}
+    - IPv6
+  {{- end }}
+  {{- if and .DNSServiceIP .DNSServiceIPv6 }}
+  ipFamilyPolicy: RequireDualStack
+  {{- else }}
+  ipFamilyPolicy: SingleStack
+  {{- end }}
   ports:
     - name: dns
       port: 53
@@ -473,10 +468,6 @@ kind: ClusterRole
 metadata:
   name: flannel
 rules:
-  - apiGroups: ['extensions']
-    resources: ['podsecuritypolicies']
-    verbs: ['use']
-    resourceNames: ['psp.flannel.unprivileged']
   - apiGroups:
       - ""
     resources:
@@ -547,7 +538,7 @@ data:
     }
   net-conf.json: |
     {
-      "Network": "{{ .FirstPodCIDR }}",
+      "Network": "{{ index .PodCIDRs 0 }}",
       "Backend": {
         "Type": "vxlan",
         "Port": 4789

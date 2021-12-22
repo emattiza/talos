@@ -14,14 +14,17 @@ import (
 	"github.com/cosi-project/runtime/pkg/state/registry"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/files"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	"github.com/talos-systems/talos/pkg/resources/perf"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	"github.com/talos-systems/talos/pkg/resources/time"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/files"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/kubespan"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/perf"
+	"github.com/talos-systems/talos/pkg/machinery/resources/runtime"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	"github.com/talos-systems/talos/pkg/machinery/resources/time"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // State implements runtime.V1alpha2State interface.
@@ -56,9 +59,13 @@ func NewState() (*State, error) {
 		description string
 	}{
 		{v1alpha1.NamespaceName, "Talos v1alpha1 subsystems glue resources."},
+		{cluster.NamespaceName, "Cluster configuration and discovery resources."},
+		{cluster.RawNamespaceName, "Cluster unmerged raw resources."},
 		{config.NamespaceName, "Talos node configuration."},
 		{files.NamespaceName, "Files and file-like resources."},
+		{k8s.NamespaceName, "Kubernetes all node types resources."},
 		{k8s.ControlPlaneNamespaceName, "Kubernetes control plane resources."},
+		{kubespan.NamespaceName, "KubeSpan resources."},
 		{network.NamespaceName, "Networking resources."},
 		{network.ConfigNamespaceName, "Networking configuration resources."},
 		{secrets.NamespaceName, "Resources with secret material."},
@@ -71,28 +78,42 @@ func NewState() (*State, error) {
 
 	// register Talos resources
 	for _, r := range []resource.Resource{
-		&v1alpha1.BootstrapStatus{},
 		&v1alpha1.Service{},
+		&cluster.Affiliate{},
+		&cluster.Config{},
+		&cluster.Identity{},
+		&cluster.Member{},
 		&config.MachineConfig{},
 		&config.MachineType{},
 		&config.K8sControlPlane{},
 		&files.EtcFileSpec{},
 		&files.EtcFileStatus{},
 		&k8s.Endpoint{},
+		&k8s.KubeletConfig{},
+		&k8s.KubeletSpec{},
 		&k8s.Manifest{},
 		&k8s.ManifestStatus{},
+		&k8s.NodeIP{},
+		&k8s.NodeIPConfig{},
 		&k8s.Nodename{},
 		&k8s.StaticPod{},
 		&k8s.StaticPodStatus{},
 		&k8s.SecretsStatus{},
+		&kubespan.Config{},
+		&kubespan.Endpoint{},
+		&kubespan.Identity{},
+		&kubespan.PeerSpec{},
+		&kubespan.PeerStatus{},
 		&network.AddressStatus{},
 		&network.AddressSpec{},
+		&network.HardwareAddr{},
 		&network.HostnameStatus{},
 		&network.HostnameSpec{},
 		&network.LinkRefresh{},
 		&network.LinkStatus{},
 		&network.LinkSpec{},
 		&network.NodeAddress{},
+		&network.NodeAddressFilter{},
 		&network.OperatorSpec{},
 		&network.ResolverStatus{},
 		&network.ResolverSpec{},
@@ -103,10 +124,18 @@ func NewState() (*State, error) {
 		&network.TimeServerSpec{},
 		&perf.CPU{},
 		&perf.Memory{},
+		&runtime.KernelParamSpec{},
+		&runtime.KernelParamDefaultSpec{},
+		&runtime.KernelParamStatus{},
+		&runtime.MountStatus{},
 		&secrets.API{},
+		&secrets.CertSAN{},
 		&secrets.Etcd{},
+		&secrets.EtcdRoot{},
+		&secrets.Kubelet{},
 		&secrets.Kubernetes{},
-		&secrets.Root{},
+		&secrets.KubernetesRoot{},
+		&secrets.OSRoot{},
 		&time.Status{},
 	} {
 		if err := s.resourceRegistry.Register(ctx, r); err != nil {

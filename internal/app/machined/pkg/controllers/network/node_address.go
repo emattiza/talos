@@ -15,7 +15,7 @@ import (
 	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // NodeAddressController manages secrets.Etcd based on configuration.
@@ -39,6 +39,11 @@ func (ctrl *NodeAddressController) Inputs() []controller.Input {
 			Type:      network.LinkStatusType,
 			Kind:      controller.InputWeak,
 		},
+		{
+			Namespace: network.NamespaceName,
+			Type:      network.NodeAddressFilterType,
+			Kind:      controller.InputWeak,
+		},
 	}
 }
 
@@ -56,6 +61,10 @@ func (ctrl *NodeAddressController) Outputs() []controller.Output {
 //
 //nolint:gocyclo,cyclop
 func (ctrl *NodeAddressController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
+	var addressStatusController AddressStatusController
+
+	addressStatusControllerName := addressStatusController.Name()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,16 +92,22 @@ func (ctrl *NodeAddressController) Run(ctx context.Context, r controller.Runtime
 			}
 		}
 
+		// fetch list of filters
+		filters, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.NodeAddressFilterType, "", resource.VersionUndefined))
+		if err != nil {
+			return fmt.Errorf("error listing address filters: %w", err)
+		}
+
 		addresses, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.AddressStatusType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing links: %w", err)
 		}
 
 		var (
-			defaultAddress      netaddr.IP
+			defaultAddress      netaddr.IPPrefix
 			defaultAddrLinkName string
-			current             []netaddr.IP
-			accumulative        []netaddr.IP
+			current             []netaddr.IPPrefix
+			accumulative        []netaddr.IPPrefix
 		)
 
 		for _, r := range addresses.Items {
@@ -102,19 +117,28 @@ func (ctrl *NodeAddressController) Run(ctx context.Context, r controller.Runtime
 				continue
 			}
 
-			ip := addr.TypedSpec().Address.IP()
+			ip := addr.TypedSpec().Address
 
-			if ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() {
+			if ip.IP().IsLoopback() || ip.IP().IsMulticast() || ip.IP().IsLinkLocalUnicast() {
+				continue
+			}
+
+			if network.IsULA(ip.IP(), network.ULASideroLink) {
+				// ignore SideroLink addresses, as they are point-to-point addresses
 				continue
 			}
 
 			// set defaultAddress to the smallest IP from the alphabetically first link
-			if defaultAddress.IsZero() || addr.TypedSpec().LinkName < defaultAddrLinkName || (addr.TypedSpec().LinkName == defaultAddrLinkName && ip.Compare(defaultAddress) < 0) {
-				defaultAddress = ip
-				defaultAddrLinkName = addr.TypedSpec().LinkName
+			// ignore address which are not assigned from the physical links
+			if addr.Metadata().Owner() == addressStatusControllerName {
+				if defaultAddress.IsZero() || addr.TypedSpec().LinkName < defaultAddrLinkName || (addr.TypedSpec().LinkName == defaultAddrLinkName && ip.IP().Compare(defaultAddress.IP()) < 0) {
+					defaultAddress = ip
+					defaultAddrLinkName = addr.TypedSpec().LinkName
+				}
 			}
 
-			if _, up := linksUp[addr.TypedSpec().LinkIndex]; up {
+			// assume addresses from external IPs to be always up
+			if _, up := linksUp[addr.TypedSpec().LinkIndex]; up || addr.TypedSpec().LinkName == externalLink {
 				current = append(current, ip)
 			}
 
@@ -122,7 +146,12 @@ func (ctrl *NodeAddressController) Run(ctx context.Context, r controller.Runtime
 		}
 
 		// sort current addresses
-		sort.Slice(current, func(i, j int) bool { return current[i].Compare(current[j]) < 0 })
+		sort.Slice(current, func(i, j int) bool { return current[i].IP().Compare(current[j].IP()) < 0 })
+
+		// remove duplicates from current addresses
+		current = deduplicateIPPrefixes(current)
+
+		touchedIDs := make(map[resource.ID]struct{})
 
 		// update output resources
 		if !defaultAddress.IsZero() {
@@ -135,48 +164,159 @@ func (ctrl *NodeAddressController) Run(ctx context.Context, r controller.Runtime
 					return nil
 				}
 
-				spec.Addresses = []netaddr.IP{defaultAddress}
+				spec.Addresses = []netaddr.IPPrefix{defaultAddress}
 
 				return nil
 			}); err != nil {
 				return fmt.Errorf("error updating output resource: %w", err)
 			}
+
+			touchedIDs[network.NodeAddressDefaultID] = struct{}{}
 		}
 
-		if err = r.Modify(ctx, network.NewNodeAddress(network.NamespaceName, network.NodeAddressCurrentID), func(r resource.Resource) error {
-			spec := r.(*network.NodeAddress).TypedSpec()
-
-			spec.Addresses = current
-
-			return nil
-		}); err != nil {
-			return fmt.Errorf("error updating output resource: %w", err)
+		if err = updateCurrentAddresses(ctx, r, network.NodeAddressCurrentID, current); err != nil {
+			return err
 		}
 
-		if err = r.Modify(ctx, network.NewNodeAddress(network.NamespaceName, network.NodeAddressAccumulativeID), func(r resource.Resource) error {
-			spec := r.(*network.NodeAddress).TypedSpec()
+		touchedIDs[network.NodeAddressCurrentID] = struct{}{}
 
-			for _, ip := range accumulative {
-				ip := ip
+		if err = updateAccumulativeAddresses(ctx, r, network.NodeAddressAccumulativeID, accumulative); err != nil {
+			return err
+		}
 
-				// find insert position using binary search
-				i := sort.Search(len(spec.Addresses), func(j int) bool {
-					return !spec.Addresses[j].Less(ip)
-				})
+		touchedIDs[network.NodeAddressAccumulativeID] = struct{}{}
 
-				if i < len(spec.Addresses) && spec.Addresses[i].Compare(ip) == 0 {
-					continue
-				}
+		// update filtered resources
+		for _, res := range filters.Items {
+			filterID := res.Metadata().ID()
+			filter := res.(*network.NodeAddressFilter).TypedSpec()
 
-				// insert at position i
-				spec.Addresses = append(spec.Addresses, netaddr.IP{})
-				copy(spec.Addresses[i+1:], spec.Addresses[i:])
-				spec.Addresses[i] = ip
+			filteredCurrent := filterIPs(current, filter.IncludeSubnets, filter.ExcludeSubnets)
+			filteredAccumulative := filterIPs(accumulative, filter.IncludeSubnets, filter.ExcludeSubnets)
+
+			if err = updateCurrentAddresses(ctx, r, network.FilteredNodeAddressID(network.NodeAddressCurrentID, filterID), filteredCurrent); err != nil {
+				return err
 			}
 
-			return nil
-		}); err != nil {
-			return fmt.Errorf("error updating output resource: %w", err)
+			if err = updateAccumulativeAddresses(ctx, r, network.FilteredNodeAddressID(network.NodeAddressAccumulativeID, filterID), filteredAccumulative); err != nil {
+				return err
+			}
+
+			touchedIDs[network.FilteredNodeAddressID(network.NodeAddressCurrentID, filterID)] = struct{}{}
+			touchedIDs[network.FilteredNodeAddressID(network.NodeAddressAccumulativeID, filterID)] = struct{}{}
+		}
+
+		// list keys for cleanup
+		list, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.NodeAddressType, "", resource.VersionUndefined))
+		if err != nil {
+			return fmt.Errorf("error listing resources: %w", err)
+		}
+
+		for _, res := range list.Items {
+			if res.Metadata().Owner() != ctrl.Name() {
+				continue
+			}
+
+			if _, ok := touchedIDs[res.Metadata().ID()]; !ok {
+				if err = r.Destroy(ctx, res.Metadata()); err != nil {
+					return fmt.Errorf("error cleaning up specs: %w", err)
+				}
+			}
 		}
 	}
+}
+
+func deduplicateIPPrefixes(current []netaddr.IPPrefix) []netaddr.IPPrefix {
+	// assumes that current is sorted
+	n := 0
+
+	var prev netaddr.IPPrefix
+
+	for _, x := range current {
+		if prev != x {
+			current[n] = x
+			n++
+		}
+
+		prev = x
+	}
+
+	return current[:n]
+}
+
+func filterIPs(addrs []netaddr.IPPrefix, includeSubnets, excludeSubnets []netaddr.IPPrefix) []netaddr.IPPrefix {
+	result := make([]netaddr.IPPrefix, 0, len(addrs))
+
+outer:
+	for _, ip := range addrs {
+		if len(includeSubnets) > 0 {
+			matchesAny := false
+
+			for _, subnet := range includeSubnets {
+				if subnet.Overlaps(ip) {
+					matchesAny = true
+
+					break
+				}
+			}
+
+			if !matchesAny {
+				continue outer
+			}
+		}
+
+		for _, subnet := range excludeSubnets {
+			if subnet.Overlaps(ip) {
+				continue outer
+			}
+		}
+
+		result = append(result, ip)
+	}
+
+	return result
+}
+
+func updateCurrentAddresses(ctx context.Context, r controller.Runtime, id resource.ID, current []netaddr.IPPrefix) error {
+	if err := r.Modify(ctx, network.NewNodeAddress(network.NamespaceName, id), func(r resource.Resource) error {
+		spec := r.(*network.NodeAddress).TypedSpec()
+
+		spec.Addresses = current
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("error updating output resource: %w", err)
+	}
+
+	return nil
+}
+
+func updateAccumulativeAddresses(ctx context.Context, r controller.Runtime, id resource.ID, accumulative []netaddr.IPPrefix) error {
+	if err := r.Modify(ctx, network.NewNodeAddress(network.NamespaceName, id), func(r resource.Resource) error {
+		spec := r.(*network.NodeAddress).TypedSpec()
+
+		for _, ip := range accumulative {
+			ip := ip
+
+			// find insert position using binary search
+			i := sort.Search(len(spec.Addresses), func(j int) bool {
+				return !spec.Addresses[j].IP().Less(ip.IP())
+			})
+
+			if i < len(spec.Addresses) && spec.Addresses[i].IP().Compare(ip.IP()) == 0 {
+				continue
+			}
+
+			// insert at position i
+			spec.Addresses = append(spec.Addresses, netaddr.IPPrefix{})
+			copy(spec.Addresses[i+1:], spec.Addresses[i:])
+			spec.Addresses[i] = ip
+		}
+
+		return nil
+	}); err != nil {
+		return fmt.Errorf("error updating output resource: %w", err)
+	}
+
+	return nil
 }

@@ -44,36 +44,97 @@ func TestContractParseVersion(t *testing.T) {
 }
 
 func TestContractCurrent(t *testing.T) {
-	assert.True(t, config.TalosVersionCurrent.SupportsAggregatorCA())
-	assert.True(t, config.TalosVersionCurrent.SupportsECDSAKeys())
-	assert.True(t, config.TalosVersionCurrent.SupportsServiceAccount())
-	assert.True(t, config.TalosVersionCurrent.SupportsRBACFeature())
+	contract := config.TalosVersionCurrent
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.True(t, contract.SupportsRBACFeature())
+	assert.True(t, contract.SupportsDynamicCertSANs())
+	assert.True(t, contract.SupportsECDSASHA256())
+	assert.True(t, contract.ClusterDiscoveryEnabled())
+}
+
+func TestContract0_14(t *testing.T) {
+	contract := config.TalosVersion0_14
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.True(t, contract.SupportsRBACFeature())
+	assert.True(t, contract.SupportsDynamicCertSANs())
+	assert.True(t, contract.SupportsECDSASHA256())
+	assert.True(t, contract.ClusterDiscoveryEnabled())
+}
+
+func TestContract0_13(t *testing.T) {
+	contract := config.TalosVersion0_13
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.True(t, contract.SupportsRBACFeature())
+	assert.True(t, contract.SupportsDynamicCertSANs())
+	assert.True(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
+}
+
+func TestContract0_12(t *testing.T) {
+	contract := config.TalosVersion0_12
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.True(t, contract.SupportsRBACFeature())
+	assert.False(t, contract.SupportsDynamicCertSANs())
+	assert.False(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
 }
 
 func TestContract0_11(t *testing.T) {
-	assert.True(t, config.TalosVersion0_11.SupportsAggregatorCA())
-	assert.True(t, config.TalosVersion0_11.SupportsECDSAKeys())
-	assert.True(t, config.TalosVersion0_11.SupportsServiceAccount())
-	assert.True(t, config.TalosVersion0_11.SupportsRBACFeature())
+	contract := config.TalosVersion0_11
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.True(t, contract.SupportsRBACFeature())
+	assert.False(t, contract.SupportsDynamicCertSANs())
+	assert.False(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
 }
 
 func TestContract0_10(t *testing.T) {
-	assert.True(t, config.TalosVersion0_10.SupportsAggregatorCA())
-	assert.True(t, config.TalosVersion0_10.SupportsECDSAKeys())
-	assert.True(t, config.TalosVersion0_10.SupportsServiceAccount())
-	assert.False(t, config.TalosVersion0_10.SupportsRBACFeature())
+	contract := config.TalosVersion0_10
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.False(t, contract.SupportsRBACFeature())
+	assert.False(t, contract.SupportsDynamicCertSANs())
+	assert.False(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
 }
 
 func TestContract0_9(t *testing.T) {
-	assert.True(t, config.TalosVersion0_9.SupportsAggregatorCA())
-	assert.True(t, config.TalosVersion0_9.SupportsECDSAKeys())
-	assert.True(t, config.TalosVersion0_9.SupportsServiceAccount())
-	assert.False(t, config.TalosVersion0_9.SupportsRBACFeature())
+	contract := config.TalosVersion0_9
+
+	assert.True(t, contract.SupportsAggregatorCA())
+	assert.True(t, contract.SupportsECDSAKeys())
+	assert.True(t, contract.SupportsServiceAccount())
+	assert.False(t, contract.SupportsRBACFeature())
+	assert.False(t, contract.SupportsDynamicCertSANs())
+	assert.False(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
 }
 
 func TestContract0_8(t *testing.T) {
-	assert.False(t, config.TalosVersion0_8.SupportsAggregatorCA())
-	assert.False(t, config.TalosVersion0_8.SupportsECDSAKeys())
-	assert.False(t, config.TalosVersion0_8.SupportsServiceAccount())
-	assert.False(t, config.TalosVersion0_9.SupportsRBACFeature())
+	contract := config.TalosVersion0_8
+
+	assert.False(t, contract.SupportsAggregatorCA())
+	assert.False(t, contract.SupportsECDSAKeys())
+	assert.False(t, contract.SupportsServiceAccount())
+	assert.False(t, contract.SupportsRBACFeature())
+	assert.False(t, contract.SupportsDynamicCertSANs())
+	assert.False(t, contract.SupportsECDSASHA256())
+	assert.False(t, contract.ClusterDiscoveryEnabled())
 }

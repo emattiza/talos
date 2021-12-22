@@ -93,7 +93,7 @@ talosctl cluster create [flags]
       --bad-rtc                                 launch VM with bad RTC state (QEMU only)
       --cidr string                             CIDR of the cluster network (IPv4, ULA network for IPv6 is derived in automated way) (default "10.5.0.0/24")
       --cni-bin-path strings                    search path for CNI binaries (VM only) (default [/home/user/.talos/cni/bin])
-      --cni-bundle-url string                   URL to download CNI bundle from (VM only) (default "https://github.com/talos-systems/talos/releases/download/v0.11.0-alpha.2/talosctl-cni-bundle-${ARCH}.tar.gz")
+      --cni-bundle-url string                   URL to download CNI bundle from (VM only) (default "https://github.com/talos-systems/talos/releases/download/v0.12.0-alpha.1/talosctl-cni-bundle-${ARCH}.tar.gz")
       --cni-cache-dir string                    CNI cache directory path (VM only) (default "/home/user/.talos/cni/cache")
       --cni-conf-dir string                     CNI config directory path (VM only) (default "/home/user/.talos/cni/conf.d")
       --config-patch string                     patch generated machineconfigs (applied to all node types)
@@ -119,7 +119,7 @@ talosctl cluster create [flags]
       --ipv4                                    enable IPv4 network in the cluster (default true)
       --ipv6                                    enable IPv6 network in the cluster (QEMU provisioner only)
       --iso-path string                         the ISO path to use for the initial boot (VM only)
-      --kubernetes-version string               desired kubernetes version to run (default "1.21.3")
+      --kubernetes-version string               desired kubernetes version to run (default "1.22.1")
       --masters int                             the number of masters to create (default 1)
       --memory int                              the limit on memory usage in MB (each container/VM) (default 2048)
       --mtu int                                 MTU of the cluster network (default 1500)
@@ -635,42 +635,6 @@ talosctl containers [flags]
 ```
   -h, --help         help for containers
   -k, --kubernetes   use the k8s.io containerd namespace
-```
-
-### Options inherited from parent commands
-
-```
-      --context string       Context to be used in command
-  -e, --endpoints strings    override default endpoints in Talos configuration
-  -n, --nodes strings        target the specified nodes
-      --talosconfig string   The path to the Talos configuration file (default "/home/user/.talos/config")
-```
-
-### SEE ALSO
-
-* [talosctl](#talosctl)	 - A CLI for out-of-band management of Kubernetes nodes created by Talos
-
-## talosctl convert-k8s
-
-Convert Kubernetes control plane from self-hosted (bootkube) to Talos-managed (static pods).
-
-### Synopsis
-
-Command converts control plane bootstrapped on Talos <= 0.8 to Talos-managed control plane (Talos >= 0.9).
-As part of the conversion process tool reads existing configuration of the control plane, updates
-Talos node configuration to reflect changes made since the boostrap time. Once config is updated,
-tool releases static pods and deletes self-hosted DaemonSets.
-
-```
-talosctl convert-k8s [flags]
-```
-
-### Options
-
-```
-      --endpoint string   the cluster control plane endpoint
-      --force             skip prompts, assume yes
-  -h, --help              help for convert-k8s
 ```
 
 ### Options inherited from parent commands
@@ -2035,7 +1999,7 @@ Upgrade Kubernetes control plane in the Talos cluster.
 
 ### Synopsis
 
-Command runs upgrade of Kubernetes control plane components between specified versions. Pod-checkpointer is handled in a special way to speed up kube-apisever upgrades.
+Command runs upgrade of Kubernetes control plane components between specified versions.
 
 ```
 talosctl upgrade-k8s [flags]
@@ -2044,10 +2008,11 @@ talosctl upgrade-k8s [flags]
 ### Options
 
 ```
+      --dry-run           skip the actual upgrade and show the upgrade plan instead
       --endpoint string   the cluster control plane endpoint
       --from string       the Kubernetes control plane version to upgrade from
   -h, --help              help for upgrade-k8s
-      --to string         the Kubernetes control plane version to upgrade to (default "1.21.3")
+      --to string         the Kubernetes control plane version to upgrade to (default "1.22.1")
 ```
 
 ### Options inherited from parent commands
@@ -2176,7 +2141,6 @@ A CLI for out-of-band management of Kubernetes nodes created by Talos
 * [talosctl config](#talosctl-config)	 - Manage the client configuration file (talosconfig)
 * [talosctl conformance](#talosctl-conformance)	 - Run conformance tests
 * [talosctl containers](#talosctl-containers)	 - List containers
-* [talosctl convert-k8s](#talosctl-convert-k8s)	 - Convert Kubernetes control plane from self-hosted (bootkube) to Talos-managed (static pods).
 * [talosctl copy](#talosctl-copy)	 - Copy data out from the node
 * [talosctl crashdump](#talosctl-crashdump)	 - Dump debug information about the cluster
 * [talosctl dashboard](#talosctl-dashboard)	 - Cluster dashboard with real-time metrics

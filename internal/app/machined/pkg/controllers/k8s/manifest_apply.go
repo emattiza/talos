@@ -29,12 +29,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/secrets"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // ManifestApplyController applies manifests via control plane endpoint.
@@ -61,8 +62,8 @@ func (ctrl *ManifestApplyController) Inputs() []controller.Input {
 		},
 		{
 			Namespace: v1alpha1.NamespaceName,
-			Type:      v1alpha1.BootstrapStatusType,
-			ID:        pointer.ToString(v1alpha1.BootstrapStatusID),
+			Type:      v1alpha1.ServiceType,
+			ID:        pointer.ToString("etcd"),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -100,7 +101,8 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 
 		secrets := secretsResources.(*secrets.Kubernetes).Certs()
 
-		bootstrapStatus, err := r.Get(ctx, v1alpha1.NewBootstrapStatus().Metadata())
+		// wait for etcd to be healthy as controller relies on etcd for locking
+		etcdResource, err := r.Get(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "etcd", resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				continue
@@ -109,9 +111,7 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 			return err
 		}
 
-		if bootstrapStatus.(*v1alpha1.BootstrapStatus).TypedSpec().SelfHostedControlPlane {
-			logger.Info("skipped as running self-hosted control plane")
-
+		if !etcdResource.(*v1alpha1.Service).Healthy() {
 			continue
 		}
 
@@ -213,7 +213,7 @@ func (ctrl *ManifestApplyController) apply(ctx context.Context, logger *zap.Logg
 	objects := make([]*unstructured.Unstructured, 0, len(manifests.Items))
 
 	for _, manifest := range manifests.Items {
-		objects = append(objects, manifest.(*k8s.Manifest).Objects()...)
+		objects = append(objects, k8sadapter.Manifest(manifest.(*k8s.Manifest)).Objects()...)
 	}
 
 	// sort the list so that namespaces come first, followed by CRDs and everything else after that

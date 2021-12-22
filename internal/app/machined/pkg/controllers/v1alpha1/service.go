@@ -16,7 +16,7 @@ import (
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // ServiceController manages v1alpha1.Service based on services subsystem state.
@@ -52,12 +52,12 @@ func (ctrl *ServiceController) Run(ctx context.Context, r controller.Runtime, lo
 
 	wg.Add(1)
 
-	if err := ctrl.V1Alpha1Events.Watch(func(eventCh <-chan runtime.Event) {
+	if err := ctrl.V1Alpha1Events.Watch(func(eventCh <-chan runtime.EventInfo) {
 		defer wg.Done()
 
 		for {
 			var (
-				event runtime.Event
+				event runtime.EventInfo
 				ok    bool
 			)
 

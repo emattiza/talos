@@ -24,10 +24,11 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"inet.af/netaddr"
 
+	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type LinkSpecSuite struct {
@@ -331,7 +332,7 @@ func (suite *LinkSpecSuite) TestBond() {
 		},
 		ConfigLayer: network.ConfigDefault,
 	}
-	bond.TypedSpec().BondMaster.FillDefaults()
+	networkadapter.BondMasterSpec(&bond.TypedSpec().BondMaster).FillDefaults()
 
 	dummy0Name := suite.uniqueDummyInterface()
 	dummy0 := network.NewLinkSpec(network.NamespaceName, dummy0Name)
@@ -463,7 +464,7 @@ func (suite *LinkSpecSuite) TestBond8023ad() {
 		},
 		ConfigLayer: network.ConfigDefault,
 	}
-	bond.TypedSpec().BondMaster.FillDefaults()
+	networkadapter.BondMasterSpec(&bond.TypedSpec().BondMaster).FillDefaults()
 
 	dummies := []resource.Resource{}
 	dummyNames := []string{}
@@ -587,7 +588,7 @@ func (suite *LinkSpecSuite) TestWireguard() {
 			return suite.assertInterfaces([]string{wgInterface}, func(r *network.LinkStatus) error {
 				suite.Assert().Equal("wireguard", r.TypedSpec().Kind)
 
-				if r.TypedSpec().Wireguard.PrivateKey != priv.String() {
+				if r.TypedSpec().Wireguard.PublicKey != priv.PublicKey().String() {
 					return retry.ExpectedErrorf("private key not set")
 				}
 
@@ -617,7 +618,7 @@ func (suite *LinkSpecSuite) TestWireguard() {
 	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
 		func() error {
 			return suite.assertInterfaces([]string{wgInterface}, func(r *network.LinkStatus) error {
-				if r.TypedSpec().Wireguard.PrivateKey != priv2.String() {
+				if r.TypedSpec().Wireguard.PublicKey != priv2.PublicKey().String() {
 					return retry.ExpectedErrorf("private key was not updated")
 				}
 

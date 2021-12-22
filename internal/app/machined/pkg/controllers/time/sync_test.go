@@ -27,10 +27,10 @@ import (
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	timeresource "github.com/talos-systems/talos/pkg/resources/time"
-	v1alpha1resource "github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
+	v1alpha1resource "github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 type SyncSuite struct {
@@ -318,6 +318,55 @@ func (suite *SyncSuite) TestReconcileSyncChangeConfig() {
 					Synced:       true,
 					Epoch:        1,
 					SyncDisabled: true,
+				},
+			)
+		},
+	))
+}
+
+func (suite *SyncSuite) TestReconcileSyncBootTimeout() {
+	suite.Require().NoError(suite.runtime.RegisterController(&timectrl.SyncController{
+		V1Alpha1Mode: v1alpha1runtime.ModeMetal,
+		NewNTPSyncer: suite.newMockSyncer,
+	}))
+
+	suite.startRuntime()
+
+	timeServers := network.NewTimeServerStatus(network.NamespaceName, network.TimeServerID)
+	timeServers.TypedSpec().NTPServers = []string{constants.DefaultNTPServer}
+	suite.Require().NoError(suite.state.Create(suite.ctx, timeServers))
+
+	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+		func() error {
+			return suite.assertTimeStatus(
+				timeresource.StatusSpec{
+					Synced:       false,
+					Epoch:        0,
+					SyncDisabled: false,
+				},
+			)
+		},
+	))
+
+	cfg := config.NewMachineConfig(&v1alpha1.Config{
+		ConfigVersion: "v1alpha1",
+		MachineConfig: &v1alpha1.MachineConfig{
+			MachineTime: &v1alpha1.TimeConfig{
+				TimeBootTimeout: 5 * time.Second,
+			},
+		},
+		ClusterConfig: &v1alpha1.ClusterConfig{},
+	})
+
+	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
+
+	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+		func() error {
+			return suite.assertTimeStatus(
+				timeresource.StatusSpec{
+					Synced:       true,
+					Epoch:        0,
+					SyncDisabled: false,
 				},
 			)
 		},

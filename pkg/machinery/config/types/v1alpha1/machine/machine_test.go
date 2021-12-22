@@ -24,7 +24,7 @@ func TestParseType(t *testing.T) {
 		assert.EqualValues(t, machineapi.MachineConfig_TYPE_INIT, machine.TypeInit)
 		assert.EqualValues(t, machineapi.MachineConfig_TYPE_CONTROL_PLANE, machine.TypeControlPlane)
 		assert.EqualValues(t, machineapi.MachineConfig_TYPE_WORKER, machine.TypeWorker)
-		assert.EqualValues(t, machineapi.MachineConfig_TYPE_JOIN, machine.TypeJoin) //nolint:staticcheck
+		assert.EqualValues(t, machineapi.MachineConfig_TYPE_JOIN, machine.TypeWorker) //nolint:staticcheck
 	})
 
 	validTests := []struct {
@@ -36,6 +36,7 @@ func TestParseType(t *testing.T) {
 		{"worker", machine.TypeWorker},
 		{"join", machine.TypeWorker},
 		{"", machine.TypeWorker},
+		{"unknown", machine.TypeUnknown},
 	}
 
 	for _, tt := range validTests {
@@ -56,7 +57,6 @@ func TestParseType(t *testing.T) {
 
 	for _, s := range []string{
 		"foo",
-		machine.TypeUnknown.String(),
 	} {
 		s := s
 		t.Run(s, func(t *testing.T) {

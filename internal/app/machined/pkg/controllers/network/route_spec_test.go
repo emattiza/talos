@@ -29,7 +29,7 @@ import (
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 type RouteSpecSuite struct {
@@ -281,7 +281,7 @@ func (suite *RouteSpecSuite) TestDefaultAndInterfaceRoutes() {
 		PrefixLength: 32,
 		Scope:        unix.RT_SCOPE_UNIVERSE,
 		Index:        uint32(iface.Index),
-		Attributes: rtnetlink.AddressAttributes{
+		Attributes: &rtnetlink.AddressAttributes{
 			Address: localIP,
 			Local:   localIP,
 		},
@@ -292,7 +292,7 @@ func (suite *RouteSpecSuite) TestDefaultAndInterfaceRoutes() {
 		Family:      nethelpers.FamilyInet4,
 		Destination: netaddr.IPPrefix{},
 		Gateway:     netaddr.MustParseIP("10.28.0.1"),
-		Source:      netaddr.MustParseIPPrefix("10.28.0.27/32"),
+		Source:      netaddr.MustParseIP("10.28.0.27"),
 		Table:       nethelpers.TableMain,
 		OutLinkName: dummyInterface,
 		Protocol:    nethelpers.ProtocolStatic,
@@ -307,7 +307,7 @@ func (suite *RouteSpecSuite) TestDefaultAndInterfaceRoutes() {
 		Family:      nethelpers.FamilyInet4,
 		Destination: netaddr.MustParseIPPrefix("10.28.0.1/32"),
 		Gateway:     netaddr.MustParseIP("0.0.0.0"),
-		Source:      netaddr.MustParseIPPrefix("10.28.0.27/32"),
+		Source:      netaddr.MustParseIP("10.28.0.27"),
 		Table:       nethelpers.TableMain,
 		OutLinkName: dummyInterface,
 		Protocol:    nethelpers.ProtocolStatic,
@@ -403,7 +403,7 @@ func (suite *RouteSpecSuite) TestLinkLocalRoute() {
 		PrefixLength: 24,
 		Scope:        unix.RT_SCOPE_UNIVERSE,
 		Index:        uint32(iface.Index),
-		Attributes: rtnetlink.AddressAttributes{
+		Attributes: &rtnetlink.AddressAttributes{
 			Address: localIP,
 			Local:   localIP,
 		},
@@ -414,7 +414,7 @@ func (suite *RouteSpecSuite) TestLinkLocalRoute() {
 		Family:      nethelpers.FamilyInet4,
 		Destination: netaddr.MustParseIPPrefix("169.254.169.254/32"),
 		Gateway:     netaddr.MustParseIP("10.28.0.1"),
-		Source:      netaddr.MustParseIPPrefix("10.28.0.27/24"),
+		Source:      netaddr.MustParseIP("10.28.0.27"),
 		Table:       nethelpers.TableMain,
 		OutLinkName: dummyInterface,
 		Protocol:    nethelpers.ProtocolStatic,

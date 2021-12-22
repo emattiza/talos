@@ -18,8 +18,8 @@ import (
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // RouteConfigController manages network.RouteSpec based on machine configuration, kernel cmdline.
@@ -142,13 +142,12 @@ func (ctrl *RouteConfigController) Run(ctx context.Context, r controller.Runtime
 	}
 }
 
-//nolint:dupl
 func (ctrl *RouteConfigController) apply(ctx context.Context, r controller.Runtime, routes []network.RouteSpecSpec) ([]resource.ID, error) {
 	ids := make([]string, 0, len(routes))
 
 	for _, route := range routes {
 		route := route
-		id := network.LayeredID(route.ConfigLayer, network.RouteID(route.Destination, route.Gateway))
+		id := network.LayeredID(route.ConfigLayer, network.RouteID(route.Table, route.Family, route.Destination, route.Gateway, route.Priority))
 
 		if err := r.Modify(
 			ctx,
@@ -218,6 +217,13 @@ func (ctrl *RouteConfigController) parseMachineConfiguration(logger *zap.Logger,
 		route.Gateway, err = netaddr.ParseIP(in.Gateway())
 		if err != nil {
 			return route, fmt.Errorf("error parsing route gateway: %w", err)
+		}
+
+		if in.Source() != "" {
+			route.Source, err = netaddr.ParseIP(in.Source())
+			if err != nil {
+				return route, fmt.Errorf("error parsing route source: %w", err)
+			}
 		}
 
 		route.Normalize()

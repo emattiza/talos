@@ -20,9 +20,10 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // ExtraManifestController renders manifests based on templates and config/secrets.
@@ -208,7 +209,7 @@ func (ctrl *ExtraManifestController) processURL(ctx context.Context, r controlle
 
 	if err = r.Modify(ctx, k8s.NewManifest(k8s.ControlPlaneNamespaceName, id),
 		func(r resource.Resource) error {
-			return r.(*k8s.Manifest).SetYAML(contents)
+			return k8sadapter.Manifest(r.(*k8s.Manifest)).SetYAML(contents)
 		}); err != nil {
 		err = fmt.Errorf("error updating manifests: %w", err)
 
@@ -223,7 +224,7 @@ func (ctrl *ExtraManifestController) processInline(ctx context.Context, r contro
 		ctx,
 		k8s.NewManifest(k8s.ControlPlaneNamespaceName, id),
 		func(r resource.Resource) error {
-			return r.(*k8s.Manifest).SetYAML([]byte(manifest.InlineManifest))
+			return k8sadapter.Manifest(r.(*k8s.Manifest)).SetYAML([]byte(manifest.InlineManifest))
 		},
 	)
 	if err != nil {

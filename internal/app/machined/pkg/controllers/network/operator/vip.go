@@ -19,12 +19,13 @@ import (
 	"go.uber.org/zap"
 	"inet.af/netaddr"
 
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/operator/vip"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
-	"github.com/talos-systems/talos/pkg/resources/network"
-	"github.com/talos-systems/talos/pkg/resources/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 const campaignRetryInterval = time.Second
@@ -33,22 +34,38 @@ const campaignRetryInterval = time.Second
 type VIP struct {
 	logger *zap.Logger
 
-	linkName string
-	sharedIP netaddr.IP
+	linkName      string
+	sharedIP      netaddr.IP
+	gratuitousARP bool
 
 	state state.State
 
 	mu     sync.Mutex
 	leader bool
+
+	handler vip.Handler
 }
 
 // NewVIP creates Virtual IP operator.
-func NewVIP(logger *zap.Logger, linkName string, sharedIP netaddr.IP, state state.State) *VIP {
+func NewVIP(logger *zap.Logger, linkName string, spec network.VIPOperatorSpec, state state.State) *VIP {
+	var handler vip.Handler
+
+	switch {
+	case spec.EquinixMetal != network.VIPEquinixMetalSpec{}:
+		handler = vip.NewEquinixMetalHandler(logger, spec.IP.String(), spec.EquinixMetal)
+	case spec.HCloud != network.VIPHCloudSpec{}:
+		handler = vip.NewHCloudHandler(logger, spec.IP.String(), spec.HCloud)
+	default:
+		handler = vip.NopHandler{}
+	}
+
 	return &VIP{
-		logger:   logger,
-		linkName: linkName,
-		sharedIP: sharedIP,
-		state:    state,
+		logger:        logger,
+		linkName:      linkName,
+		sharedIP:      spec.IP,
+		gratuitousARP: spec.GratuitousARP,
+		state:         state,
+		handler:       handler,
 	}
 }
 
@@ -89,7 +106,7 @@ func (vip *VIP) AddressSpecs() []network.AddressSpecSpec {
 
 	if vip.sharedIP.Is4() {
 		family = nethelpers.FamilyInet4
-		gratuitousARP = true
+		gratuitousARP = vip.gratuitousARP
 	}
 
 	return []network.AddressSpecSpec{
@@ -226,12 +243,14 @@ func (vip *VIP) campaign(ctx context.Context, notifyCh chan<- struct{}) error {
 	}
 
 	defer func() {
-		vip.markAsLeader(ctx, notifyCh, false) //nolint:errcheck
+		if err = vip.markAsLeader(ctx, notifyCh, false); err != nil && !errors.Is(err, context.Canceled) {
+			vip.logger.Info("failed disabling shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP), zap.Error(err))
+		}
 
-		vip.logger.Info("removing shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP), zap.String("link", vip.linkName))
+		vip.logger.Info("removing shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP))
 	}()
 
-	vip.logger.Info("enabled shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP), zap.String("link", vip.linkName))
+	vip.logger.Info("enabled shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP))
 
 	watchCh := make(chan state.Event)
 
@@ -266,7 +285,7 @@ observeLoop:
 				break observeLoop
 			}
 		case event := <-watchCh:
-			// break the loop when etcd is stoppped or kube-apiserver is stopped
+			// break the loop when etcd is stopped or kube-apiserver is stopped
 			if event.Type == state.Destroyed {
 				if event.Resource.Metadata().ID() == "etcd" || strings.HasPrefix(event.Resource.Metadata().ID(), "kube-system/kube-apiserver-") {
 					break observeLoop
@@ -279,17 +298,25 @@ observeLoop:
 }
 
 func (vip *VIP) markAsLeader(ctx context.Context, notifyCh chan<- struct{}, leader bool) error {
-	{
+	var handlerErr error
+
+	if leader {
+		handlerErr = vip.handler.Acquire(ctx)
+	} else {
+		handlerErr = vip.handler.Release(ctx)
+	}
+
+	func() {
 		vip.mu.Lock()
 		defer vip.mu.Unlock()
 
 		vip.leader = leader
-	}
+	}()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case notifyCh <- struct{}{}:
-		return nil
+		return handlerErr
 	}
 }

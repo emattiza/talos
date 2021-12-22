@@ -17,10 +17,11 @@ import (
 	"go.uber.org/zap"
 	"inet.af/netaddr"
 
+	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/network"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // LinkConfigController manages network.LinkSpec based on machine configuration, kernel cmdline.
@@ -442,7 +443,7 @@ func bondMaster(link *network.LinkSpecSpec, bond talosconfig.Bond) error {
 		ADUserPortKey:   bond.ADUserPortKey(),
 		PeerNotifyDelay: bond.PeerNotifyDelay(),
 	}
-	link.BondMaster.FillDefaults()
+	networkadapter.BondMasterSpec(&link.BondMaster).FillDefaults()
 
 	return nil
 }
@@ -452,6 +453,7 @@ func vlanLink(linkName string, vlan talosconfig.Vlan) network.LinkSpecSpec {
 		Name:       fmt.Sprintf("%s.%d", linkName, vlan.ID()),
 		Logical:    true,
 		Up:         true,
+		MTU:        vlan.MTU(),
 		Kind:       network.LinkKindVLAN,
 		Type:       nethelpers.LinkEther,
 		ParentName: linkName,

@@ -24,8 +24,8 @@ import (
 	"github.com/talos-systems/talos/pkg/kubernetes"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/resources/config"
-	"github.com/talos-systems/talos/pkg/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 )
 
 // EndpointController looks up control plane endpoints.
@@ -53,7 +53,7 @@ func (ctrl *EndpointController) Outputs() []controller.Output {
 	return []controller.Output{
 		{
 			Type: k8s.EndpointType,
-			Kind: controller.OutputExclusive,
+			Kind: controller.OutputShared,
 		},
 	}
 }
@@ -85,7 +85,7 @@ func (ctrl *EndpointController) Run(ctx context.Context, r controller.Runtime, l
 
 		logger.Debug("waiting for kubelet client config", zap.String("file", constants.KubeletKubeconfig))
 
-		if err = conditions.WaitForFileToExist(constants.KubeletKubeconfig).Wait(ctx); err != nil {
+		if err = conditions.WaitForKubeconfigReady(constants.KubeletKubeconfig).Wait(ctx); err != nil {
 			return err
 		}
 
@@ -128,7 +128,7 @@ func (ctrl *EndpointController) watchEndpoints(ctx context.Context, r controller
 		sort.Slice(addrs, func(i, j int) bool { return addrs[i].Compare(addrs[j]) < 0 })
 
 		if err := r.Modify(ctx,
-			k8s.NewEndpoint(k8s.ControlPlaneNamespaceName, k8s.ControlPlaneEndpointsID),
+			k8s.NewEndpoint(k8s.ControlPlaneNamespaceName, k8s.ControlPlaneAPIServerEndpointsID),
 			func(r resource.Resource) error {
 				if !reflect.DeepEqual(r.(*k8s.Endpoint).TypedSpec().Addresses, addrs) {
 					logger.Debug("updated controlplane endpoints", zap.Any("endpoints", addrs))

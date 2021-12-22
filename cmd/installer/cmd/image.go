@@ -68,7 +68,7 @@ func runImageCmd() (err error) {
 		return err
 	}
 
-	log.Print("attaching loopback device ")
+	log.Print("attaching loopback device")
 
 	if options.Disk, err = pkg.Loattach(img); err != nil {
 		return err
@@ -84,7 +84,7 @@ func runImageCmd() (err error) {
 
 	if options.ConfigSource == "" {
 		switch p.Name() {
-		case "aws", "azure", "digital-ocean", "gcp":
+		case "aws", "azure", "digital-ocean", "gcp", "hcloud", "nocloud", "scaleway", "upcloud", "vultr":
 			options.ConfigSource = constants.ConfigNone
 		case "vmware":
 			options.ConfigSource = constants.ConfigGuestInfo
@@ -109,7 +109,7 @@ func runImageCmd() (err error) {
 	return nil
 }
 
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func finalize(platform runtime.Platform, img, arch string) (err error) {
 	dir := filepath.Dir(img)
 
@@ -139,12 +139,77 @@ func finalize(platform runtime.Platform, img, arch string) (err error) {
 		if err = tar(fmt.Sprintf("gcp-%s.tar.gz", arch), file, dir); err != nil {
 			return err
 		}
+	case "hcloud":
+		file = filepath.Join(outputArg, fmt.Sprintf("hcloud-%s.raw", arch))
+
+		err = os.Rename(img, file)
+		if err != nil {
+			return err
+		}
+
+		log.Println("compressing image")
+
+		if err = xz(file); err != nil {
+			return err
+		}
+	case "nocloud":
+		file = filepath.Join(outputArg, fmt.Sprintf("nocloud-%s.raw", arch))
+
+		err = os.Rename(img, file)
+		if err != nil {
+			return err
+		}
+
+		log.Println("compressing image")
+
+		if err = xz(file); err != nil {
+			return err
+		}
 	case "openstack":
 		if err = tar(fmt.Sprintf("openstack-%s.tar.gz", arch), file, dir); err != nil {
 			return err
 		}
+	case "scaleway":
+		file = filepath.Join(outputArg, fmt.Sprintf("scaleway-%s.raw", arch))
+
+		err = os.Rename(img, file)
+		if err != nil {
+			return err
+		}
+
+		log.Println("compressing image")
+
+		if err = xz(file); err != nil {
+			return err
+		}
+	case "upcloud":
+		file = filepath.Join(outputArg, fmt.Sprintf("upcloud-%s.raw", arch))
+
+		err = os.Rename(img, file)
+		if err != nil {
+			return err
+		}
+
+		log.Println("compressing image")
+
+		if err = xz(file); err != nil {
+			return err
+		}
 	case "vmware":
 		if err = ova.CreateOVAFromRAW(name, img, outputArg, arch); err != nil {
+			return err
+		}
+	case "vultr":
+		file = filepath.Join(outputArg, fmt.Sprintf("vultr-%s.raw", arch))
+
+		err = os.Rename(img, file)
+		if err != nil {
+			return err
+		}
+
+		log.Println("compressing image")
+
+		if err = xz(file); err != nil {
 			return err
 		}
 	case "metal":
@@ -186,7 +251,7 @@ func tar(filename, src, dir string) error {
 }
 
 func xz(filename string) error {
-	if _, err := cmd.Run("xz", "-0", filename); err != nil {
+	if _, err := cmd.Run("xz", "-6", "-T", "0", filename); err != nil {
 		return err
 	}
 
