@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -23,7 +22,7 @@ func (suite *DisksSuite) SuiteName() string {
 
 // TestSuccess runs comand with success.
 func (suite *DisksSuite) TestSuccess() {
-	suite.RunCLI([]string{"disks", "--nodes", suite.RandomDiscoveredNode()})
+	suite.RunCLI([]string{"disks", "--nodes", suite.RandomDiscoveredNodeInternalIP()})
 }
 
 func init() {

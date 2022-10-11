@@ -8,10 +8,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
@@ -32,7 +32,7 @@ func (ctrl *ConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -74,6 +74,7 @@ func (ctrl *ConfigController) Run(ctx context.Context, r controller.Runtime, log
 					res.(*kubespan.Config).TypedSpec().ClusterID = c.Cluster().ID()
 					res.(*kubespan.Config).TypedSpec().SharedSecret = c.Cluster().Secret()
 					res.(*kubespan.Config).TypedSpec().ForceRouting = c.Machine().Network().KubeSpan().ForceRouting()
+					res.(*kubespan.Config).TypedSpec().AdvertiseKubernetesNetworks = c.Machine().Network().KubeSpan().AdvertiseKubernetesNetworks()
 
 					return nil
 				}); err != nil {

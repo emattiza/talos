@@ -14,10 +14,10 @@ import (
 type Sequence int
 
 const (
+	// SequenceNoop is the noop sequence.
+	SequenceNoop Sequence = iota
 	// SequenceBoot is the boot sequence.
-	SequenceBoot Sequence = iota
-	// SequenceBootstrap is the boot sequence.
-	SequenceBootstrap
+	SequenceBoot
 	// SequenceInitialize is the initialize sequence.
 	SequenceInitialize
 	// SequenceInstall is the install sequence.
@@ -28,30 +28,68 @@ const (
 	SequenceUpgrade
 	// SequenceStageUpgrade is the stage upgrade sequence.
 	SequenceStageUpgrade
+	// SequenceMaintenanceUpgrade is the upgrade sequence in maintenance mode.
+	SequenceMaintenanceUpgrade
 	// SequenceReset is the reset sequence.
 	SequenceReset
 	// SequenceReboot is the reboot sequence.
 	SequenceReboot
-	// SequenceNoop is the noop sequence.
-	SequenceNoop
 )
 
 const (
-	boot         = "boot"
-	bootstrap    = "bootstrap"
-	initialize   = "initialize"
-	install      = "install"
-	shutdown     = "shutdown"
-	upgrade      = "upgrade"
-	stageUpgrade = "stageUpgrade"
-	reset        = "reset"
-	reboot       = "reboot"
-	noop         = "noop"
+	boot               = "boot"
+	initialize         = "initialize"
+	install            = "install"
+	shutdown           = "shutdown"
+	upgrade            = "upgrade"
+	stageUpgrade       = "stageUpgrade"
+	maintenanceUpgrade = "maintenanceUpgrade"
+	reset              = "reset"
+	reboot             = "reboot"
+	noop               = "noop"
 )
+
+var sequenceTakeOver = map[Sequence]map[Sequence]struct{}{
+	SequenceInitialize: {
+		SequenceMaintenanceUpgrade: {},
+	},
+	SequenceBoot: {
+		SequenceReboot:  {},
+		SequenceReset:   {},
+		SequenceUpgrade: {},
+	},
+	SequenceReboot: {
+		SequenceReboot: {},
+	},
+	SequenceReset: {
+		SequenceReboot: {},
+	},
+}
 
 // String returns the string representation of a `Sequence`.
 func (s Sequence) String() string {
-	return [...]string{boot, bootstrap, initialize, install, shutdown, upgrade, stageUpgrade, reset, reboot, noop}[s]
+	return [...]string{noop, boot, initialize, install, shutdown, upgrade, stageUpgrade, maintenanceUpgrade, reset, reboot}[s]
+}
+
+// CanTakeOver defines sequences priority.
+//
+// | what is running (columns) what is requested (rows) | boot | reboot | reset | upgrade |
+// |----------------------------------------------------|------|--------|-------|---------|
+// | reboot                                             | Y    | Y      | Y     | N       |
+// | reset                                              | Y    | N      | N     | N       |
+// | upgrade                                            | Y    | N      | N     | N       |.
+func (s Sequence) CanTakeOver(running Sequence) bool {
+	if running == SequenceNoop {
+		return true
+	}
+
+	if sequences, ok := sequenceTakeOver[running]; ok {
+		if _, ok = sequences[s]; ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ParseSequence returns a `Sequence` that matches the specified string.
@@ -61,8 +99,6 @@ func ParseSequence(s string) (seq Sequence, err error) {
 	switch s {
 	case boot:
 		seq = SequenceBoot
-	case bootstrap:
-		seq = SequenceBootstrap
 	case initialize:
 		seq = SequenceInitialize
 	case install:
@@ -97,20 +133,21 @@ type ResetOptions interface {
 type PartitionTarget interface {
 	fmt.Stringer
 	Format() error
+	GetLabel() string
 }
 
 // Sequencer describes the set of sequences required for the lifecycle
 // management of the operating system.
 type Sequencer interface {
 	Boot(Runtime) []Phase
-	Bootstrap(Runtime) []Phase
 	Initialize(Runtime) []Phase
 	Install(Runtime) []Phase
 	Reboot(Runtime) []Phase
 	Reset(Runtime, ResetOptions) []Phase
-	Shutdown(Runtime) []Phase
+	Shutdown(Runtime, *machine.ShutdownRequest) []Phase
 	StageUpgrade(Runtime, *machine.UpgradeRequest) []Phase
 	Upgrade(Runtime, *machine.UpgradeRequest) []Phase
+	MaintenanceUpgrade(Runtime, *machine.UpgradeRequest) []Phase
 }
 
 // EventSequenceStart represents the sequence start event.

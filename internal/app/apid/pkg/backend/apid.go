@@ -8,10 +8,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/talos-systems/grpc-proxy/proxy"
 	"github.com/talos-systems/net"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -22,6 +24,8 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
+
+var _ proxy.Backend = (*APID)(nil)
 
 // APID backend performs proxying to another apid instance.
 //
@@ -66,6 +70,7 @@ func (a *APID) GetConnection(ctx context.Context) (context.Context, *grpc.Client
 
 	delete(md, ":authority")
 	delete(md, "nodes")
+	delete(md, "node")
 
 	outCtx := metadata.NewOutgoingContext(ctx, md)
 
@@ -76,11 +81,26 @@ func (a *APID) GetConnection(ctx context.Context) (context.Context, *grpc.Client
 		return outCtx, a.conn, nil
 	}
 
+	// override  max delay to avoid excessive backoff when the another node is unavailable (e.g. rebooted),
+	// and apid used as an endpoint considers another node to be down for longer than expected.
+	//
+	// default max delay is 2 minutes, which is too long for our use case.
+	backoffConfig := backoff.DefaultConfig
+	backoffConfig.MaxDelay = 15 * time.Second
+
 	var err error
 	a.conn, err = grpc.DialContext(
 		ctx,
 		fmt.Sprintf("%s:%d", net.FormatAddress(a.target), constants.ApidPort),
+		grpc.WithInitialWindowSize(65535*32),
+		grpc.WithInitialConnWindowSize(65535*16),
 		grpc.WithTransportCredentials(a.creds),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoffConfig,
+			// not published as a constant in gRPC library
+			// see: https://github.com/grpc/grpc-go/blob/d5dee5fdbdeb52f6ea10b37b2cc7ce37814642d7/clientconn.go#L55-L56
+			MinConnectTimeout: 20 * time.Second,
+		}),
 		grpc.WithCodec(proxy.Codec()), //nolint:staticcheck
 	)
 
@@ -94,14 +114,14 @@ func (a *APID) GetConnection(ctx context.Context) (context.Context, *grpc.Client
 // This method depends on grpc protobuf response structure, each response should
 // look like:
 //
-//   message SomeResponse {
-//     repeated SomeReply messages = 1; // please note field ID == 1
-//   }
+//	  message SomeResponse {
+//	    repeated SomeReply messages = 1; // please note field ID == 1
+//	  }
 //
-//   message SomeReply {
-//	   common.Metadata metadata = 1;
-//     <other fields go here ...>
-//   }
+//	  message SomeReply {
+//		   common.Metadata metadata = 1;
+//	    <other fields go here ...>
+//	  }
 //
 // As 'SomeReply' is repeated in 'SomeResponse', if we concatenate protobuf representation
 // of several 'SomeResponse' messages, we still get valid 'SomeResponse' representation but with more
@@ -120,9 +140,9 @@ func (a *APID) GetConnection(ctx context.Context) (context.Context, *grpc.Client
 // To build only single field (Metadata) we use helper message which contains exactly this
 // field with same field ID as in every other 'SomeReply':
 //
-//   message Empty {
-//     common.Metadata metadata = 1;
-//	}
+//	  message Empty {
+//	    common.Metadata metadata = 1;
+//		}
 //
 // As streaming replies are not wrapped into 'SomeResponse' with 'repeated', handling is simpler: we just
 // need to append Empty with details.
@@ -188,13 +208,13 @@ func (a *APID) AppendInfo(streaming bool, resp []byte) ([]byte, error) {
 // So if 'Empty' is unmarshalled into any other reply message, all the fields
 // are undefined but 'Metadata':
 //
-//   message Empty {
-//    common.Metadata metadata = 1;
-//	}
+//	  message Empty {
+//	   common.Metadata metadata = 1;
+//		}
 //
-//  message EmptyResponse {
-//    repeated Empty messages = 1;
-// }
+//	 message EmptyResponse {
+//	   repeated Empty messages = 1;
+//	}
 //
 // Streaming responses are not wrapped into Empty, so we simply marshall EmptyResponse
 // message.

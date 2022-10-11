@@ -15,9 +15,11 @@ import (
 	"github.com/containerd/containerd/namespaces"
 	"github.com/containerd/containerd/oci"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/state"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/health"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner"
@@ -32,6 +34,8 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
 )
+
+var _ system.HealthcheckedService = (*Kubelet)(nil)
 
 // Kubelet implements the Service interface. It serves as the concrete type with
 // the required methods.
@@ -63,6 +67,12 @@ func (k *Kubelet) PreFunc(ctx context.Context, r runtime.Runtime) error {
 
 	_, err = image.Pull(containerdctx, r.Config().Machine().Registries(), client, spec.Image, image.WithSkipIfAlreadyPulled())
 	if err != nil {
+		return err
+	}
+
+	// Create lifecycle resource to signal that the kubelet is about to start.
+	err = r.State().V1Alpha2().Resources().Create(ctx, k8s.NewKubeletLifecycle(k8s.NamespaceName, k8s.KubeletLifecycleID))
+	if err != nil && !state.IsConflictError(err) { // ignore if the lifecycle resource already exists
 		return err
 	}
 
@@ -108,6 +118,7 @@ func (k *Kubelet) Runner(r runtime.Runtime) (runner.Runner, error) {
 		{Type: "bind", Destination: constants.CgroupMountPath, Source: constants.CgroupMountPath, Options: []string{"rbind", "rshared", "rw"}},
 		{Type: "bind", Destination: "/lib/modules", Source: "/lib/modules", Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: "/etc/kubernetes", Source: "/etc/kubernetes", Options: []string{"bind", "rshared", "rw"}},
+		{Type: "bind", Destination: "/etc/machine-id", Source: "/etc/machine-id", Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: "/etc/os-release", Source: "/etc/os-release", Options: []string{"bind", "ro"}},
 		{Type: "bind", Destination: "/etc/cni", Source: "/etc/cni", Options: []string{"rbind", "rshared", "rw"}},
 		{Type: "bind", Destination: "/usr/libexec/kubernetes", Source: "/usr/libexec/kubernetes", Options: []string{"rbind", "rshared", "rw"}},
@@ -168,7 +179,7 @@ func (k *Kubelet) Runner(r runtime.Runtime) (runner.Runner, error) {
 // HealthFunc implements the HealthcheckedService interface.
 func (k *Kubelet) HealthFunc(runtime.Runtime) health.Check {
 	return func(ctx context.Context) error {
-		req, err := http.NewRequest("GET", "http://127.0.0.1:10248/healthz", nil)
+		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:10248/healthz", nil)
 		if err != nil {
 			return err
 		}

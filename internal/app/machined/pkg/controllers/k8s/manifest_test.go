@@ -19,14 +19,15 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/siderolabs/gen/slices"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
 	k8sctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
@@ -39,7 +40,7 @@ type ManifestSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -70,16 +71,15 @@ func (suite *ManifestSuite) startRuntime() {
 
 //nolint:dupl
 func (suite *ManifestSuite) assertManifests(manifests []string) error {
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(
+		suite.ctx,
+		resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return err
 	}
 
-	ids := make([]string, 0, len(resources.Items))
-
-	for _, res := range resources.Items {
-		ids = append(ids, res.Metadata().ID())
-	}
+	ids := slices.Map(resources.Items, func(r resource.Resource) string { return r.Metadata().ID() })
 
 	if !reflect.DeepEqual(manifests, ids) {
 		return retry.ExpectedError(fmt.Errorf("expected %q, got %q", manifests, ids))
@@ -88,7 +88,7 @@ func (suite *ManifestSuite) assertManifests(manifests []string) error {
 	return nil
 }
 
-var defaultManifestSpec = config.K8sManifestsSpec{
+var defaultManifestSpec = k8s.BootstrapManifestsConfigSpec{
 	Server:        "127.0.0.1",
 	ClusterDomain: "cluster.",
 
@@ -118,94 +118,105 @@ var defaultManifestSpec = config.K8sManifestsSpec{
 
 func (suite *ManifestSuite) TestReconcileDefaults() {
 	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
-	manifestConfig := config.NewK8sManifests()
-	manifestConfig.SetManifests(defaultManifestSpec)
+	manifestConfig := k8s.NewBootstrapManifestsConfig()
+	*manifestConfig.TypedSpec() = defaultManifestSpec
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
 	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertManifests(
-				[]string{
-					"00-kubelet-bootstrapping-token",
-					"01-csr-approver-role-binding",
-					"01-csr-node-bootstrap",
-					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding",
-					"03-default-pod-security-policy",
-					"05-flannel",
-					"10-kube-proxy",
-					"11-core-dns",
-					"11-core-dns-svc",
-					"11-kube-config-in-cluster",
-				},
-			)
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertManifests(
+					[]string{
+						"00-kubelet-bootstrapping-token",
+						"01-csr-approver-role-binding",
+						"01-csr-node-bootstrap",
+						"01-csr-renewal-role-binding",
+						"03-default-pod-security-policy",
+						"05-flannel",
+						"10-kube-proxy",
+						"11-core-dns",
+						"11-core-dns-svc",
+						"11-kube-config-in-cluster",
+					},
+				)
+			},
+		),
+	)
 }
 
 func (suite *ManifestSuite) TestReconcileDisableKubeProxy() {
 	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
-	manifestConfig := config.NewK8sManifests()
+	manifestConfig := k8s.NewBootstrapManifestsConfig()
 	spec := defaultManifestSpec
 	spec.ProxyEnabled = false
-	manifestConfig.SetManifests(spec)
+	*manifestConfig.TypedSpec() = spec
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
 	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertManifests(
-				[]string{
-					"00-kubelet-bootstrapping-token",
-					"01-csr-approver-role-binding",
-					"01-csr-node-bootstrap",
-					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding",
-					"03-default-pod-security-policy",
-					"05-flannel",
-					"11-core-dns",
-					"11-core-dns-svc",
-					"11-kube-config-in-cluster",
-				},
-			)
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertManifests(
+					[]string{
+						"00-kubelet-bootstrapping-token",
+						"01-csr-approver-role-binding",
+						"01-csr-node-bootstrap",
+						"01-csr-renewal-role-binding",
+						"03-default-pod-security-policy",
+						"05-flannel",
+						"11-core-dns",
+						"11-core-dns-svc",
+						"11-kube-config-in-cluster",
+					},
+				)
+			},
+		),
+	)
 }
 
 func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
 	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
-	manifestConfig := config.NewK8sManifests()
+	manifestConfig := k8s.NewBootstrapManifestsConfig()
 	spec := defaultManifestSpec
 	spec.ProxyArgs = append(spec.ProxyArgs, "--bind-address=\"::\"")
-	manifestConfig.SetManifests(spec)
+	*manifestConfig.TypedSpec() = spec
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
 	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertManifests(
-				[]string{
-					"00-kubelet-bootstrapping-token",
-					"01-csr-approver-role-binding",
-					"01-csr-node-bootstrap",
-					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding",
-					"03-default-pod-security-policy",
-					"05-flannel",
-					"10-kube-proxy",
-					"11-core-dns",
-					"11-core-dns-svc",
-					"11-kube-config-in-cluster",
-				},
-			)
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertManifests(
+					[]string{
+						"00-kubelet-bootstrapping-token",
+						"01-csr-approver-role-binding",
+						"01-csr-node-bootstrap",
+						"01-csr-renewal-role-binding",
+						"03-default-pod-security-policy",
+						"05-flannel",
+						"10-kube-proxy",
+						"11-core-dns",
+						"11-core-dns-svc",
+						"11-kube-config-in-cluster",
+					},
+				)
+			},
+		),
+	)
 
-	r, err := suite.state.Get(suite.ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "10-kube-proxy", resource.VersionUndefined))
+	r, err := suite.state.Get(
+		suite.ctx,
+		resource.NewMetadata(
+			k8s.ControlPlaneNamespaceName,
+			k8s.ManifestType,
+			"10-kube-proxy",
+			resource.VersionUndefined,
+		),
+	)
 	suite.Require().NoError(err)
 
 	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
@@ -220,34 +231,98 @@ func (suite *ManifestSuite) TestReconcileKubeProxyExtraArgs() {
 	suite.Assert().Equal("--bind-address=\"::\"", args[len(args)-1])
 }
 
-func (suite *ManifestSuite) TestReconcileDisablePSP() {
+func (suite *ManifestSuite) TestReconcileIPv6() {
 	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
-	manifestConfig := config.NewK8sManifests()
+	manifestConfig := k8s.NewBootstrapManifestsConfig()
 	spec := defaultManifestSpec
-	spec.PodSecurityPolicyEnabled = false
-	manifestConfig.SetManifests(spec)
+	spec.PodCIDRs = []string{constants.DefaultIPv6PodNet}
+	spec.DNSServiceIP = ""
+	spec.DNSServiceIPv6 = "fc00:db8:10::10"
+	*manifestConfig.TypedSpec() = spec
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
 	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertManifests(
-				[]string{
-					"00-kubelet-bootstrapping-token",
-					"01-csr-approver-role-binding",
-					"01-csr-node-bootstrap",
-					"01-csr-renewal-role-binding",
-					"02-kube-system-sa-role-binding",
-					"05-flannel",
-					"10-kube-proxy",
-					"11-core-dns",
-					"11-core-dns-svc",
-					"11-kube-config-in-cluster",
-				},
-			)
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertManifests(
+					[]string{
+						"00-kubelet-bootstrapping-token",
+						"01-csr-approver-role-binding",
+						"01-csr-node-bootstrap",
+						"01-csr-renewal-role-binding",
+						"03-default-pod-security-policy",
+						"05-flannel",
+						"10-kube-proxy",
+						"11-core-dns",
+						"11-core-dns-svc",
+						"11-kube-config-in-cluster",
+					},
+				)
+			},
+		),
+	)
+
+	r, err := suite.state.Get(
+		suite.ctx,
+		resource.NewMetadata(
+			k8s.ControlPlaneNamespaceName,
+			k8s.ManifestType,
+			"11-core-dns-svc",
+			resource.VersionUndefined,
+		),
+	)
+	suite.Require().NoError(err)
+
+	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
+	suite.Assert().Len(k8sadapter.Manifest(manifest).Objects(), 1)
+
+	service := k8sadapter.Manifest(manifest).Objects()[0]
+	suite.Assert().Equal("Service", service.GetKind())
+
+	v, _, _ := unstructured.NestedString(service.Object, "spec", "clusterIP") //nolint:errcheck
+	suite.Assert().Equal(spec.DNSServiceIPv6, v)
+
+	vv, _, _ := unstructured.NestedStringSlice(service.Object, "spec", "clusterIPs") //nolint:errcheck
+	suite.Assert().Equal([]string{spec.DNSServiceIPv6}, vv)
+
+	vv, _, _ = unstructured.NestedStringSlice(service.Object, "spec", "ipFamilies") //nolint:errcheck
+	suite.Assert().Equal([]string{"IPv6"}, vv)
+
+	v, _, _ = unstructured.NestedString(service.Object, "spec", "ipFamilyPolicy") //nolint:errcheck
+	suite.Assert().Equal("SingleStack", v)
+}
+
+func (suite *ManifestSuite) TestReconcileDisablePSP() {
+	rootSecrets := secrets.NewKubernetesRoot(secrets.KubernetesRootID)
+	manifestConfig := k8s.NewBootstrapManifestsConfig()
+	spec := defaultManifestSpec
+	spec.PodSecurityPolicyEnabled = false
+	*manifestConfig.TypedSpec() = spec
+
+	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
+	suite.Require().NoError(suite.state.Create(suite.ctx, manifestConfig))
+
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertManifests(
+					[]string{
+						"00-kubelet-bootstrapping-token",
+						"01-csr-approver-role-binding",
+						"01-csr-node-bootstrap",
+						"01-csr-renewal-role-binding",
+						"05-flannel",
+						"10-kube-proxy",
+						"11-core-dns",
+						"11-core-dns-svc",
+						"11-kube-config-in-cluster",
+					},
+				)
+			},
+		),
+	)
 }
 
 func (suite *ManifestSuite) TearDownTest() {
@@ -259,7 +334,6 @@ func (suite *ManifestSuite) TearDownTest() {
 
 	// trigger updates in resources to stop watch loops
 	suite.Assert().NoError(suite.state.Create(context.Background(), secrets.NewKubernetesRoot("-")))
-	suite.Assert().NoError(suite.state.Create(context.Background(), config.NewK8sControlPlaneAPIServer()))
 }
 
 func TestManifestSuite(t *testing.T) {

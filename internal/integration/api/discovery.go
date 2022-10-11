@@ -3,19 +3,22 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
 import (
 	"context"
 	"fmt"
-	"io"
+	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
-	"gopkg.in/yaml.v3"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/siderolabs/gen/maps"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/gen/value"
+	"go4.org/netipx"
 
 	"github.com/talos-systems/talos/internal/integration/base"
 	"github.com/talos-systems/talos/pkg/machinery/client"
@@ -27,7 +30,7 @@ import (
 type DiscoverySuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -42,7 +45,7 @@ func (suite *DiscoverySuite) SetupTest() {
 	suite.ctx, suite.ctxCancel = context.WithTimeout(context.Background(), 15*time.Second)
 
 	// check that cluster has discovery enabled
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 	suite.ClearConnectionRefused(suite.ctx, node)
 
 	nodeCtx := client.WithNodes(suite.ctx, node)
@@ -65,30 +68,34 @@ func (suite *DiscoverySuite) TearDownTest() {
 //
 //nolint:gocyclo
 func (suite *DiscoverySuite) TestMembers() {
-	nodes := suite.DiscoverNodes(suite.ctx)
+	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+
 	expectedTalosVersion := fmt.Sprintf("Talos (%s)", suite.Version)
 
-	for _, node := range nodes.Nodes() {
-		nodeCtx := client.WithNodes(suite.ctx, node)
+	for _, node := range nodes {
+		nodeCtx := client.WithNode(suite.ctx, node.InternalIP.String())
 
 		members := suite.getMembers(nodeCtx)
 
-		suite.Assert().Len(members, len(nodes.Nodes()))
+		suite.Assert().Len(members, len(nodes))
 
 		// do basic check against discovered nodes
-		for _, expectedNode := range nodes.Nodes() {
-			addr, err := netaddr.ParseIP(expectedNode)
-			suite.Require().NoError(err)
+		for _, expectedNode := range nodes {
+			nodeAddresses := slices.Map(expectedNode.IPs, func(t netip.Addr) string {
+				return t.String()
+			})
 
 			found := false
 
 			for _, member := range members {
-				for _, memberAddr := range member.TypedSpec().Addresses {
-					if memberAddr.Compare(addr) == 0 {
-						found = true
+				memberAddresses := slices.Map(member.TypedSpec().Addresses, func(t netip.Addr) string {
+					return t.String()
+				})
 
-						break
-					}
+				if maps.Contains(slices.ToSet(memberAddresses), nodeAddresses) {
+					found = true
+
+					break
 				}
 
 				if found {
@@ -96,32 +103,56 @@ func (suite *DiscoverySuite) TestMembers() {
 				}
 			}
 
-			suite.Assert().True(found, "addr %s", addr)
+			suite.Assert().True(found, "addr %q", nodeAddresses)
 		}
 
-		// if cluster informantion is available, perform additional checks
+		// if cluster information is available, perform additional checks
 		if suite.Cluster == nil {
 			continue
 		}
 
-		memberByID := make(map[string]*cluster.Member)
+		memberByName := slices.ToMap(members,
+			func(member *cluster.Member) (string, *cluster.Member) {
+				return member.Metadata().ID(), member
+			},
+		)
+
+		memberByIP := make(map[netip.Addr]*cluster.Member)
 
 		for _, member := range members {
-			memberByID[member.Metadata().ID()] = member
+			for _, addr := range member.TypedSpec().Addresses {
+				memberByIP[addr] = member
+			}
 		}
 
 		nodesInfo := suite.Cluster.Info().Nodes
 
 		for _, nodeInfo := range nodesInfo {
-			matchingMember := memberByID[nodeInfo.Name]
+			matchingMember := memberByName[nodeInfo.Name]
+
+			var matchingMemberByIP *cluster.Member
+
+			for _, nodeIPStd := range nodeInfo.IPs {
+				nodeIP, ok := netipx.FromStdIP(nodeIPStd)
+				suite.Assert().True(ok)
+
+				matchingMemberByIP = memberByIP[nodeIP]
+
+				break
+			}
+
+			// if hostnames are not set via DHCP, use match by IP
+			if matchingMember == nil {
+				matchingMember = matchingMemberByIP
+			}
+
 			suite.Require().NotNil(matchingMember)
 
 			suite.Assert().Equal(nodeInfo.Type, matchingMember.TypedSpec().MachineType)
 			suite.Assert().Equal(expectedTalosVersion, matchingMember.TypedSpec().OperatingSystem)
-			suite.Assert().Equal(nodeInfo.Name, matchingMember.TypedSpec().Hostname)
 
 			for _, nodeIPStd := range nodeInfo.IPs {
-				nodeIP, ok := netaddr.FromStdIP(nodeIPStd)
+				nodeIP, ok := netipx.FromStdIP(nodeIPStd)
 				suite.Assert().True(ok)
 
 				found := false
@@ -142,19 +173,49 @@ func (suite *DiscoverySuite) TestMembers() {
 
 // TestRegistries checks that all registries produce same raw Affiliate data.
 func (suite *DiscoverySuite) TestRegistries() {
-	registries := []string{"k8s/", "service/"}
+	node := suite.RandomDiscoveredNodeInternalIP()
+	suite.ClearConnectionRefused(suite.ctx, node)
 
-	nodes := suite.DiscoverNodes(suite.ctx)
+	nodeCtx := client.WithNodes(suite.ctx, node)
+	provider, err := suite.ReadConfigFromNode(nodeCtx)
+	suite.Require().NoError(err)
 
-	for _, node := range nodes.Nodes() {
-		nodeCtx := client.WithNodes(suite.ctx, node)
+	var registries []string
+
+	if provider.Cluster().Discovery().Registries().Kubernetes().Enabled() {
+		registries = append(registries, "k8s/")
+	}
+
+	if provider.Cluster().Discovery().Registries().Service().Enabled() {
+		registries = append(registries, "service/")
+	}
+
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
+
+	for _, node := range nodes {
+		nodeCtx := client.WithNode(suite.ctx, node)
 
 		members := suite.getMembers(nodeCtx)
 		localIdentity := suite.getNodeIdentity(nodeCtx)
-		rawAffiliates := suite.getAffiliates(nodeCtx, cluster.RawNamespaceName)
 
 		// raw affiliates don't contain the local node
-		suite.Assert().Len(rawAffiliates, len(registries)*(len(members)-1))
+		expectedRawAffiliates := len(registries) * (len(members) - 1)
+
+		var rawAffiliates []*cluster.Affiliate
+
+		for i := 0; i < 30; i++ {
+			rawAffiliates = suite.getAffiliates(nodeCtx, cluster.RawNamespaceName)
+
+			if len(rawAffiliates) == expectedRawAffiliates {
+				break
+			}
+
+			suite.T().Logf("waiting for cluster affiliates to be discovered: %d expected, %d found", expectedRawAffiliates, len(rawAffiliates))
+
+			time.Sleep(2 * time.Second)
+		}
+
+		suite.Assert().Len(rawAffiliates, expectedRawAffiliates)
 
 		rawAffiliatesByID := make(map[string]*cluster.Affiliate)
 
@@ -172,7 +233,11 @@ func (suite *DiscoverySuite) TestRegistries() {
 				rawAffiliate := rawAffiliatesByID[registry+member.TypedSpec().NodeID]
 				suite.Require().NotNil(rawAffiliate)
 
-				suite.Assert().Equal(member.TypedSpec().Hostname, rawAffiliate.TypedSpec().Hostname)
+				stripDomain := func(s string) string { return strings.Split(s, ".")[0] }
+
+				// registries can be a bit inconsistent, e.g. whether they report fqdn or just hostname
+				suite.Assert().Contains([]string{member.TypedSpec().Hostname, stripDomain(member.TypedSpec().Hostname)}, rawAffiliate.TypedSpec().Hostname)
+
 				suite.Assert().Equal(member.TypedSpec().Addresses, rawAffiliate.TypedSpec().Addresses)
 				suite.Assert().Equal(member.TypedSpec().OperatingSystem, rawAffiliate.TypedSpec().OperatingSystem)
 				suite.Assert().Equal(member.TypedSpec().MachineType, rawAffiliate.TypedSpec().MachineType)
@@ -188,10 +253,10 @@ func (suite *DiscoverySuite) TestKubeSpanPeers() {
 	}
 
 	// check that cluster has KubeSpan enabled
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 	suite.ClearConnectionRefused(suite.ctx, node)
 
-	nodeCtx := client.WithNodes(suite.ctx, node)
+	nodeCtx := client.WithNode(suite.ctx, node)
 	provider, err := suite.ReadConfigFromNode(nodeCtx)
 	suite.Require().NoError(err)
 
@@ -199,10 +264,10 @@ func (suite *DiscoverySuite) TestKubeSpanPeers() {
 		suite.T().Skip("KubeSpan is disabled")
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 
 	for _, node := range nodes {
-		nodeCtx := client.WithNodes(suite.ctx, node)
+		nodeCtx := client.WithNode(suite.ctx, node)
 
 		peerSpecs := suite.getKubeSpanPeerSpecs(nodeCtx)
 		suite.Assert().Len(peerSpecs, len(nodes)-1)
@@ -212,7 +277,7 @@ func (suite *DiscoverySuite) TestKubeSpanPeers() {
 
 		for _, status := range peerStatuses {
 			suite.Assert().Equal(kubespan.PeerStateUp, status.TypedSpec().State)
-			suite.Assert().False(status.TypedSpec().Endpoint.IsZero())
+			suite.Assert().False(value.IsZero(status.TypedSpec().Endpoint))
 			suite.Assert().Greater(status.TypedSpec().ReceiveBytes, int64(0))
 			suite.Assert().Greater(status.TypedSpec().TransmitBytes, int64(0))
 		}
@@ -223,51 +288,21 @@ func (suite *DiscoverySuite) TestKubeSpanPeers() {
 func (suite *DiscoverySuite) getMembers(nodeCtx context.Context) []*cluster.Member {
 	var result []*cluster.Member
 
-	memberList, err := suite.Client.Resources.List(nodeCtx, cluster.NamespaceName, cluster.MemberType)
+	items, err := safe.StateList[*cluster.Member](nodeCtx, suite.Client.COSI, resource.NewMetadata(cluster.NamespaceName, cluster.MemberType, "", resource.VersionUndefined))
 	suite.Require().NoError(err)
 
-	for {
-		resp, err := memberList.Recv()
-		if err == io.EOF {
-			break
-		}
+	it := safe.IteratorFromList(items)
 
-		suite.Require().NoError(err)
-
-		if resp.Resource == nil {
-			continue
-		}
-
-		// TODO: this is hackery to decode back into Member resource
-		//       this should be fixed once we introduce protobuf properly
-		b, err := yaml.Marshal(resp.Resource.Spec())
-		suite.Require().NoError(err)
-
-		member := cluster.NewMember(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-		suite.Require().NoError(yaml.Unmarshal(b, member.TypedSpec()))
-
-		result = append(result, member)
+	for it.Next() {
+		result = append(result, it.Value())
 	}
 
 	return result
 }
 
 func (suite *DiscoverySuite) getNodeIdentity(nodeCtx context.Context) *cluster.Identity {
-	list, err := suite.Client.Resources.Get(nodeCtx, cluster.NamespaceName, cluster.IdentityType, cluster.LocalIdentity)
+	identity, err := safe.StateGet[*cluster.Identity](nodeCtx, suite.Client.COSI, resource.NewMetadata(cluster.NamespaceName, cluster.IdentityType, cluster.LocalIdentity, resource.VersionUndefined))
 	suite.Require().NoError(err)
-	suite.Require().Len(list, 1)
-
-	resp := list[0]
-
-	// TODO: this is hackery to decode back into Member resource
-	//       this should be fixed once we introduce protobuf properly
-	b, err := yaml.Marshal(resp.Resource.Spec())
-	suite.Require().NoError(err)
-
-	identity := cluster.NewIdentity(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-	suite.Require().NoError(yaml.Unmarshal(b, identity.TypedSpec()))
 
 	return identity
 }
@@ -276,31 +311,13 @@ func (suite *DiscoverySuite) getNodeIdentity(nodeCtx context.Context) *cluster.I
 func (suite *DiscoverySuite) getAffiliates(nodeCtx context.Context, namespace resource.Namespace) []*cluster.Affiliate {
 	var result []*cluster.Affiliate
 
-	affiliateList, err := suite.Client.Resources.List(nodeCtx, namespace, cluster.AffiliateType)
+	items, err := safe.StateList[*cluster.Affiliate](nodeCtx, suite.Client.COSI, resource.NewMetadata(namespace, cluster.AffiliateType, "", resource.VersionUndefined))
 	suite.Require().NoError(err)
 
-	for {
-		resp, err := affiliateList.Recv()
-		if err == io.EOF {
-			break
-		}
+	it := safe.IteratorFromList(items)
 
-		suite.Require().NoError(err)
-
-		if resp.Resource == nil {
-			continue
-		}
-
-		// TODO: this is hackery to decode back into Affiliate resource
-		//       this should be fixed once we introduce protobuf properly
-		b, err := yaml.Marshal(resp.Resource.Spec())
-		suite.Require().NoError(err)
-
-		affiliate := cluster.NewAffiliate(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-		suite.Require().NoError(yaml.Unmarshal(b, affiliate.TypedSpec()))
-
-		result = append(result, affiliate)
+	for it.Next() {
+		result = append(result, it.Value())
 	}
 
 	return result
@@ -310,31 +327,13 @@ func (suite *DiscoverySuite) getAffiliates(nodeCtx context.Context, namespace re
 func (suite *DiscoverySuite) getKubeSpanPeerSpecs(nodeCtx context.Context) []*kubespan.PeerSpec {
 	var result []*kubespan.PeerSpec
 
-	peerList, err := suite.Client.Resources.List(nodeCtx, kubespan.NamespaceName, kubespan.PeerSpecType)
+	items, err := safe.StateList[*kubespan.PeerSpec](nodeCtx, suite.Client.COSI, resource.NewMetadata(kubespan.NamespaceName, kubespan.PeerSpecType, "", resource.VersionUndefined))
 	suite.Require().NoError(err)
 
-	for {
-		resp, err := peerList.Recv()
-		if err == io.EOF {
-			break
-		}
+	it := safe.IteratorFromList(items)
 
-		suite.Require().NoError(err)
-
-		if resp.Resource == nil {
-			continue
-		}
-
-		// TODO: this is hackery to decode back into KubeSpanPeerSpec resource
-		//       this should be fixed once we introduce protobuf properly
-		b, err := yaml.Marshal(resp.Resource.Spec())
-		suite.Require().NoError(err)
-
-		peerSpec := kubespan.NewPeerSpec(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-		suite.Require().NoError(yaml.Unmarshal(b, peerSpec.TypedSpec()))
-
-		result = append(result, peerSpec)
+	for it.Next() {
+		result = append(result, it.Value())
 	}
 
 	return result
@@ -344,31 +343,13 @@ func (suite *DiscoverySuite) getKubeSpanPeerSpecs(nodeCtx context.Context) []*ku
 func (suite *DiscoverySuite) getKubeSpanPeerStatuses(nodeCtx context.Context) []*kubespan.PeerStatus {
 	var result []*kubespan.PeerStatus
 
-	peerList, err := suite.Client.Resources.List(nodeCtx, kubespan.NamespaceName, kubespan.PeerStatusType)
+	items, err := safe.StateList[*kubespan.PeerStatus](nodeCtx, suite.Client.COSI, resource.NewMetadata(kubespan.NamespaceName, kubespan.PeerStatusType, "", resource.VersionUndefined))
 	suite.Require().NoError(err)
 
-	for {
-		resp, err := peerList.Recv()
-		if err == io.EOF {
-			break
-		}
+	it := safe.IteratorFromList(items)
 
-		suite.Require().NoError(err)
-
-		if resp.Resource == nil {
-			continue
-		}
-
-		// TODO: this is hackery to decode back into KubeSpanPeerStatus resource
-		//       this should be fixed once we introduce protobuf properly
-		b, err := yaml.Marshal(resp.Resource.Spec())
-		suite.Require().NoError(err)
-
-		peerStatus := kubespan.NewPeerStatus(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-		suite.Require().NoError(yaml.Unmarshal(b, peerStatus.TypedSpec()))
-
-		result = append(result, peerStatus)
+	for it.Next() {
+		result = append(result, it.Value())
 	}
 
 	return result

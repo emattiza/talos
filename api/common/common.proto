@@ -46,6 +46,7 @@ extend google.protobuf.ServiceOptions {
 enum Code {
   FATAL = 0;
   LOCKED = 1;
+  CANCELED = 2;
 }
 
 message Error {
@@ -85,4 +86,31 @@ message EmptyResponse {
 enum ContainerDriver {
   CONTAINERD = 0;
   CRI = 1;
+}
+
+message URL {
+  string full_path = 1;
+}
+
+message PEMEncodedCertificateAndKey {
+  bytes crt = 1;
+  bytes key = 2;
+}
+
+message PEMEncodedKey {
+  bytes key = 1;
+}
+
+message NetIP {
+  bytes ip = 1;
+}
+
+message NetIPPort {
+  bytes ip = 1;
+  int32 port = 2;
+}
+
+message NetIPPrefix {
+  bytes ip = 1;
+  int32 prefix_length = 2;
 }

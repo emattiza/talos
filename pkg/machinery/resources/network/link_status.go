@@ -5,85 +5,78 @@
 package network
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // LinkStatusType is type of LinkStatus resource.
 const LinkStatusType = resource.Type("LinkStatuses.net.talos.dev")
 
 // LinkStatus resource holds physical network link status.
-type LinkStatus struct {
-	md   resource.Metadata
-	spec LinkStatusSpec
-}
+type LinkStatus = typed.Resource[LinkStatusSpec, LinkStatusRD]
 
 // LinkStatusSpec describes status of rendered secrets.
+//
+//gotagsrewrite:gen
 type LinkStatusSpec struct {
 	// Fields coming from rtnetlink API.
-	Index            uint32                      `yaml:"index"`
-	Type             nethelpers.LinkType         `yaml:"type"`
-	LinkIndex        uint32                      `yaml:"linkIndex"`
-	Flags            nethelpers.LinkFlags        `yaml:"flags"`
-	HardwareAddr     nethelpers.HardwareAddr     `yaml:"hardwareAddr"`
-	BroadcastAddr    nethelpers.HardwareAddr     `yaml:"broadcastAddr"`
-	MTU              uint32                      `yaml:"mtu"`
-	QueueDisc        string                      `yaml:"queueDisc"`
-	MasterIndex      uint32                      `yaml:"masterIndex,omitempty"`
-	OperationalState nethelpers.OperationalState `yaml:"operationalState"`
-	Kind             string                      `yaml:"kind"`
-	SlaveKind        string                      `yaml:"slaveKind"`
+	Index            uint32                      `yaml:"index" protobuf:"1"`
+	Type             nethelpers.LinkType         `yaml:"type" protobuf:"2"`
+	LinkIndex        uint32                      `yaml:"linkIndex" protobuf:"3"`
+	Flags            nethelpers.LinkFlags        `yaml:"flags" protobuf:"4"`
+	HardwareAddr     nethelpers.HardwareAddr     `yaml:"hardwareAddr" protobuf:"5"`
+	PermanentAddr    nethelpers.HardwareAddr     `yaml:"permanentAddr" protobuf:"30"`
+	BroadcastAddr    nethelpers.HardwareAddr     `yaml:"broadcastAddr" protobuf:"6"`
+	MTU              uint32                      `yaml:"mtu" protobuf:"7"`
+	QueueDisc        string                      `yaml:"queueDisc" protobuf:"8"`
+	MasterIndex      uint32                      `yaml:"masterIndex,omitempty" protobuf:"9"`
+	OperationalState nethelpers.OperationalState `yaml:"operationalState" protobuf:"10"`
+	Kind             string                      `yaml:"kind" protobuf:"11"`
+	SlaveKind        string                      `yaml:"slaveKind" protobuf:"12"`
+	BusPath          string                      `yaml:"busPath,omitempty" protobuf:"13"`
+	PCIID            string                      `yaml:"pciID,omitempty" protobuf:"14"`
+	Driver           string                      `yaml:"driver,omitempty" protobuf:"15"`
+	DriverVersion    string                      `yaml:"driverVersion,omitempty" protobuf:"16"`
+	FirmwareVersion  string                      `yaml:"firmwareVersion,omitempty" protobuf:"17"`
+	ProductID        string                      `yaml:"productID,omitempty" protobuf:"18"`
+	VendorID         string                      `yaml:"vendorID,omitempty" protobuf:"19"`
+	Product          string                      `yaml:"product,omitempty" protobuf:"20"`
+	Vendor           string                      `yaml:"vendor,omitempty" protobuf:"21"`
 	// Fields coming from ethtool API.
-	LinkState     bool              `yaml:"linkState"`
-	SpeedMegabits int               `yaml:"speedMbit,omitempty"`
-	Port          nethelpers.Port   `yaml:"port"`
-	Duplex        nethelpers.Duplex `yaml:"duplex"`
+	LinkState     bool              `yaml:"linkState" protobuf:"22"`
+	SpeedMegabits int               `yaml:"speedMbit,omitempty" protobuf:"23"`
+	Port          nethelpers.Port   `yaml:"port" protobuf:"24"`
+	Duplex        nethelpers.Duplex `yaml:"duplex" protobuf:"25"`
 	// Following fields are only populated with respective Kind.
-	VLAN       VLANSpec       `yaml:"vlan,omitempty"`
-	BondMaster BondMasterSpec `yaml:"bondMaster,omitempty"`
-	Wireguard  WireguardSpec  `yaml:"wireguard,omitempty"`
+	VLAN         VLANSpec         `yaml:"vlan,omitempty" protobuf:"26"`
+	BridgeMaster BridgeMasterSpec `yaml:"bridgeMaster,omitempty" protobuf:"27"`
+	BondMaster   BondMasterSpec   `yaml:"bondMaster,omitempty" protobuf:"28"`
+	Wireguard    WireguardSpec    `yaml:"wireguard,omitempty" protobuf:"29"`
+}
+
+// Physical checks if the link is physical ethernet.
+func (s LinkStatusSpec) Physical() bool {
+	return s.Type == nethelpers.LinkEther && s.Kind == ""
 }
 
 // NewLinkStatus initializes a LinkStatus resource.
 func NewLinkStatus(namespace resource.Namespace, id resource.ID) *LinkStatus {
-	r := &LinkStatus{
-		md:   resource.NewMetadata(namespace, LinkStatusType, id, resource.VersionUndefined),
-		spec: LinkStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[LinkStatusSpec, LinkStatusRD](
+		resource.NewMetadata(namespace, LinkStatusType, id, resource.VersionUndefined),
+		LinkStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *LinkStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// LinkStatusRD provides auxiliary methods for LinkStatus.
+type LinkStatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *LinkStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *LinkStatus) String() string {
-	return fmt.Sprintf("network.LinkStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *LinkStatus) DeepCopy() resource.Resource {
-	return &LinkStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *LinkStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (LinkStatusRD) ResourceDefinition(resource.Metadata, LinkStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             LinkStatusType,
 		Aliases:          []resource.Type{"link", "links"},
@@ -114,12 +107,11 @@ func (r *LinkStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *LinkStatus) TypedSpec() *LinkStatusSpec {
-	return &r.spec
-}
+func init() {
+	proto.RegisterDefaultTypes()
 
-// Physical checks if the link is physical ethernet.
-func (r *LinkStatus) Physical() bool {
-	return r.TypedSpec().Type == nethelpers.LinkEther && r.TypedSpec().Kind == ""
+	err := protobuf.RegisterDynamic[LinkStatusSpec](LinkStatusType, &LinkStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

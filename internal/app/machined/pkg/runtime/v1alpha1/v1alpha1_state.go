@@ -9,7 +9,7 @@ import (
 	"os"
 
 	multierror "github.com/hashicorp/go-multierror"
-	"github.com/talos-systems/go-blockdevice/blockdevice/probe"
+	"github.com/siderolabs/go-blockdevice/blockdevice/probe"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/disk"
@@ -39,6 +39,8 @@ type MachineState struct {
 	stagedInstallOptions  []byte
 
 	kexecPrepared bool
+
+	dbus DBusState
 }
 
 // ClusterState represents the cluster's state.
@@ -228,4 +230,9 @@ func (s *MachineState) KexecPrepared(prepared bool) {
 // IsKexecPrepared implements the machine state interface.
 func (s *MachineState) IsKexecPrepared() bool {
 	return s.kexecPrepared
+}
+
+// DBus implements the machine state interface.
+func (s *MachineState) DBus() runtime.DBusState {
+	return &s.dbus
 }

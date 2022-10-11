@@ -6,14 +6,17 @@ package talos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/siderolabs/gen/slices"
 	"github.com/spf13/cobra"
 
+	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 )
@@ -22,6 +25,7 @@ var eventsCmdFlags struct {
 	tailEvents   int32
 	tailDuration time.Duration
 	tailID       string
+	actorID      string
 }
 
 // eventsCmd represents the events command.
@@ -32,7 +36,7 @@ var eventsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "NODE\tID\tEVENT\tSOURCE\tMESSAGE")
+			fmt.Fprintln(w, "NODE\tID\tEVENT\tACTOR\tSOURCE\tMESSAGE")
 
 			opts := []client.EventsOptionFunc{}
 
@@ -48,58 +52,68 @@ var eventsCmd = &cobra.Command{
 				opts = append(opts, client.WithTailID(eventsCmdFlags.tailID))
 			}
 
-			return c.EventsWatch(ctx, func(ch <-chan client.Event) {
-				for {
-					var (
-						event client.Event
-						ok    bool
-					)
+			if eventsCmdFlags.actorID != "" {
+				opts = append(opts, client.WithActorID(eventsCmdFlags.actorID))
+			}
 
-					select {
-					case event, ok = <-ch:
-						if !ok {
-							return
-						}
-					case <-ctx.Done():
-						return
+			events, err := c.Events(ctx, opts...)
+			if err != nil {
+				return err
+			}
+
+			return helpers.ReadGRPCStream(events, func(ev *machine.Event, node string, multipleNodes bool) error {
+				format := "%s\t%s\t%s\n%s\t%s\t%s\n"
+
+				event, err := client.UnmarshalEvent(ev)
+				if err != nil {
+					if errors.Is(err, client.ErrEventNotSupported) {
+						return nil
 					}
 
-					format := "%s\t%s\t%s\t%s\t%s\n"
-
-					var args []interface{}
-
-					switch msg := event.Payload.(type) {
-					case *machine.SequenceEvent:
-						args = []interface{}{msg.GetSequence()}
-						if msg.Error != nil {
-							args = append(args, "error:"+" "+msg.GetError().GetMessage())
-						} else {
-							args = append(args, msg.GetAction().String())
-						}
-					case *machine.PhaseEvent:
-						args = []interface{}{msg.GetPhase(), msg.GetAction().String()}
-					case *machine.TaskEvent:
-						args = []interface{}{msg.GetTask(), msg.GetAction().String()}
-					case *machine.ServiceStateEvent:
-						args = []interface{}{msg.GetService(), fmt.Sprintf("%s: %s", msg.GetAction(), msg.GetMessage())}
-					case *machine.ConfigLoadErrorEvent:
-						args = []interface{}{"error", msg.GetError()}
-					case *machine.ConfigValidationErrorEvent:
-						args = []interface{}{"error", msg.GetError()}
-					case *machine.AddressEvent:
-						args = []interface{}{msg.GetHostname(), fmt.Sprintf("ADDRESSES: %s", strings.Join(msg.GetAddresses(), ","))}
-					default:
-						// We haven't implemented the handling of this event yet.
-						continue
-					}
-
-					args = append([]interface{}{event.Node, event.ID, event.TypeURL}, args...)
-					fmt.Fprintf(w, format, args...)
-
-					//nolint:errcheck
-					w.Flush()
+					return err
 				}
-			}, opts...)
+
+				var args []interface{}
+
+				switch msg := event.Payload.(type) {
+				case *machine.SequenceEvent:
+					args = []interface{}{msg.GetSequence()}
+					if msg.Error != nil {
+						args = append(args, "error:"+" "+msg.GetError().GetMessage())
+					} else {
+						args = append(args, msg.GetAction().String())
+					}
+				case *machine.PhaseEvent:
+					args = []interface{}{msg.GetPhase(), msg.GetAction().String()}
+				case *machine.TaskEvent:
+					args = []interface{}{msg.GetTask(), msg.GetAction().String()}
+				case *machine.ServiceStateEvent:
+					args = []interface{}{msg.GetService(), fmt.Sprintf("%s: %s", msg.GetAction(), msg.GetMessage())}
+				case *machine.ConfigLoadErrorEvent:
+					args = []interface{}{"error", msg.GetError()}
+				case *machine.ConfigValidationErrorEvent:
+					args = []interface{}{"error", msg.GetError()}
+				case *machine.AddressEvent:
+					args = []interface{}{msg.GetHostname(), fmt.Sprintf("ADDRESSES: %s", strings.Join(msg.GetAddresses(), ","))}
+				case *machine.MachineStatusEvent:
+					args = []interface{}{
+						msg.GetStage().String(),
+						fmt.Sprintf("ready: %v, unmet conditions: %v",
+							msg.GetStatus().Ready,
+							slices.Map(msg.GetStatus().GetUnmetConditions(),
+								func(c *machine.MachineStatusEvent_MachineStatus_UnmetCondition) string {
+									return c.Name
+								},
+							),
+						),
+					}
+				}
+
+				args = append([]interface{}{event.Node, event.ID, event.TypeURL, event.ActorID}, args...)
+				fmt.Fprintf(w, format, args...)
+
+				return w.Flush()
+			})
 		})
 	},
 }
@@ -109,4 +123,5 @@ func init() {
 	eventsCmd.Flags().Int32Var(&eventsCmdFlags.tailEvents, "tail", 0, "show specified number of past events (use -1 to show full history, default is to show no history)")
 	eventsCmd.Flags().DurationVar(&eventsCmdFlags.tailDuration, "duration", 0, "show events for the past duration interval (one second resolution, default is to show no history)")
 	eventsCmd.Flags().StringVar(&eventsCmdFlags.tailID, "since", "", "show events after the specified event ID (default is to show no history)")
+	eventsCmd.Flags().StringVar(&eventsCmdFlags.actorID, "actor-id", "", "filter events by the specified actor ID (default is no filter)")
 }

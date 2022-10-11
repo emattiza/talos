@@ -12,7 +12,7 @@ import (
 	"os"
 	"sync"
 
-	criconstants "github.com/containerd/cri/pkg/constants"
+	criconstants "github.com/containerd/containerd/pkg/cri/constants"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 
@@ -34,6 +34,17 @@ var logsCmd = &cobra.Command{
 	Short: "Retrieve logs for a service",
 	Long:  ``,
 	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
+		}
+
+		if kubernetes {
+			return getContainersFromNode(kubernetes), cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return mergeSuggestions(getServiceFromNode(), getContainersFromNode(kubernetes)), cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			var (
@@ -58,12 +69,16 @@ var logsCmd = &cobra.Command{
 
 			respCh, errCh := newLineSlicer(stream)
 
+			var gotErrors bool
+
 			for data := range respCh {
 				if data.Metadata != nil && data.Metadata.Error != "" {
 					_, err = fmt.Fprintf(os.Stderr, "ERROR: %s\n", data.Metadata.Error)
 					if err != nil {
 						return err
 					}
+
+					gotErrors = true
 
 					continue
 				}
@@ -81,6 +96,10 @@ var logsCmd = &cobra.Command{
 
 			if err = <-errCh; err != nil {
 				return fmt.Errorf("error getting logs: %v", err)
+			}
+
+			if gotErrors {
+				os.Exit(1)
 			}
 
 			return nil

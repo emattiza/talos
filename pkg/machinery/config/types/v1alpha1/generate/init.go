@@ -8,18 +8,19 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/AlekSi/pointer"
+	"github.com/siderolabs/go-pointer"
 
 	v1alpha1 "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
+//nolint:gocyclo
 func initUd(in *Input) (*v1alpha1.Config, error) {
 	config := &v1alpha1.Config{
 		ConfigVersion: "v1alpha1",
-		ConfigDebug:   in.Debug,
-		ConfigPersist: in.Persist,
+		ConfigDebug:   pointer.To(in.Debug),
+		ConfigPersist: pointer.To(in.Persist),
 	}
 
 	networkConfig := &v1alpha1.NetworkConfig{}
@@ -42,7 +43,8 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 		MachineInstall: &v1alpha1.InstallConfig{
 			InstallDisk:            in.InstallDisk,
 			InstallImage:           in.InstallImage,
-			InstallBootloader:      true,
+			InstallBootloader:      pointer.To(true),
+			InstallWipe:            pointer.To(false),
 			InstallExtraKernelArgs: in.InstallExtraKernelArgs,
 		},
 		MachineRegistries: v1alpha1.RegistriesConfig{
@@ -56,7 +58,19 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 	}
 
 	if in.VersionContract.SupportsRBACFeature() {
-		machine.MachineFeatures.RBAC = pointer.ToBool(true)
+		machine.MachineFeatures.RBAC = pointer.To(true)
+	}
+
+	if in.VersionContract.StableHostnameEnabled() {
+		machine.MachineFeatures.StableHostname = pointer.To(true)
+	}
+
+	if in.VersionContract.ApidExtKeyUsageCheckEnabled() {
+		machine.MachineFeatures.ApidCheckExtKeyUsage = pointer.To(true)
+	}
+
+	if in.VersionContract.KubeletDefaultRuntimeSeccompProfileEnabled() {
+		machine.MachineKubelet.KubeletDefaultRuntimeSeccompProfileEnabled = pointer.To(true)
 	}
 
 	certSANs := in.GetAPIServerSANs()
@@ -66,16 +80,54 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 		return config, err
 	}
 
+	var admissionControlConfig []*v1alpha1.AdmissionPluginConfig
+
+	if in.VersionContract.PodSecurityAdmissionEnabled() {
+		admissionControlConfig = append(admissionControlConfig,
+			&v1alpha1.AdmissionPluginConfig{
+				PluginName: "PodSecurity",
+				PluginConfiguration: v1alpha1.Unstructured{
+					Object: map[string]interface{}{
+						"apiVersion": "pod-security.admission.config.k8s.io/v1alpha1",
+						"kind":       "PodSecurityConfiguration",
+						"defaults": map[string]interface{}{
+							"enforce":         "baseline",
+							"enforce-version": "latest",
+							"audit":           "restricted",
+							"audit-version":   "latest",
+							"warn":            "restricted",
+							"warn-version":    "latest",
+						},
+						"exemptions": map[string]interface{}{
+							"usernames":      []interface{}{},
+							"runtimeClasses": []interface{}{},
+							"namespaces":     []interface{}{"kube-system"},
+						},
+					},
+				},
+			},
+		)
+	}
+
+	var auditPolicyConfig v1alpha1.Unstructured
+
+	if in.VersionContract.APIServerAuditPolicySupported() {
+		auditPolicyConfig = v1alpha1.APIServerDefaultAuditPolicy
+	}
+
 	cluster := &v1alpha1.ClusterConfig{
 		ClusterID:     in.ClusterID,
 		ClusterName:   in.ClusterName,
 		ClusterSecret: in.ClusterSecret,
 		ControlPlane: &v1alpha1.ControlPlaneConfig{
-			Endpoint: &v1alpha1.Endpoint{URL: controlPlaneURL},
+			Endpoint:           &v1alpha1.Endpoint{URL: controlPlaneURL},
+			LocalAPIServerPort: in.LocalAPIServerPort,
 		},
 		APIServerConfig: &v1alpha1.APIServerConfig{
-			CertSANs:       certSANs,
-			ContainerImage: emptyIf(fmt.Sprintf("%s:v%s", constants.KubernetesAPIServerImage, in.KubernetesVersion), in.KubernetesVersion),
+			CertSANs:               certSANs,
+			ContainerImage:         emptyIf(fmt.Sprintf("%s:v%s", constants.KubernetesAPIServerImage, in.KubernetesVersion), in.KubernetesVersion),
+			AdmissionControlConfig: admissionControlConfig,
+			AuditPolicyConfig:      auditPolicyConfig,
 		},
 		ControllerManagerConfig: &v1alpha1.ControllerManagerConfig{
 			ContainerImage: emptyIf(fmt.Sprintf("%s:v%s", constants.KubernetesControllerManagerImage, in.KubernetesVersion), in.KubernetesVersion),
@@ -102,9 +154,44 @@ func initUd(in *Input) (*v1alpha1.Config, error) {
 		ClusterAESCBCEncryptionSecret: in.Secrets.AESCBCEncryptionSecret,
 		ExtraManifests:                []string{},
 		ClusterInlineManifests:        v1alpha1.ClusterInlineManifests{},
-		ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
-			DiscoveryEnabled: in.DiscoveryEnabled,
-		},
+	}
+
+	if in.AllowSchedulingOnControlPlanes {
+		if in.VersionContract.KubernetesAllowSchedulingOnControlPlanes() {
+			cluster.AllowSchedulingOnControlPlanes = pointer.To(in.AllowSchedulingOnControlPlanes)
+		} else {
+			// backwards compatibility for Talos versions older than 1.2
+			cluster.AllowSchedulingOnMasters = pointer.To(in.AllowSchedulingOnControlPlanes) //nolint:staticcheck
+		}
+	}
+
+	if in.DiscoveryEnabled {
+		cluster.ClusterDiscoveryConfig = &v1alpha1.ClusterDiscoveryConfig{
+			DiscoveryEnabled: pointer.To(in.DiscoveryEnabled),
+		}
+
+		if in.VersionContract.KubernetesDiscoveryBackendDisabled() {
+			cluster.ClusterDiscoveryConfig.DiscoveryRegistries.RegistryKubernetes.RegistryDisabled = pointer.To(true)
+		}
+	}
+
+	if !in.VersionContract.PodSecurityPolicyEnabled() {
+		cluster.APIServerConfig.DisablePodSecurityPolicyConfig = pointer.To(true)
+	}
+
+	if machine.MachineRegistries.RegistryMirrors == nil {
+		machine.MachineRegistries.RegistryMirrors = map[string]*v1alpha1.RegistryMirrorConfig{}
+	}
+
+	if in.VersionContract.KubernetesAlternateImageRegistries() {
+		if _, ok := machine.MachineRegistries.RegistryMirrors["k8s.gcr.io"]; !ok {
+			machine.MachineRegistries.RegistryMirrors["k8s.gcr.io"] = &v1alpha1.RegistryMirrorConfig{
+				MirrorEndpoints: []string{
+					"https://registry.k8s.io",
+					"https://k8s.gcr.io",
+				},
+			}
+		}
 	}
 
 	config.MachineConfig = machine

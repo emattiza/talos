@@ -5,7 +5,7 @@ policies:
       gpg:
         required: true
         identity:
-          gitHubOrganization: talos-systems
+          gitHubOrganization: siderolabs
       spellcheck:
         locale: US
       maximumOfOneCommit: true
@@ -34,7 +34,7 @@ policies:
           - talosctl
           - kernel
           - security
-          - ^v0.14
+          - ^v1.3
   - type: license
     spec:
       skipPaths:
@@ -44,6 +44,7 @@ policies:
       excludeSuffixes:
         - .pb.go
         - _string.go
+        - _enumer.go
         - _string_linux.go
         - zz_generated.deepcopy.go
       header: |

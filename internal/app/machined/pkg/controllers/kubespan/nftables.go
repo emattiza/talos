@@ -10,17 +10,17 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
-	"inet.af/netaddr"
+	"go4.org/netipx"
 )
 
 // NfTablesManager manages nftables outside of controllers/resources scope.
 type NfTablesManager interface {
-	Update(*netaddr.IPSet) error
+	Update(*netipx.IPSet) error
 	Cleanup() error
 }
 
 // NewNfTablesManager initializes NfTablesManager.
-func NewNfTablesManager(externalMark, internalMark uint32) NfTablesManager {
+func NewNfTablesManager(externalMark, internalMark, markMask uint32) NfTablesManager {
 	nfTable := &nftables.Table{
 		Family: nftables.TableFamilyINet,
 		Name:   "talos_kubespan",
@@ -29,6 +29,7 @@ func NewNfTablesManager(externalMark, internalMark uint32) NfTablesManager {
 	return &nfTablesManager{
 		ExternalMark: externalMark,
 		InternalMark: internalMark,
+		MarkMask:     markMask,
 
 		nfTable: nfTable,
 		targetSet4: &nftables.Set{
@@ -50,8 +51,9 @@ func NewNfTablesManager(externalMark, internalMark uint32) NfTablesManager {
 type nfTablesManager struct {
 	InternalMark uint32
 	ExternalMark uint32
+	MarkMask     uint32
 
-	currentSet *netaddr.IPSet
+	currentSet *netipx.IPSet
 
 	// nfTable is a handle for the KubeSpan root table
 	nfTable *nftables.Table
@@ -64,7 +66,7 @@ type nfTablesManager struct {
 }
 
 // Update the nftables rules based on the IPSet.
-func (m *nfTablesManager) Update(desired *netaddr.IPSet) error {
+func (m *nfTablesManager) Update(desired *netipx.IPSet) error {
 	if m.currentSet != nil && m.currentSet.Equal(desired) {
 		return nil
 	}
@@ -127,7 +129,7 @@ func (m *nfTablesManager) tableExists() (bool, error) {
 	return foundExisting, nil
 }
 
-func (m *nfTablesManager) setNFTable(ips *netaddr.IPSet) error {
+func (m *nfTablesManager) setNFTable(ips *netipx.IPSet) error {
 	c := &nftables.Conn{}
 
 	// NB: sets should be flushed before new members because nftables will fail
@@ -173,25 +175,40 @@ func (m *nfTablesManager) setNFTable(ips *netaddr.IPSet) error {
 		return fmt.Errorf("failed to add IPv6 set: %w", err)
 	}
 
+	// meta mark & 0x00000060 == 0x00000020 accept
+	ruleExpr := []expr.Any{
+		// Load the firewall mark into register 1
+		&expr.Meta{
+			Key:      expr.MetaKeyMARK,
+			Register: 1,
+		},
+		// Mask the mark with the configured mask:
+		//  R1 = R1 & mask
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Xor:            binaryutil.NativeEndian.PutUint32(0),
+			Mask:           binaryutil.NativeEndian.PutUint32(m.MarkMask),
+		},
+		// Compare the masked firewall mark with expected value
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(m.ExternalMark),
+		},
+		// Accept the packet to stop the ruleset processing
+		&expr.Verdict{
+			Kind: expr.VerdictAccept,
+		},
+	}
+
 	// match fwmark of Wireguard interface (not kubespan mark)
 	// accept and return without modifying the table or mark
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: preChain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyMARK,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(m.ExternalMark),
-			},
-			&expr.Verdict{
-				Kind: expr.VerdictAccept,
-			},
-		},
+		Exprs: ruleExpr,
 	})
 
 	// match fwmark of Wireguard interface (not kubespan mark)
@@ -199,44 +216,31 @@ func (m *nfTablesManager) setNFTable(ips *netaddr.IPSet) error {
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: outChain,
-		Exprs: []expr.Any{
-			&expr.Meta{
-				Key:      expr.MetaKeyMARK,
-				Register: 1,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     binaryutil.NativeEndian.PutUint32(m.ExternalMark),
-			},
-			&expr.Verdict{
-				Kind: expr.VerdictAccept,
-			},
-		},
+		Exprs: ruleExpr,
 	})
 
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: preChain,
-		Exprs: matchIPv4Set(m.targetSet4, m.InternalMark),
+		Exprs: matchIPv4Set(m.targetSet4, m.InternalMark, m.MarkMask),
 	})
 
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: preChain,
-		Exprs: matchIPv6Set(m.targetSet6, m.InternalMark),
+		Exprs: matchIPv6Set(m.targetSet6, m.InternalMark, m.MarkMask),
 	})
 
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: outChain,
-		Exprs: matchIPv4Set(m.targetSet4, m.InternalMark),
+		Exprs: matchIPv4Set(m.targetSet4, m.InternalMark, m.MarkMask),
 	})
 
 	c.AddRule(&nftables.Rule{
 		Table: m.nfTable,
 		Chain: outChain,
-		Exprs: matchIPv6Set(m.targetSet6, m.InternalMark),
+		Exprs: matchIPv6Set(m.targetSet6, m.InternalMark, m.MarkMask),
 	})
 
 	if err := c.Flush(); err != nil {
@@ -246,15 +250,15 @@ func (m *nfTablesManager) setNFTable(ips *netaddr.IPSet) error {
 	return nil
 }
 
-func matchIPv4Set(set *nftables.Set, mark uint32) []expr.Any {
-	return matchIPSet(set, mark, nftables.TableFamilyIPv4)
+func matchIPv4Set(set *nftables.Set, mark, mask uint32) []expr.Any {
+	return matchIPSet(set, mark, mask, nftables.TableFamilyIPv4)
 }
 
-func matchIPv6Set(set *nftables.Set, mark uint32) []expr.Any {
-	return matchIPSet(set, mark, nftables.TableFamilyIPv6)
+func matchIPv6Set(set *nftables.Set, mark, mask uint32) []expr.Any {
+	return matchIPSet(set, mark, mask, nftables.TableFamilyIPv6)
 }
 
-func matchIPSet(set *nftables.Set, mark uint32, family nftables.TableFamily) []expr.Any {
+func matchIPSet(set *nftables.Set, mark, mask uint32, family nftables.TableFamily) []expr.Any {
 	var (
 		offset uint32 = 16
 		length uint32 = 4
@@ -265,6 +269,7 @@ func matchIPSet(set *nftables.Set, mark uint32, family nftables.TableFamily) []e
 		length = 16
 	}
 
+	// ip daddr @kubespan_targets_ipv4 meta mark set meta mark & 0xffffffdf | 0x00000040 accept
 	return []expr.Any{
 		// Store protocol type to register 1
 		&expr.Meta{
@@ -290,24 +295,36 @@ func matchIPSet(set *nftables.Set, mark uint32, family nftables.TableFamily) []e
 			SetName:        set.Name,
 			SetID:          set.ID,
 		},
-		// Store Firewall Force mark to register 1
-		&expr.Immediate{
+		// Load the current packet mark into register 1
+		&expr.Meta{
+			Key:      expr.MetaKeyMARK,
 			Register: 1,
-			Data:     binaryutil.NativeEndian.PutUint32(mark),
 		},
-		// Set firewall mark
+		// This bitwise is equivalent to: R1 = R1 | (R1 & mask | mark)
+		//
+		// The NFTables backend bitwise operation is R3 = R2 & MASK ^ XOR,
+		// so we need to do a bit of a trick to do what we need: R1 = R1 & ^mask ^ mark
+		&expr.Bitwise{
+			SourceRegister: 1,
+			DestRegister:   1,
+			Len:            4,
+			Xor:            binaryutil.NativeEndian.PutUint32(mark),
+			Mask:           binaryutil.NativeEndian.PutUint32(^mask),
+		},
+		// Set firewall mark to the value computed in register 1
 		&expr.Meta{
 			Key:            expr.MetaKeyMARK,
 			SourceRegister: true,
 			Register:       1,
 		},
+		// Accept the packet to stop the ruleset processing
 		&expr.Verdict{
 			Kind: expr.VerdictAccept,
 		},
 	}
 }
 
-func (m *nfTablesManager) setElements(ips *netaddr.IPSet) (setElements4, setElements6 []nftables.SetElement) {
+func (m *nfTablesManager) setElements(ips *netipx.IPSet) (setElements4, setElements6 []nftables.SetElement) {
 	if ips == nil {
 		return nil, nil
 	}

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -17,7 +18,6 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/operator/vip"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
@@ -35,7 +35,7 @@ type VIP struct {
 	logger *zap.Logger
 
 	linkName      string
-	sharedIP      netaddr.IP
+	sharedIP      netip.Addr
 	gratuitousARP bool
 
 	state state.State
@@ -111,7 +111,7 @@ func (vip *VIP) AddressSpecs() []network.AddressSpecSpec {
 
 	return []network.AddressSpecSpec{
 		{
-			Address:         netaddr.IPPrefixFrom(vip.sharedIP, vip.sharedIP.BitLen()),
+			Address:         netip.PrefixFrom(vip.sharedIP, vip.sharedIP.BitLen()),
 			LinkName:        vip.linkName,
 			Family:          family,
 			Scope:           nethelpers.ScopeGlobal,
@@ -161,10 +161,27 @@ func (vip *VIP) waitForPreconditions(ctx context.Context) error {
 
 			svc := r.(*v1alpha1.Service) //nolint:errcheck,forcetypeassert
 
-			return svc.Running() && svc.Healthy(), nil
+			return svc.TypedSpec().Running && svc.TypedSpec().Healthy, nil
 		}))
 	if err != nil {
 		return fmt.Errorf("etcd health wait failure: %w", err)
+	}
+
+	// wait for the kubelet lifecycle to be up, and not being torn down
+	_, err = vip.state.WatchFor(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.KubeletLifecycleType, k8s.KubeletLifecycleID, resource.VersionUndefined),
+		state.WithCondition(func(r resource.Resource) (bool, error) {
+			if resource.IsTombstone(r) {
+				return false, nil
+			}
+
+			if r.Metadata().Phase() == resource.PhaseTearingDown {
+				return false, nil
+			}
+
+			return true, nil
+		}))
+	if err != nil {
+		return fmt.Errorf("kubelet lifecycle wait failure: %w", err)
 	}
 
 	return nil
@@ -178,6 +195,16 @@ func (vip *VIP) campaign(ctx context.Context, notifyCh chan<- struct{}) error {
 	if err := vip.waitForPreconditions(ctx); err != nil {
 		return fmt.Errorf("error waiting for preconditions: %w", err)
 	}
+
+	// put a finalizer on the kubelet lifecycle and remove once the campaign is done
+	kubeletLifecycle := resource.NewMetadata(k8s.NamespaceName, k8s.KubeletLifecycleType, k8s.KubeletLifecycleID, resource.VersionUndefined)
+	if err := vip.state.AddFinalizer(ctx, kubeletLifecycle, vip.Prefix()); err != nil {
+		return fmt.Errorf("error adding kubelet lifecycle finalizer: %w", err)
+	}
+
+	defer func() {
+		vip.state.RemoveFinalizer(ctx, kubeletLifecycle, vip.Prefix()) //nolint:errcheck
+	}()
 
 	hostname, err := os.Hostname() // TODO: this should be etcd nodename
 	if err != nil {
@@ -221,13 +248,52 @@ func (vip *VIP) campaign(ctx context.Context, notifyCh chan<- struct{}) error {
 		campaignErrCh <- election.Campaign(ctx, hostname)
 	}()
 
-	select {
-	case err = <-campaignErrCh:
-		if err != nil {
-			return fmt.Errorf("failed to conduct campaign: %w", err)
+	watchCh := make(chan state.Event)
+
+	if err = vip.state.Watch(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "etcd", resource.VersionUndefined), watchCh); err != nil {
+		return fmt.Errorf("error setting up etcd watch: %w", err)
+	}
+
+	if err = vip.state.Watch(ctx, kubeletLifecycle, watchCh); err != nil {
+		return fmt.Errorf("error setting up etcd watch: %w", err)
+	}
+
+	err = vip.state.WatchKind(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined), watchCh)
+	if err != nil {
+		return fmt.Errorf("kube-apiserver health wait failure: %w", err)
+	}
+
+	// wait for the etcd election campaign to be complete
+	// while waiting, also observe the kubelet lifecycle object (if the node is shutting down) and etcd status
+campaignLoop:
+	for {
+		select {
+		case err = <-campaignErrCh:
+			if err != nil {
+				return fmt.Errorf("failed to conduct campaign: %w", err)
+			}
+
+			// node won the election campaign!
+			break campaignLoop
+		case <-sess.Done():
+			vip.logger.Info("etcd session closed")
+
+			return nil
+		case <-ctx.Done():
+			return nil
+		case event := <-watchCh:
+			// note: here we don't wait for kube-apiserver, as it might not be up on cluster bootstrap, but VIP should be still assigned
+
+			// break the loop when etcd is stopped
+			if event.Type == state.Destroyed && event.Resource.Metadata().ID() == "etcd" {
+				return nil
+			}
+
+			// break the loop if the kubelet lifecycle is entering teardown phase
+			if event.Resource.Metadata().Type() == kubeletLifecycle.Type() && event.Resource.Metadata().ID() == kubeletLifecycle.ID() && event.Resource.Metadata().Phase() == resource.PhaseTearingDown {
+				return nil
+			}
 		}
-	case <-sess.Done():
-		vip.logger.Info("etcd session closed")
 	}
 
 	defer func() {
@@ -251,17 +317,6 @@ func (vip *VIP) campaign(ctx context.Context, notifyCh chan<- struct{}) error {
 	}()
 
 	vip.logger.Info("enabled shared IP", zap.String("link", vip.linkName), zap.Stringer("ip", vip.sharedIP))
-
-	watchCh := make(chan state.Event)
-
-	if err = vip.state.Watch(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "etcd", resource.VersionUndefined), watchCh); err != nil {
-		return fmt.Errorf("error setting up etcd watch: %w", err)
-	}
-
-	err = vip.state.WatchKind(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined), watchCh)
-	if err != nil {
-		return fmt.Errorf("kube-apiserver health wait failure: %w", err)
-	}
 
 	observe := election.Observe(ctx)
 
@@ -290,6 +345,11 @@ observeLoop:
 				if event.Resource.Metadata().ID() == "etcd" || strings.HasPrefix(event.Resource.Metadata().ID(), "kube-system/kube-apiserver-") {
 					break observeLoop
 				}
+			}
+
+			// break the loop if the kubelet lifecycle is entering teardown phase
+			if event.Resource.Metadata().Type() == kubeletLifecycle.Type() && event.Resource.Metadata().ID() == kubeletLifecycle.ID() && event.Resource.Metadata().Phase() == resource.PhaseTearingDown {
+				break observeLoop
 			}
 		}
 	}

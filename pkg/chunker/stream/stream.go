@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/siderolabs/gen/slices"
+
 	"github.com/talos-systems/talos/pkg/chunker"
 )
 
@@ -32,7 +34,7 @@ type Stream struct {
 	source  Source
 	options *Options
 
-	ctx context.Context
+	ctx context.Context //nolint:containedctx
 }
 
 // Source is an interface describing the source of a Stream.
@@ -87,8 +89,7 @@ func (c *Stream) Read() <-chan []byte {
 
 			if n != 0 {
 				// Copy the buffer since we will modify it in the next loop.
-				b := make([]byte, n)
-				copy(b, buf[:n])
+				b := slices.Copy(buf, n)
 
 				select {
 				case <-c.ctx.Done():

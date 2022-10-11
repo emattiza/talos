@@ -5,102 +5,97 @@
 package network
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // LinkSpecType is type of LinkSpec resource.
 const LinkSpecType = resource.Type("LinkSpecs.net.talos.dev")
 
 // LinkSpec resource describes desired state of the link (network interface).
-type LinkSpec struct {
-	md   resource.Metadata
-	spec LinkSpecSpec
-}
+type LinkSpec = typed.Resource[LinkSpecSpec, LinkSpecRD]
 
 // LinkSpecSpec describes spec for the link.
+//
+//gotagsrewrite:gen
 type LinkSpecSpec struct {
 	// Name defines link name
-	Name string `yaml:"name"`
+	Name string `yaml:"name" protobuf:"1"`
 
 	// Logical describes if the interface should be created on the fly if it doesn't exist.
-	Logical bool `yaml:"logical"`
+	Logical bool `yaml:"logical" protobuf:"2"`
 
 	// If Up is true, bring interface up, otherwise bring interface down.
 	//
 	// TODO: make *bool ?
-	Up bool `yaml:"up"`
+	Up bool `yaml:"up" protobuf:"3"`
 
 	// Interface MTU (always applies).
-	MTU uint32 `yaml:"mtu"`
+	MTU uint32 `yaml:"mtu" protobuf:"4"`
 
 	// Kind and Type are only required for Logical interfaces.
-	Kind string              `yaml:"kind"`
-	Type nethelpers.LinkType `yaml:"type"`
+	Kind string              `yaml:"kind" protobuf:"5"`
+	Type nethelpers.LinkType `yaml:"type" protobuf:"6"`
 
 	// ParentName indicates link parent for VLAN interfaces.
-	ParentName string `yaml:"parentName,omitempty"`
+	ParentName string `yaml:"parentName,omitempty" protobuf:"7"`
 
 	// MasterName indicates master link for enslaved bonded interfaces.
-	MasterName string `yaml:"masterName,omitempty"`
+	BondSlave BondSlave `yaml:",omitempty,inline" protobuf:"8"`
 
-	// These structures are present depending on "Kind" for Logical intefaces.
-	VLAN       VLANSpec       `yaml:"vlan,omitempty"`
-	BondMaster BondMasterSpec `yaml:"bondMaster,omitempty"`
-	Wireguard  WireguardSpec  `yaml:"wireguard,omitempty"`
+	// BridgeSlave indicates master link for bridged interfaces.
+	BridgeSlave BridgeSlave `yaml:"bridgeSlave,omitempty" protobuf:"9"`
+
+	// These structures are present depending on "Kind" for Logical interfaces.
+	VLAN         VLANSpec         `yaml:"vlan,omitempty" protobuf:"10"`
+	BondMaster   BondMasterSpec   `yaml:"bondMaster,omitempty" protobuf:"11"`
+	BridgeMaster BridgeMasterSpec `yaml:"bridgeMaster,omitempty" protobuf:"12"`
+	Wireguard    WireguardSpec    `yaml:"wireguard,omitempty" protobuf:"13"`
 
 	// Configuration layer.
-	ConfigLayer ConfigLayer `yaml:"layer"`
+	ConfigLayer ConfigLayer `yaml:"layer" protobuf:"14"`
 }
 
-var (
-	zeroVLAN       VLANSpec
-	zeroBondMaster BondMasterSpec
-)
+// BondSlave contains a bond's master name and slave index.
+//
+//gotagsrewrite:gen
+type BondSlave struct {
+	// MasterName indicates master link for enslaved bonded interfaces.
+	MasterName string `yaml:"masterName,omitempty" protobuf:"1"`
+
+	// SlaveIndex indicates a slave's position in bond.
+	SlaveIndex int `yaml:"slaveIndex,omitempty" protobuf:"2"`
+}
+
+// BridgeSlave contains a bond's master name and slave index.
+//
+//gotagsrewrite:gen
+type BridgeSlave struct {
+	// MasterName indicates master link for enslaved bridged interfaces.
+	MasterName string `yaml:"masterName,omitempty" protobuf:"1"`
+}
 
 // Merge with other, overwriting fields from other if set.
 //
 //nolint:gocyclo
 func (spec *LinkSpecSpec) Merge(other *LinkSpecSpec) error {
-	if spec.Logical != other.Logical {
-		return fmt.Errorf("mismatch on logical for %q: %v != %v", spec.Name, spec.Logical, other.Logical)
-	}
-
-	if other.Up {
-		spec.Up = other.Up
-	}
-
-	if other.MTU != 0 {
-		spec.MTU = other.MTU
-	}
-
-	if other.Kind != "" {
-		spec.Kind = other.Kind
-	}
-
-	if other.Type != 0 {
-		spec.Type = other.Type
-	}
-
-	if other.ParentName != "" {
-		spec.ParentName = other.ParentName
-	}
-
-	if other.MasterName != "" {
-		spec.MasterName = other.MasterName
-	}
-
-	if other.VLAN != zeroVLAN {
-		spec.VLAN = other.VLAN
-	}
-
-	if other.BondMaster != zeroBondMaster {
-		spec.BondMaster = other.BondMaster
-	}
+	// prefer Logical, as it is defined for bonds/vlans, etc.
+	updateIfNotZero(&spec.Logical, other.Logical)
+	updateIfNotZero(&spec.Up, other.Up)
+	updateIfNotZero(&spec.MTU, other.MTU)
+	updateIfNotZero(&spec.Kind, other.Kind)
+	updateIfNotZero(&spec.Type, other.Type)
+	updateIfNotZero(&spec.ParentName, other.ParentName)
+	updateIfNotZero(&spec.BondSlave, other.BondSlave)
+	updateIfNotZero(&spec.VLAN, other.VLAN)
+	updateIfNotZero(&spec.BondMaster, other.BondMaster)
+	updateIfNotZero(&spec.BridgeMaster, other.BridgeMaster)
+	updateIfNotZero(&spec.BridgeSlave, other.BridgeSlave)
 
 	// Wireguard config should be able to apply non-zero values in earlier config layers which may be zero values in later layers.
 	// Thus, we handle each Wireguard configuration value discretely.
@@ -117,42 +112,26 @@ func (spec *LinkSpecSpec) Merge(other *LinkSpecSpec) error {
 	return nil
 }
 
+func updateIfNotZero[T comparable](target *T, source T) {
+	var zero T
+	if source != zero {
+		*target = source
+	}
+}
+
 // NewLinkSpec initializes a LinkSpec resource.
 func NewLinkSpec(namespace resource.Namespace, id resource.ID) *LinkSpec {
-	r := &LinkSpec{
-		md:   resource.NewMetadata(namespace, LinkSpecType, id, resource.VersionUndefined),
-		spec: LinkSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[LinkSpecSpec, LinkSpecRD](
+		resource.NewMetadata(namespace, LinkSpecType, id, resource.VersionUndefined),
+		LinkSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *LinkSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// LinkSpecRD provides auxiliary methods for LinkSpec.
+type LinkSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *LinkSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *LinkSpec) String() string {
-	return fmt.Sprintf("network.LinkSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *LinkSpec) DeepCopy() resource.Resource {
-	return &LinkSpec{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *LinkSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (LinkSpecRD) ResourceDefinition(resource.Metadata, LinkSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             LinkSpecType,
 		Aliases:          []resource.Type{},
@@ -162,7 +141,11 @@ func (r *LinkSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *LinkSpec) TypedSpec() *LinkSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[LinkSpecSpec](LinkSpecType, &LinkSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -8,14 +8,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/filesystem"
-	"github.com/talos-systems/go-blockdevice/blockdevice/util"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/filesystem"
+	"github.com/siderolabs/go-blockdevice/blockdevice/util"
 	"github.com/talos-systems/go-retry/retry"
 	"golang.org/x/sys/unix"
 
@@ -141,6 +140,12 @@ func mountRetry(f RetryFunc, p *Point, isUnmount bool) (err error) {
 			case unix.ENOENT:
 				// if udevd triggers BLKRRPART ioctl, partition device entry might disappear temporarily
 				return retry.ExpectedError(err)
+			case unix.EUCLEAN:
+				if errRepair := p.Repair(); errRepair != nil {
+					return fmt.Errorf("error repairing: %w", errRepair)
+				}
+
+				return retry.ExpectedError(err)
 			case unix.EINVAL:
 				isMounted, checkErr := p.IsMounted()
 				if checkErr != nil {
@@ -186,7 +191,7 @@ type Points struct {
 func NewMountPoint(source, target, fstype string, flags uintptr, data string, setters ...Option) *Point {
 	opts := NewDefaultOptions(setters...)
 
-	return &Point{
+	p := &Point{
 		source:  source,
 		target:  target,
 		fstype:  fstype,
@@ -194,6 +199,12 @@ func NewMountPoint(source, target, fstype string, flags uintptr, data string, se
 		data:    data,
 		Options: opts,
 	}
+
+	if p.Prefix != "" {
+		p.target = filepath.Join(p.Prefix, p.target)
+	}
+
+	return p
 }
 
 // NewMountPoints initializes and returns a Points struct.
@@ -231,8 +242,6 @@ func (p *Point) Data() string {
 // Mount attempts to retry a mount on EBUSY. It will attempt a retry
 // every 100 milliseconds over the course of 5 seconds.
 func (p *Point) Mount() (err error) {
-	p.target = path.Join(p.Prefix, p.target)
-
 	for _, hook := range p.Options.PreMountHooks {
 		if err = hook(p); err != nil {
 			return err
@@ -250,6 +259,8 @@ func (p *Point) Mount() (err error) {
 	switch {
 	case p.MountFlags.Check(Overlay):
 		err = mountRetry(overlay, p, false)
+	case p.MountFlags.Check(ReadonlyOverlay):
+		err = mountRetry(readonlyOverlay, p, false)
 	default:
 		err = mountRetry(mount, p, false)
 	}
@@ -277,7 +288,6 @@ func (p *Point) Unmount() (err error) {
 	}
 
 	if mounted {
-		p.target = path.Join(p.Prefix, p.target)
 		if err = mountRetry(unmount, p, true); err != nil {
 			return err
 		}
@@ -386,6 +396,23 @@ func (p *Point) GrowFilesystem() (err error) {
 	return nil
 }
 
+// Repair repairs a partition's filesystem.
+func (p *Point) Repair() error {
+	if p.Logger != nil {
+		p.Logger.Printf("filesystem on %s needs cleaning, running repair", p.Source())
+	}
+
+	if err := makefs.XFSRepair(p.Source(), p.Fstype()); err != nil {
+		return fmt.Errorf("xfs_repair: %w", err)
+	}
+
+	if p.Logger != nil {
+		p.Logger.Printf("filesystem successfully repaired on %s", p.Source())
+	}
+
+	return nil
+}
+
 func mount(p *Point) (err error) {
 	return unix.Mount(p.source, p.target, p.fstype, p.flags, p.data)
 }
@@ -401,8 +428,15 @@ func share(p *Point) error {
 func overlay(p *Point) error {
 	parts := strings.Split(p.target, "/")
 	prefix := strings.Join(parts[1:], "-")
-	diff := fmt.Sprintf(filepath.Join(constants.SystemOverlaysPath, "%s-diff"), prefix)
-	workdir := fmt.Sprintf(filepath.Join(constants.SystemOverlaysPath, "%s-workdir"), prefix)
+
+	basePath := constants.VarSystemOverlaysPath
+
+	if p.MountFlags.Check(SystemOverlay) {
+		basePath = constants.SystemOverlaysPath
+	}
+
+	diff := fmt.Sprintf(filepath.Join(basePath, "%s-diff"), prefix)
+	workdir := fmt.Sprintf(filepath.Join(basePath, "%s-workdir"), prefix)
 
 	for _, target := range []string{diff, workdir} {
 		if err := ensureDirectory(target); err != nil {
@@ -418,9 +452,18 @@ func overlay(p *Point) error {
 	return nil
 }
 
+func readonlyOverlay(p *Point) error {
+	opts := fmt.Sprintf("lowerdir=%s", p.source)
+	if err := unix.Mount("overlay", p.target, "overlay", p.flags, opts); err != nil {
+		return fmt.Errorf("error creating overlay mount to %s: %w", p.target, err)
+	}
+
+	return nil
+}
+
 func ensureDirectory(target string) (err error) {
 	if _, err := os.Stat(target); os.IsNotExist(err) {
-		if err = os.MkdirAll(target, os.ModeDir); err != nil {
+		if err = os.MkdirAll(target, 0o755); err != nil {
 			return fmt.Errorf("error creating mount point directory %s: %w", target, err)
 		}
 	}

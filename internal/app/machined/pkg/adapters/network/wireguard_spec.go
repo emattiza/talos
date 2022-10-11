@@ -6,9 +6,11 @@ package network
 
 import (
 	"net"
+	"net/netip"
 
+	"github.com/siderolabs/gen/slices"
+	"go4.org/netipx"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
@@ -88,19 +90,15 @@ func (a wireguardSpec) Encode(existing *network.WireguardSpec) (*wgtypes.Config,
 				}
 			}
 
-			allowedIPs := make([]net.IPNet, len(peer.AllowedIPs))
-
-			for i := range peer.AllowedIPs {
-				allowedIPs[i] = *peer.AllowedIPs[i].IPNet()
-			}
-
 			cfg.Peers = append(cfg.Peers, wgtypes.PeerConfig{
 				PublicKey:                   pubKey,
 				Endpoint:                    endpoint,
 				PresharedKey:                presharedKey,
 				PersistentKeepaliveInterval: &peer.PersistentKeepaliveInterval,
 				ReplaceAllowedIPs:           true,
-				AllowedIPs:                  allowedIPs,
+				AllowedIPs: slices.Map(peer.AllowedIPs, func(peerIP netip.Prefix) net.IPNet {
+					return *netipx.PrefixIPNet(peerIP)
+				}),
 			})
 
 			return nil
@@ -192,10 +190,10 @@ func (a wireguardSpec) Decode(dev *wgtypes.Device, isStatus bool) {
 		}
 
 		spec.Peers[i].PersistentKeepaliveInterval = dev.Peers[i].PersistentKeepaliveInterval
-		spec.Peers[i].AllowedIPs = make([]netaddr.IPPrefix, len(dev.Peers[i].AllowedIPs))
+		spec.Peers[i].AllowedIPs = slices.Map(dev.Peers[i].AllowedIPs, func(peerIP net.IPNet) netip.Prefix {
+			res, _ := netipx.FromStdIPNet(&peerIP)
 
-		for j := range dev.Peers[i].AllowedIPs {
-			spec.Peers[i].AllowedIPs[j], _ = netaddr.FromStdIPNet(&dev.Peers[i].AllowedIPs[j])
-		}
+			return res
+		})
 	}
 }

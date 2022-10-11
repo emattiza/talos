@@ -12,14 +12,14 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
@@ -36,15 +36,14 @@ func (ctrl *ManifestController) Name() string {
 func (ctrl *ManifestController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
-			Namespace: config.NamespaceName,
-			Type:      config.K8sControlPlaneType,
-			ID:        pointer.ToString(config.K8sManifestsID),
+			Namespace: k8s.ControlPlaneNamespaceName,
+			Type:      k8s.BootstrapManifestsConfigType,
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesRootType,
-			ID:        pointer.ToString(secrets.KubernetesRootID),
+			ID:        pointer.To(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -71,7 +70,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 		case <-r.EventCh():
 		}
 
-		configResource, err := r.Get(ctx, resource.NewMetadata(config.NamespaceName, config.K8sControlPlaneType, config.K8sManifestsID, resource.VersionUndefined))
+		configResource, err := r.Get(ctx, k8s.NewBootstrapManifestsConfig().Metadata())
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				if err = ctrl.teardownAll(ctx, r); err != nil {
@@ -84,7 +83,7 @@ func (ctrl *ManifestController) Run(ctx context.Context, r controller.Runtime, l
 			return err
 		}
 
-		config := configResource.(*config.K8sControlPlane).Manifests()
+		config := *configResource.(*k8s.BootstrapManifestsConfig).TypedSpec()
 
 		secretsResources, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
 		if err != nil {
@@ -156,14 +155,35 @@ func jsonify(input string) (string, error) {
 	return string(out), err
 }
 
-func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secrets.KubernetesRootSpec) ([]renderedManifest, error) {
+func (ctrl *ManifestController) render(cfg k8s.BootstrapManifestsConfigSpec, scrt *secrets.KubernetesRootSpec) ([]renderedManifest, error) {
 	templateConfig := struct {
-		config.K8sManifestsSpec
+		k8s.BootstrapManifestsConfigSpec
 
 		Secrets *secrets.KubernetesRootSpec
+
+		KubernetesTalosAPIServiceName      string
+		KubernetesTalosAPIServiceNamespace string
+
+		ApidPort int
+
+		TalosServiceAccount TalosServiceAccount
 	}{
-		K8sManifestsSpec: cfg,
-		Secrets:          scrt,
+		BootstrapManifestsConfigSpec: cfg,
+		Secrets:                      scrt,
+
+		KubernetesTalosAPIServiceName:      constants.KubernetesTalosAPIServiceName,
+		KubernetesTalosAPIServiceNamespace: constants.KubernetesTalosAPIServiceNamespace,
+
+		ApidPort: constants.ApidPort,
+
+		TalosServiceAccount: TalosServiceAccount{
+			Group:            constants.ServiceAccountResourceGroup,
+			Version:          constants.ServiceAccountResourceVersion,
+			Kind:             constants.ServiceAccountResourceKind,
+			ResourceSingular: constants.ServiceAccountResourceSingular,
+			ResourcePlural:   constants.ServiceAccountResourcePlural,
+			ShortName:        constants.ServiceAccountResourceShortName,
+		},
 	}
 
 	type manifestDesc struct {
@@ -176,7 +196,6 @@ func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secret
 		{"01-csr-node-bootstrap", csrNodeBootstrapTemplate},
 		{"01-csr-approver-role-binding", csrApproverRoleBindingTemplate},
 		{"01-csr-renewal-role-binding", csrRenewalRoleBindingTemplate},
-		{"02-kube-system-sa-role-binding", kubeSystemSARoleBindingTemplate},
 		{"11-kube-config-in-cluster", kubeConfigInClusterTemplate},
 	}
 
@@ -213,13 +232,23 @@ func (ctrl *ManifestController) render(cfg config.K8sManifestsSpec, scrt *secret
 		)
 	}
 
+	if cfg.TalosAPIServiceEnabled {
+		defaultManifests = append(defaultManifests,
+			[]manifestDesc{
+				{"12-talos-api-service", talosAPIService},
+				{"13-talos-service-account-crd", talosServiceAccountCRDTemplate},
+			}...,
+		)
+	}
+
 	manifests := make([]renderedManifest, len(defaultManifests))
 
 	for i := range defaultManifests {
 		tmpl, err := template.New(defaultManifests[i].name).
 			Funcs(template.FuncMap{
-				"json": jsonify,
-				"join": strings.Join,
+				"json":     jsonify,
+				"join":     strings.Join,
+				"contains": strings.Contains,
 			}).
 			Parse(string(defaultManifests[i].template))
 		if err != nil {
@@ -257,4 +286,15 @@ func (ctrl *ManifestController) teardownAll(ctx context.Context, r controller.Ru
 	}
 
 	return nil
+}
+
+// TalosServiceAccount is a struct used by the template engine which contains the needed variables to
+// be able to construct the Talos Service Account CRD.
+type TalosServiceAccount struct {
+	Group            string
+	Version          string
+	Kind             string
+	ResourceSingular string
+	ResourcePlural   string
+	ShortName        string
 }

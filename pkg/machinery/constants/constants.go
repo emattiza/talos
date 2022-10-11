@@ -8,12 +8,12 @@ import (
 	"time"
 
 	cni "github.com/containerd/go-cni"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 )
 
 const (
 	// DefaultKernelVersion is the default Linux kernel version.
-	DefaultKernelVersion = "5.15.6-talos"
+	DefaultKernelVersion = "5.15.72-talos"
 
 	// KernelParamConfig is the kernel parameter name for specifying the URL.
 	// to the config.
@@ -38,6 +38,10 @@ const (
 	// kernel log delivery destination.
 	KernelParamLoggingKernel = "talos.logging.kernel"
 
+	// KernelParamWipe is the kernel parameter name for specifying the
+	// disk to wipe on the next boot and reboot.
+	KernelParamWipe = "talos.experimental.wipe"
+
 	// BoardNone indicates that the install is not for a specific board.
 	BoardNone = "none"
 
@@ -47,17 +51,29 @@ const (
 	// BoardRPi4 is the  name of the Raspberry Pi 4 Model B.
 	BoardRPi4 = "rpi_4"
 
+	// BoardRPiGeneric is the  name of the Raspberry Pi Compute Module 4.
+	BoardRPiGeneric = "rpi_generic"
+
 	// BoardBananaPiM64 is the  name of the Banana Pi M64.
 	BoardBananaPiM64 = "bananapi_m64"
 
 	// BoardPine64 is the  name of the Pine64.
 	BoardPine64 = "pine64"
 
+	// BoardJetsonNano is the name of the Jetson Nano.
+	BoardJetsonNano = "jetson_nano"
+
 	// BoardRock64 is the  name of the Rock64.
 	BoardRock64 = "rock64"
 
-	// BoardRockpi4 is the name of the Radxa Rock pi 4.
+	// BoardRockpi4 is the name of the Radxa Rock pi 4 revisions A and B.
 	BoardRockpi4 = "rockpi_4"
+
+	// BoardRockpi4c is the name of the Radxa Rock pi 4 revision C.
+	BoardRockpi4c = "rockpi_4c"
+
+	// BoardNanoPiR4S is the name of the Friendlyelec Nano Pi R4S.
+	BoardNanoPiR4S = "nanopi_r4s"
 
 	// KernelParamHostname is the kernel parameter name for specifying the
 	// hostname.
@@ -70,14 +86,33 @@ const (
 	// KernelParamNetworkInterfaceIgnore is the kernel parameter for specifying network interfaces which should be ignored by talos.
 	KernelParamNetworkInterfaceIgnore = "talos.network.interface.ignore"
 
+	// KernelParamVlan is the kernel parameter for specifying vlan for the interface.
+	KernelParamVlan = "vlan"
+
+	// KernelParamBonding is the kernel parameter for specifying bonded network interfaces.
+	KernelParamBonding = "bond"
+
 	// KernelParamPanic is the kernel parameter name for specifying the time to wait until rebooting after kernel panic (0 disables reboot).
 	KernelParamPanic = "panic"
 
-	// KernelParamSideroLink is the kernel paramater name to specify SideroLink API endpoint.
+	// KernelParamSideroLink is the kernel parameter name to specify SideroLink API endpoint.
 	KernelParamSideroLink = "siderolink.api"
+
+	// KernelParamEquinixMetalEvents is the kernel parameter name to specify the Equinix Metal phone home endpoint.
+	// This param is injected by Equinix Metal and depends on the device ID and datacenter.
+	KernelParamEquinixMetalEvents = "em.events_url"
 
 	// NewRoot is the path where the switchroot target is mounted.
 	NewRoot = "/root"
+
+	// ExtensionLayers is the path where the extensions layers are stored.
+	ExtensionLayers = "/layers"
+
+	// ExtensionsConfigFile is the extensions layers configuration file name in the initramfs.
+	ExtensionsConfigFile = "/extensions.yaml"
+
+	// ExtensionsRuntimeConfigFile extensions layers configuration file name in the rootfs.
+	ExtensionsRuntimeConfigFile = "/etc/extensions.yaml"
 
 	// EFIPartitionLabel is the label of the partition to use for mounting at
 	// the boot path.
@@ -137,35 +172,41 @@ const (
 	// KubernetesCACert is the path to the root CA certificate.
 	KubernetesCACert = DefaultCertificatesDir + "/" + "ca.crt"
 
-	// KubernetesEtcdCACert is the path to the etcd CA certificate.
-	KubernetesEtcdCACert = EtcdPKIPath + "/" + "ca.crt"
+	// EtcdCACert is the path to the etcd CA certificate.
+	EtcdCACert = EtcdPKIPath + "/" + "ca.crt"
 
-	// KubernetesEtcdCAKey is the path to the etcd CA private key.
-	KubernetesEtcdCAKey = EtcdPKIPath + "/" + "ca.key"
+	// EtcdCAKey is the path to the etcd CA private key.
+	EtcdCAKey = EtcdPKIPath + "/" + "ca.key"
 
-	// KubernetesEtcdCert is the path to the etcd server certificate.
-	KubernetesEtcdCert = EtcdPKIPath + "/" + "server.crt"
+	// EtcdCert is the path to the etcd server certificate.
+	EtcdCert = EtcdPKIPath + "/" + "server.crt"
 
-	// KubernetesEtcdKey is the path to the etcd server private key.
-	KubernetesEtcdKey = EtcdPKIPath + "/" + "server.key"
+	// EtcdKey is the path to the etcd server private key.
+	EtcdKey = EtcdPKIPath + "/" + "server.key"
 
-	// KubernetesEtcdPeerCert is the path to the etcd peer certificate.
-	KubernetesEtcdPeerCert = EtcdPKIPath + "/" + "peer.crt"
+	// EtcdPeerCert is the path to the etcd peer certificate.
+	EtcdPeerCert = EtcdPKIPath + "/" + "peer.crt"
 
-	// KubernetesEtcdPeerKey is the path to the etcd peer private key.
-	KubernetesEtcdPeerKey = EtcdPKIPath + "/" + "peer.key"
+	// EtcdPeerKey is the path to the etcd peer private key.
+	EtcdPeerKey = EtcdPKIPath + "/" + "peer.key"
 
-	// KubernetesEtcdAdminCert is the path to the talos client certificate.
-	KubernetesEtcdAdminCert = EtcdPKIPath + "/" + "admin.crt"
+	// EtcdAdminCert is the path to the talos client certificate.
+	EtcdAdminCert = EtcdPKIPath + "/" + "admin.crt"
 
-	// KubernetesEtcdAdminKey is the path to the talos client private key.
-	KubernetesEtcdAdminKey = EtcdPKIPath + "/" + "admin.key"
+	// EtcdAdminKey is the path to the talos client private key.
+	EtcdAdminKey = EtcdPKIPath + "/" + "admin.key"
 
-	// KubernetesEtcdListenClientPort defines the port etcd listen on for client traffic.
-	KubernetesEtcdListenClientPort = "2379"
+	// EtcdClientPort defines the port etcd listen on for client traffic.
+	EtcdClientPort = 2379
+
+	// EtcdPeerPort defines the port etcd listens on for peer traffic.
+	EtcdPeerPort = 2380
 
 	// KubernetesAdminCertCommonName defines CN property of Kubernetes admin certificate.
 	KubernetesAdminCertCommonName = "admin"
+
+	// KubernetesTalosAdminCertCommonName defines CN property of Kubernetes admin certificate used by Talos itself.
+	KubernetesTalosAdminCertCommonName = "talos:admin"
 
 	// KubernetesAdminCertOrganization defines Organization values of Kubernetes admin certificate.
 	KubernetesAdminCertOrganization = "system:masters"
@@ -185,8 +226,17 @@ const (
 	// KubebernetesStaticSecretsDir defines ephemeral directory which contains rendered secrets for controlplane components.
 	KubebernetesStaticSecretsDir = "/system/secrets/kubernetes"
 
-	// KubernetesAPIServerSecretsDir defines ephemeral directory with kube-apiserver secrets.
+	// KubebernetesStaticConfigDir defines ephemeral directory which contains rendered configs for controlplane components.
+	KubebernetesStaticConfigDir = "/system/config/kubernetes"
+
+	// KubernetesAuditLogDir defines the ephemeral directory where the kube-apiserver will store its audit logs.
+	KubernetesAuditLogDir = EphemeralMountPoint + "/" + "log" + "/" + "audit" + "/" + "kube"
+
+	// KubernetesAPIServerSecretsDir defines directory with kube-apiserver secrets.
 	KubernetesAPIServerSecretsDir = KubebernetesStaticSecretsDir + "/" + "kube-apiserver"
+
+	// KubernetesAPIServerConfigDir defines directory with kube-apiserver configs.
+	KubernetesAPIServerConfigDir = KubebernetesStaticConfigDir + "/" + "kube-apiserver"
 
 	// KubernetesControllerManagerSecretsDir defines ephemeral directory with kube-controller-manager secrets.
 	KubernetesControllerManagerSecretsDir = KubebernetesStaticSecretsDir + "/" + "kube-controller-manager"
@@ -194,8 +244,23 @@ const (
 	// KubernetesSchedulerSecretsDir defines ephemeral directory with kube-scheduler secrets.
 	KubernetesSchedulerSecretsDir = KubebernetesStaticSecretsDir + "/" + "kube-scheduler"
 
-	// KubernetesRunUser defines UID to run control plane components.
-	KubernetesRunUser = 65534
+	// KubernetesAPIServerRunUser defines UID to the API Server.
+	KubernetesAPIServerRunUser = 65534
+
+	// KubernetesAPIServerRunGroup defines GID to run the API Server.
+	KubernetesAPIServerRunGroup = 65534
+
+	// KubernetesControllerManagerRunUser defines UID to the Controller Manager.
+	KubernetesControllerManagerRunUser = 65535
+
+	// KubernetesControllerManagerRunGroup defines GID to run the Controller Manager.
+	KubernetesControllerManagerRunGroup = 65535
+
+	// KubernetesSchedulerRunUser defines UID to the Scheduler.
+	KubernetesSchedulerRunUser = 65536
+
+	// KubernetesSchedulerRunGroup defines GID to run the Scheduler.
+	KubernetesSchedulerRunGroup = 65536
 
 	// KubeletBootstrapKubeconfig is the path to the kubeconfig required to
 	// bootstrap the kubelet.
@@ -213,14 +278,25 @@ const (
 	// SystemKubeletPKIDir is the path to the directory where Talos copies kubelet issued certificates and keys.
 	SystemKubeletPKIDir = "/system/secrets/kubelet"
 
+	// KubeletShutdownGracePeriod is the kubelet shutdown grace period.
+	KubeletShutdownGracePeriod = 30 * time.Second
+
+	// KubeletShutdownGracePeriodCriticalPods is the kubelet shutdown grace period for critical pods.
+	//
+	// Should be less than KubeletShutdownGracePeriod.
+	KubeletShutdownGracePeriodCriticalPods = 10 * time.Second
+
+	// SeccompProfilesDirectory is the path to the directory where user provided seccomp profiles are mounted inside Kubelet.
+	SeccompProfilesDirectory = "/var/lib/kubelet/seccomp/profiles"
+
 	// DefaultKubernetesVersion is the default target version of the control plane.
-	DefaultKubernetesVersion = "1.23.1"
+	DefaultKubernetesVersion = "1.26.0-alpha.1"
 
 	// DefaultControlPlanePort is the default port to use for the control plane.
 	DefaultControlPlanePort = 6443
 
 	// KubeletImage is the enforced kubelet image to use.
-	KubeletImage = "ghcr.io/talos-systems/kubelet"
+	KubeletImage = "ghcr.io/siderolabs/kubelet"
 
 	// KubeProxyImage is the enforced kube-proxy image to use for the control plane.
 	KubeProxyImage = "k8s.gcr.io/kube-proxy"
@@ -241,7 +317,7 @@ const (
 	CoreDNSImage = "docker.io/coredns/coredns"
 
 	// DefaultCoreDNSVersion is the default version for the CoreDNS.
-	DefaultCoreDNSVersion = "1.8.6"
+	DefaultCoreDNSVersion = "1.10.0"
 
 	// LabelNodeRoleMaster is the node label required by a control plane node.
 	LabelNodeRoleMaster = "node-role.kubernetes.io/master"
@@ -262,7 +338,7 @@ const (
 	KubeletSystemReservedCPU = "50m"
 
 	// KubeletSystemReservedMemory memory system reservation value for kubelet kubeconfig.
-	KubeletSystemReservedMemory = "128Mi"
+	KubeletSystemReservedMemory = "192Mi"
 
 	// KubeletSystemReservedPid pid system reservation value for kubelet kubeconfig.
 	KubeletSystemReservedPid = "100"
@@ -271,7 +347,7 @@ const (
 	KubeletSystemReservedEphemeralStorage = "256Mi"
 
 	// DefaultEtcdVersion is the default target version of etcd.
-	DefaultEtcdVersion = "v3.5.1"
+	DefaultEtcdVersion = "v3.5.5"
 
 	// EtcdRootTalosKey is the root etcd key for Talos-specific storage.
 	EtcdRootTalosKey = "talos:v1"
@@ -279,8 +355,11 @@ const (
 	// EtcdTalosEtcdUpgradeMutex is the etcd mutex prefix to be used to set an etcd upgrade lock.
 	EtcdTalosEtcdUpgradeMutex = EtcdRootTalosKey + ":etcdUpgradeMutex"
 
-	// EtcdTalosManifestApplyMutex is the etcd election .
+	// EtcdTalosManifestApplyMutex is the etcd mutex prefix used by manifest apply controller.
 	EtcdTalosManifestApplyMutex = EtcdRootTalosKey + ":manifestApplyMutex"
+
+	// EtcdTalosServiceAccountCRDControllerMutex is the etcd mutex prefix used by Talos ServiceAccount crd controller.
+	EtcdTalosServiceAccountCRDControllerMutex = EtcdRootTalosKey + ":serviceAccountCRDController"
 
 	// EtcdImage is the reposistory for the etcd image.
 	EtcdImage = "gcr.io/etcd-development/etcd"
@@ -299,6 +378,9 @@ const (
 
 	// ConfigPath is the path to the downloaded config.
 	ConfigPath = StateMountPoint + "/config.yaml"
+
+	// ConfigTryTimeout is the timeout of the config apply in try mode.
+	ConfigTryTimeout = time.Minute
 
 	// MetalConfigISOLabel is the volume label for ISO based configuration.
 	MetalConfigISOLabel = "metal-iso"
@@ -337,7 +419,7 @@ const (
 	TrustdUserID = 51
 
 	// DefaultContainerdVersion is the default container runtime version.
-	DefaultContainerdVersion = "1.5.8"
+	DefaultContainerdVersion = "1.6.8"
 
 	// SystemContainerdNamespace is the Containerd namespace for Talos services.
 	SystemContainerdNamespace = "system"
@@ -351,6 +433,15 @@ const (
 	// CRIContainerdConfig is the path to the config for the containerd instance that provides the CRI.
 	CRIContainerdConfig = "/etc/cri/containerd.toml"
 
+	// CRIConfdPath is the path to the directory providing parts of CRI plugin configuration.
+	CRIConfdPath = "/etc/cri/conf.d"
+
+	// CRIConfig is the path to the CRI merged configuration file relative to /etc.
+	CRIConfig = "cri/conf.d/cri.toml"
+
+	// CRIRegistryConfigPart is the path to the CRI generated registry configuration relative to /etc.
+	CRIRegistryConfigPart = "cri/conf.d/01-registries.part"
+
 	// TalosConfigEnvVar is the environment variable for setting the Talos configuration file path.
 	TalosConfigEnvVar = "TALOSCONFIG"
 
@@ -359,6 +450,9 @@ const (
 
 	// APIRuntimeSocketPath is the path to file socket of runtime server for apid.
 	APIRuntimeSocketPath = SystemRunPath + "/apid/runtime.sock"
+
+	// TrustdRuntimeSocketPath is the path to file socket of runtime server for trustd.
+	TrustdRuntimeSocketPath = SystemRunPath + "/trustd/runtime.sock"
 
 	// MachineSocketPath is the path to file socket of machine API.
 	MachineSocketPath = SystemRunPath + "/machined/machine.sock"
@@ -397,8 +491,8 @@ const (
 	// and directories.
 	SystemPath = "/system"
 
-	// SystemOverlaysPath is the path where overlay mounts are created.
-	SystemOverlaysPath = "/var/system/overlays"
+	// VarSystemOverlaysPath is the path where overlay mounts are created.
+	VarSystemOverlaysPath = "/var/system/overlays"
 
 	// SystemRunPath is the path to the system run directory.
 	SystemRunPath = SystemPath + "/run"
@@ -412,23 +506,44 @@ const (
 	// SystemLibexecPath is the path to the system libexec directory.
 	SystemLibexecPath = SystemPath + "/libexec"
 
+	// SystemExtensionsPath is the path to the system extensions directory.
+	SystemExtensionsPath = SystemPath + "/extensions"
+
+	// SystemOverlaysPath is the path to the system overlay directory.
+	SystemOverlaysPath = SystemPath + "/overlays"
+
 	// CgroupMountPath is the default mount path for unified cgroupsv2 setup.
 	CgroupMountPath = "/sys/fs/cgroup"
 
 	// CgroupInit is the cgroup name for init process.
 	CgroupInit = "/init"
 
+	// CgroupInitReservedMemory is the hard memory protection for the init process.
+	CgroupInitReservedMemory = 96 * 1024 * 1024
+
 	// CgroupSystem is the cgroup name for system processes.
 	CgroupSystem = "/system"
 
-	// CgroupRuntime is the cgroup name for containerd runtime processes.
-	CgroupRuntime = CgroupSystem + "/runtime"
+	// CgroupSystemReservedMemory is the hard memory protection for the system processes.
+	CgroupSystemReservedMemory = 96 * 1024 * 1024
+
+	// CgroupSystemRuntime is the cgroup name for containerd runtime processes.
+	CgroupSystemRuntime = CgroupSystem + "/runtime"
+
+	// CgroupExtensions is the cgroup name for system extension processes.
+	CgroupExtensions = CgroupSystem + "/extensions"
 
 	// CgroupPodRuntime is the cgroup name for kubernetes containerd runtime processes.
 	CgroupPodRuntime = "/podruntime/runtime"
 
+	// CgroupPodRuntimeReservedMemory is the hard memory protection for the cri runtime processes.
+	CgroupPodRuntimeReservedMemory = 128 * 1024 * 1024
+
 	// CgroupKubelet is the cgroup name for kubelet process.
 	CgroupKubelet = "/podruntime/kubelet"
+
+	// CgroupKubeletReservedMemory is the hard memory protection for the kubelet processes.
+	CgroupKubeletReservedMemory = 64 * 1024 * 1024
 
 	// FlannelCNI is the string to use Tanos-managed Flannel CNI (default).
 	FlannelCNI = "flannel"
@@ -455,7 +570,10 @@ const (
 	DefaultDNSDomain = "cluster.local"
 
 	// BootTimeout is the timeout to run all services.
-	BootTimeout = 35 * time.Minute
+	BootTimeout = 70 * time.Minute
+
+	// FailurePauseTimeout is the timeout for the sequencer failures which can be fixed by updating the machine config.
+	FailurePauseTimeout = 35 * time.Minute
 
 	// EtcdJoinTimeout is the timeout for etcd to join the existing cluster.
 	//
@@ -477,6 +595,9 @@ const (
 
 	// AnnotationStaticPodConfigVersion is the annotation key for the static pod config version.
 	AnnotationStaticPodConfigVersion = "talos.dev/config-version"
+
+	// AnnotationStaticPodConfigFileVersion is the annotation key for the static pod configuration file version.
+	AnnotationStaticPodConfigFileVersion = "talos.dev/config-file-version"
 
 	// DefaultNTPServer is the NTP server to use if not configured explicitly.
 	//
@@ -519,12 +640,17 @@ const (
 	// KubeSpanDefaultFirewallMark is the default firewall mark to use for Wireguard encrypted egress packets.
 	//
 	// Normal Wireguard configurations will NOT use this firewall mark.
-	KubeSpanDefaultFirewallMark = 0x51820
+	KubeSpanDefaultFirewallMark = 0x20
 
 	// KubeSpanDefaultForceFirewallMark is the default firewall mark to use for packets destined to IPs serviced by KubeSpan.
 	//
 	// It is used to signal that matching packets should be forced into the Wireguard interface.
-	KubeSpanDefaultForceFirewallMark = 0x51821
+	KubeSpanDefaultForceFirewallMark = 0x40
+
+	// KubeSpanDefaultFirewallMask is the mask applied to the packet mark when matching and setting the mark.
+	//
+	// This mask signals the bits of the firewall mark used by KubeSpan.
+	KubeSpanDefaultFirewallMask = KubeSpanDefaultFirewallMark | KubeSpanDefaultForceFirewallMark
 
 	// KubeSpanDefaultPeerKeepalive is the interval at which Wireguard Peer Keepalives should be sent.
 	KubeSpanDefaultPeerKeepalive = 25 * time.Second
@@ -561,9 +687,81 @@ const (
 
 	// SideroLinkDefaultPeerKeepalive is the interval at which Wireguard Peer Keepalives should be sent.
 	SideroLinkDefaultPeerKeepalive = 25 * time.Second
+
+	// PlatformNetworkConfigFilename is the filename to cache platform network configuration reboots.
+	PlatformNetworkConfigFilename = "platform-network.yaml"
+
+	// FirmwarePath is the path to the standard Linux firmware location.
+	FirmwarePath = "/lib/firmware"
+
+	// ExtensionServicesConfigPath is the directory path which contains  configuration files of extension services.
+	//
+	// See pkg/machinery/extensions/services for the file format.
+	ExtensionServicesConfigPath = "/usr/local/etc/containers"
+
+	// ExtensionServicesRootfsPath is the path to the extracted rootfs files of extension services.
+	ExtensionServicesRootfsPath = "/usr/local/lib/containers"
+
+	// DBusServiceSocketPath is the path to the D-Bus socket for the logind mock to connect to.
+	DBusServiceSocketPath = SystemRunPath + "/dbus/service.socket"
+
+	// DBusClientSocketPath is the path to the D-Bus socket for the kubelet to connect to.
+	DBusClientSocketPath = "/run/dbus/system_bus_socket"
+
+	// GoVersion is the version of Go compiler this release was built with.
+	GoVersion = "go1.19.2"
+
+	// KubernetesTalosAPIServiceName is the name of the Kubernetes service to access Talos API.
+	KubernetesTalosAPIServiceName = "talos"
+
+	// KubernetesTalosAPIServiceNamespace is the namespace of the Kubernetes service to access Talos API.
+	KubernetesTalosAPIServiceNamespace = "default"
+
+	// TalosDir is the default name of the Talos directory under user home.
+	TalosDir = ".talos"
+
+	// TalosconfigFilename is the file name of Talosconfig under TalosDir or under ServiceAccountMountPath inside a pod.
+	TalosconfigFilename = "config"
+
+	// KubernetesTalosProvider is the name of the Talos provider as a Kubernetes label.
+	KubernetesTalosProvider = "talos.dev"
+
+	// ServiceAccountResourceGroup is the group name of the Talos service account CRD.
+	ServiceAccountResourceGroup = "talos.dev"
+
+	// ServiceAccountResourceVersion is the version of the Talos service account CRD.
+	ServiceAccountResourceVersion = "v1alpha1"
+
+	// ServiceAccountResourceKind is the kind name of the Talos service account CRD.
+	ServiceAccountResourceKind = "ServiceAccount"
+
+	// ServiceAccountResourceSingular is the singular name of the Talos service account CRD.
+	ServiceAccountResourceSingular = "serviceaccount"
+
+	// ServiceAccountResourceShortName is the short name of the service account CRD.
+	ServiceAccountResourceShortName = "tsa"
+
+	// ServiceAccountResourcePlural is the plural name of the service account CRD.
+	ServiceAccountResourcePlural = ServiceAccountResourceSingular + "s"
+
+	// ServiceAccountMountPath is the path of the directory in which the Talos service account secrets are mounted.
+	ServiceAccountMountPath = "/var/run/secrets/talos.dev"
+
+	// DefaultTrustedCAFile is the default path to the trusted CA file.
+	DefaultTrustedCAFile = "/etc/ssl/certs/ca-certificates"
+
+	// MachinedMaxProcs is the maximum number of GOMAXPROCS for machined.
+	MachinedMaxProcs = 4
+
+	// ApidMaxProcs is the maximum number of GOMAXPROCS for apid.
+	ApidMaxProcs = 2
+
+	// TrustdMaxProcs is the maximum number of GOMAXPROCS for trustd.
+	TrustdMaxProcs = 2
 )
 
 // See https://linux.die.net/man/3/klogctl
+//
 //nolint:stylecheck,revive
 const (
 	// SYSLOG_ACTION_SIZE_BUFFER is a named type argument to klogctl.
@@ -574,3 +772,20 @@ const (
 	//nolint:golint
 	SYSLOG_ACTION_READ_ALL = 3
 )
+
+// names of variable that can be substituted in the talos.config kernel parameter.
+const (
+	UUIDKey         = "uuid"
+	SerialNumberKey = "serial"
+	HostnameKey     = "hostname"
+	MacKey          = "mac"
+)
+
+// Overlays is the set of paths to create overlay mounts for.
+var Overlays = []string{
+	"/etc/cni",
+	"/etc/kubernetes",
+	"/usr/libexec/kubernetes",
+	"/usr/etc/udev",
+	"/opt",
+}

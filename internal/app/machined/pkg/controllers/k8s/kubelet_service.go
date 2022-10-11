@@ -7,28 +7,35 @@ package k8s
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"text/template"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/client-go/tools/clientcmd"
 	kubeletconfig "k8s.io/kubelet/config/v1beta1"
 
+	runtimetalos "github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/services"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/resources/files"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	runtimeres "github.com/talos-systems/talos/pkg/machinery/resources/runtime"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
-	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
 
 // ServiceManager is the interface to the v1alpha1 services subsystems.
@@ -42,6 +49,7 @@ type ServiceManager interface {
 // KubeletServiceController renders kubelet configuration files and controls kubelet service lifecycle.
 type KubeletServiceController struct {
 	V1Alpha1Services ServiceManager
+	V1Alpha1Mode     runtimetalos.Mode
 }
 
 // Name implements controller.Controller interface.
@@ -63,12 +71,18 @@ func (ctrl *KubeletServiceController) Outputs() []controller.Output {
 //
 //nolint:gocyclo,cyclop
 func (ctrl *KubeletServiceController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
-	// initially, wait for the cri to be up
+	// initially, wait for the machine-id to be generated and /var to be mounted
 	if err := r.UpdateInputs([]controller.Input{
 		{
-			Namespace: v1alpha1.NamespaceName,
-			Type:      v1alpha1.ServiceType,
-			ID:        pointer.ToString("cri"),
+			Namespace: files.NamespaceName,
+			Type:      files.EtcFileStatusType,
+			ID:        pointer.To("machine-id"),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: runtimeres.NamespaceName,
+			Type:      runtimeres.MountStatusType,
+			ID:        pointer.To(constants.EphemeralPartitionLabel),
 			Kind:      controller.InputWeak,
 		},
 	}); err != nil {
@@ -82,32 +96,43 @@ func (ctrl *KubeletServiceController) Run(ctx context.Context, r controller.Runt
 		case <-r.EventCh():
 		}
 
-		svc, err := r.Get(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "cri", resource.VersionUndefined))
+		_, err := r.Get(ctx, resource.NewMetadata(files.NamespaceName, files.EtcFileStatusType, "machine-id", resource.VersionUndefined))
 		if err != nil {
 			if state.IsNotFoundError(err) {
 				continue
 			}
 
-			return fmt.Errorf("error getting service: %w", err)
+			return fmt.Errorf("error getting etc file status: %w", err)
 		}
 
-		if svc.(*v1alpha1.Service).Healthy() && svc.(*v1alpha1.Service).Running() {
-			break
+		_, err = r.Get(ctx, resource.NewMetadata(runtimeres.NamespaceName, runtimeres.MountStatusType, constants.EphemeralPartitionLabel, resource.VersionUndefined))
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				// in container mode EPHEMERAL is always mounted
+				if ctrl.V1Alpha1Mode != runtimetalos.ModeContainer {
+					// wait for the EPHEMERAL to be mounted
+					continue
+				}
+			} else {
+				return fmt.Errorf("error getting ephemeral mount status: %w", err)
+			}
 		}
+
+		break
 	}
 
-	// normal reconcile loop, ignore cri state
+	// normal reconcile loop
 	if err := r.UpdateInputs([]controller.Input{
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.KubeletSpecType,
-			ID:        pointer.ToString(k8s.KubeletID),
+			ID:        pointer.To(k8s.KubeletID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubeletType,
-			ID:        pointer.ToString(secrets.KubeletID),
+			ID:        pointer.To(secrets.KubeletID),
 			Kind:      controller.InputWeak,
 		},
 	}); err != nil {
@@ -164,6 +189,19 @@ func (ctrl *KubeletServiceController) Run(ctx context.Context, r controller.Runt
 			}
 		}
 
+		// refresh certs only if we are managing the node name (not overridden by the user)
+		if cfgSpec.ExpectedNodename != "" {
+			err = ctrl.refreshKubeletCerts(cfgSpec.ExpectedNodename)
+			if err != nil {
+				return err
+			}
+		}
+
+		err = updateKubeconfig(secretSpec.Endpoint)
+		if err != nil {
+			return err
+		}
+
 		if err = ctrl.V1Alpha1Services.Start("kubelet"); err != nil {
 			return fmt.Errorf("error starting kubelet service: %w", err)
 		}
@@ -191,7 +229,7 @@ func (ctrl *KubeletServiceController) writePKI(secretSpec *secrets.KubeletSpec) 
 		return err
 	}
 
-	if err := ioutil.WriteFile(constants.KubeletBootstrapKubeconfig, buf.Bytes(), 0o600); err != nil {
+	if err := os.WriteFile(constants.KubeletBootstrapKubeconfig, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 
@@ -199,7 +237,7 @@ func (ctrl *KubeletServiceController) writePKI(secretSpec *secrets.KubeletSpec) 
 		return err
 	}
 
-	if err := ioutil.WriteFile(constants.KubernetesCACert, secretSpec.CA.Crt, 0o400); err != nil {
+	if err := os.WriteFile(constants.KubernetesCACert, secretSpec.CA.Crt, 0o400); err != nil {
 		return err
 	}
 
@@ -247,5 +285,98 @@ func (ctrl *KubeletServiceController) writeConfig(cfgSpec *k8s.KubeletSpecSpec) 
 		return err
 	}
 
-	return ioutil.WriteFile("/etc/kubernetes/kubelet.yaml", buf.Bytes(), 0o600)
+	return os.WriteFile("/etc/kubernetes/kubelet.yaml", buf.Bytes(), 0o600)
+}
+
+// updateKubeconfig updates the kubeconfig of kubelet with the given endpoint if it exists.
+func updateKubeconfig(newEndpoint *url.URL) error {
+	config, err := clientcmd.LoadFromFile(constants.KubeletKubeconfig)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	cluster := config.Clusters[config.Contexts[config.CurrentContext].Cluster]
+	if cluster.Server == newEndpoint.String() {
+		return nil
+	}
+
+	cluster.Server = newEndpoint.String()
+
+	return clientcmd.WriteToFile(*config, constants.KubeletKubeconfig)
+}
+
+// refreshKubeletCerts checks if the existing kubelet certificates match the node hostname.
+// If they don't match, it clears the certificate directory and the removes kubelet's kubeconfig so that
+// they can be regenerated next time kubelet is started.
+func (ctrl *KubeletServiceController) refreshKubeletCerts(hostname string) error {
+	cert, err := ctrl.readKubeletCertificate()
+	if err != nil {
+		return err
+	}
+
+	if cert == nil {
+		return nil
+	}
+
+	valid := slices.Contains(cert.DNSNames, func(name string) bool {
+		return name == hostname
+	})
+
+	if valid {
+		// certificate looks good, no need to refresh
+		return nil
+	}
+
+	// remove the pki directory
+	err = os.RemoveAll(constants.KubeletPKIDir)
+	if err != nil {
+		return err
+	}
+
+	// clear the kubelet kubeconfig
+	err = os.Remove(constants.KubeletKubeconfig)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	return err
+}
+
+func (ctrl *KubeletServiceController) readKubeletCertificate() (*x509.Certificate, error) {
+	raw, err := os.ReadFile(filepath.Join(constants.KubeletPKIDir, "kubelet.crt"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			return nil, nil
+		}
+
+		raw = rest
+
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+
+		var cert *x509.Certificate
+
+		cert, err = x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+
+		if !cert.IsCA {
+			return cert, nil
+		}
+	}
 }

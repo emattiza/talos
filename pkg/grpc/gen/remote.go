@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 	"github.com/talos-systems/go-retry/retry"
 	"google.golang.org/grpc"
 
@@ -19,12 +19,6 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/client/resolver"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
-
-var trustdResolverScheme string
-
-func init() {
-	trustdResolverScheme = resolver.RegisterRoundRobinResolver(constants.TrustdPort)
-}
 
 // RemoteGenerator represents the OS identity generator.
 type RemoteGenerator struct {
@@ -38,9 +32,11 @@ func NewRemoteGenerator(token string, endpoints []string, ca *x509.PEMEncodedCer
 		return nil, fmt.Errorf("at least one root of trust endpoint is required")
 	}
 
+	endpoints = resolver.EnsureEndpointsHavePorts(endpoints, constants.TrustdPort)
+
 	g = &RemoteGenerator{}
 
-	conn, err := basic.NewConnection(fmt.Sprintf("%s:///%s", trustdResolverScheme, strings.Join(endpoints, ",")), basic.NewTokenCredentials(token), ca)
+	conn, err := basic.NewConnection(fmt.Sprintf("%s:///%s", resolver.RoundRobinResolverScheme, strings.Join(endpoints, ",")), basic.NewTokenCredentials(token), ca)
 	if err != nil {
 		return nil, err
 	}

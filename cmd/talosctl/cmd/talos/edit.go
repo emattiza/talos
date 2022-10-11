@@ -7,62 +7,72 @@ package talos
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
+	"time"
 
+	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"gopkg.in/yaml.v3"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/cmd/util/editor"
 	"k8s.io/kubectl/pkg/cmd/util/editor/crlf"
 
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
-	"github.com/talos-systems/talos/pkg/cli"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
 var editCmdFlags struct {
-	namespace string
-	immediate bool
-	onReboot  bool
+	helpers.Mode
+	namespace        string
+	dryRun           bool
+	configTryTimeout time.Duration
 }
 
 //nolint:gocyclo
-func editFn(c *client.Client) func(context.Context, client.ResourceResponse) error {
-	var lastError string
+func editFn(c *client.Client) func(context.Context, string, resource.Resource, error) error {
+	var (
+		path      string
+		lastError string
+	)
 
 	edit := editor.NewDefaultEditor([]string{
 		"TALOS_EDITOR",
 		"EDITOR",
 	})
 
-	return func(ctx context.Context, msg client.ResourceResponse) error {
-		if msg.Definition != nil {
-			if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
-				return fmt.Errorf("only the machineconfig resource can be edited")
-			}
+	return func(ctx context.Context, node string, mc resource.Resource, callError error) error {
+		if callError != nil {
+			return fmt.Errorf("%s: %w", node, callError)
 		}
 
-		if msg.Resource == nil {
-			return nil
+		if mc.Metadata().Type() != config.MachineConfigType {
+			return fmt.Errorf("only the machineconfig resource can be edited")
 		}
+
+		metadata := mc.Metadata()
+		id := metadata.ID()
+
+		body, err := yaml.Marshal(mc.Spec())
+		if err != nil {
+			return err
+		}
+
+		edited := body
 
 		for {
 			var (
 				buf bytes.Buffer
 				w   io.Writer = &buf
-				id  string
 			)
-
-			metadata := msg.Resource.Metadata()
-
-			if metadata != nil {
-				id = metadata.ID()
-			}
 
 			if runtime.GOOS == "windows" {
 				w = crlf.NewCRLFWriter(w)
@@ -70,7 +80,7 @@ func editFn(c *client.Client) func(context.Context, client.ResourceResponse) err
 
 			_, err := w.Write([]byte(
 				fmt.Sprintf(
-					"# Editing %s/%s at node %s\n", msg.Resource.Metadata().Type(), id, msg.Metadata.GetHostname(),
+					"# Editing %s/%s at node %s\n", mc.Metadata().Type(), id, node,
 				),
 			))
 			if err != nil {
@@ -78,52 +88,57 @@ func editFn(c *client.Client) func(context.Context, client.ResourceResponse) err
 			}
 
 			if lastError != "" {
-				lines := strings.Split(lastError, "\n")
-
-				_, err = w.Write([]byte(
-					fmt.Sprintf("#\n# %s\n", strings.Join(lines, "\n# ")),
-				))
+				_, err = w.Write([]byte(addEditingComment(lastError)))
 				if err != nil {
 					return err
 				}
 			}
 
-			body, err := yaml.Marshal(msg.Resource.Spec())
+			_, err = w.Write(edited)
 			if err != nil {
 				return err
 			}
 
-			_, err = w.Write(body)
+			editedDiff := edited
+
+			edited, path, err = edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", mc.Metadata().Type(), id), ".yaml", &buf)
 			if err != nil {
 				return err
 			}
 
-			edited, _, err := edit.LaunchTempFile(fmt.Sprintf("%s-%s-edit-", msg.Resource.Metadata().Type(), id), ".yaml", &buf)
-			if err != nil {
-				return err
+			defer os.Remove(path) //nolint:errcheck
+
+			edited = stripEditingComment(edited)
+
+			// If we're retrying the loop because of an error, and no change was made in the file, short-circuit
+			if lastError != "" && bytes.Equal(cmdutil.StripComments(editedDiff), cmdutil.StripComments(edited)) {
+				if _, err = os.Stat(path); !os.IsNotExist(err) {
+					message := addEditingComment(lastError)
+					message += fmt.Sprintf("A copy of your changes has been stored to %q\nEdit canceled, no valid changes were saved.\n", path)
+
+					return errors.New(message)
+				}
 			}
 
-			editedWithoutComments := bytes.TrimSpace(cmdutil.StripComments(edited))
-
-			if len(bytes.TrimSpace(editedWithoutComments)) == 0 {
+			if len(bytes.TrimSpace(bytes.TrimSpace(cmdutil.StripComments(edited)))) == 0 {
 				fmt.Println("Apply was skipped: empty file.")
 
 				break
 			}
 
-			if bytes.Equal(
-				editedWithoutComments,
-				bytes.TrimSpace(cmdutil.StripComments(body)),
-			) {
+			if bytes.Equal(edited, body) {
 				fmt.Println("Apply was skipped: no changes detected.")
 
 				break
 			}
 
 			resp, err := c.ApplyConfiguration(ctx, &machine.ApplyConfigurationRequest{
-				Data:      edited,
-				Immediate: editCmdFlags.immediate,
-				OnReboot:  editCmdFlags.onReboot,
+				Data:           edited,
+				Mode:           editCmdFlags.Mode.Mode,
+				OnReboot:       editCmdFlags.OnReboot,
+				Immediate:      editCmdFlags.Immediate,
+				DryRun:         editCmdFlags.dryRun,
+				TryModeTimeout: durationpb.New(editCmdFlags.configTryTimeout),
 			})
 			if err != nil {
 				lastError = err.Error()
@@ -131,17 +146,34 @@ func editFn(c *client.Client) func(context.Context, client.ResourceResponse) err
 				continue
 			}
 
-			for _, m := range resp.GetMessages() {
-				for _, w := range m.GetWarnings() {
-					cli.Warning("%s", w)
-				}
-			}
+			helpers.PrintApplyResults(resp)
 
 			break
 		}
 
 		return nil
 	}
+}
+
+func stripEditingComment(in []byte) []byte {
+	for {
+		idx := bytes.Index(in, []byte{'\n'})
+		if idx == -1 {
+			return in
+		}
+
+		if !bytes.HasPrefix(in, []byte("# ")) {
+			return in
+		}
+
+		in = in[idx+1:]
+	}
+}
+
+func addEditingComment(in string) string {
+	lines := strings.Split(in, "\n")
+
+	return fmt.Sprintf("# \n# %s\n", strings.Join(lines, "\n# "))
 }
 
 // editCmd represents the edit command.
@@ -157,9 +189,13 @@ or EDITOR environment variables, or fall back to 'vi' for Linux
 or 'notepad' for Windows.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
-			for _, node := range Nodes {
+			if err := helpers.ClientVersionCheck(ctx, c); err != nil {
+				return err
+			}
+
+			for _, node := range GlobalArgs.Nodes {
 				nodeCtx := client.WithNodes(ctx, node)
-				if err := helpers.ForEachResource(nodeCtx, c, editFn(c), editCmdFlags.namespace, args...); err != nil {
+				if err := helpers.ForEachResource(nodeCtx, c, nil, editFn(c), editCmdFlags.namespace, args...); err != nil {
 					return err
 				}
 			}
@@ -171,7 +207,8 @@ or 'notepad' for Windows.`,
 
 func init() {
 	editCmd.Flags().StringVar(&editCmdFlags.namespace, "namespace", "", "resource namespace (default is to use default namespace per resource)")
-	editCmd.Flags().BoolVar(&editCmdFlags.immediate, "immediate", false, "apply the change immediately (without a reboot)")
-	editCmd.Flags().BoolVar(&editCmdFlags.onReboot, "on-reboot", false, "apply the change on next reboot")
+	helpers.AddModeFlags(&editCmdFlags.Mode, editCmd)
+	editCmd.Flags().BoolVar(&editCmdFlags.dryRun, "dry-run", false, "do not apply the change after editing and print the change summary instead")
+	editCmd.Flags().DurationVar(&editCmdFlags.configTryTimeout, "timeout", constants.ConfigTryTimeout, "the config will be rolled back after specified timeout (if try mode is selected)")
 	addCommand(editCmd)
 }

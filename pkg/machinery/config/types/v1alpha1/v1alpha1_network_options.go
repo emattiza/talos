@@ -5,7 +5,7 @@
 package v1alpha1
 
 import (
-	"github.com/AlekSi/pointer"
+	"github.com/siderolabs/go-pointer"
 
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 )
@@ -34,7 +34,7 @@ func WithNetworkNameservers(nameservers ...string) NetworkConfigOption {
 // WithNetworkInterfaceIgnore marks interface as ignored.
 func WithNetworkInterfaceIgnore(iface string) NetworkConfigOption {
 	return func(_ machine.Type, cfg *NetworkConfig) error {
-		cfg.getDevice(iface).DeviceIgnore = true
+		cfg.getDevice(iface).DeviceIgnore = pointer.To(true)
 
 		return nil
 	}
@@ -43,7 +43,7 @@ func WithNetworkInterfaceIgnore(iface string) NetworkConfigOption {
 // WithNetworkInterfaceDHCP enables DHCP for the interface.
 func WithNetworkInterfaceDHCP(iface string, enable bool) NetworkConfigOption {
 	return func(_ machine.Type, cfg *NetworkConfig) error {
-		cfg.getDevice(iface).DeviceDHCP = true
+		cfg.getDevice(iface).DeviceDHCP = pointer.To(true)
 
 		return nil
 	}
@@ -58,7 +58,7 @@ func WithNetworkInterfaceDHCPv4(iface string, enable bool) NetworkConfigOption {
 			dev.DeviceDHCPOptions = &DHCPOptions{}
 		}
 
-		dev.DeviceDHCPOptions.DHCPIPv4 = pointer.ToBool(enable)
+		dev.DeviceDHCPOptions.DHCPIPv4 = pointer.To(enable)
 
 		return nil
 	}
@@ -73,7 +73,7 @@ func WithNetworkInterfaceDHCPv6(iface string, enable bool) NetworkConfigOption {
 			dev.DeviceDHCPOptions = &DHCPOptions{}
 		}
 
-		dev.DeviceDHCPOptions.DHCPIPv6 = pointer.ToBool(enable)
+		dev.DeviceDHCPOptions.DHCPIPv6 = pointer.To(enable)
 
 		return nil
 	}
@@ -124,7 +124,11 @@ func WithNetworkInterfaceVirtualIP(iface, cidr string) NetworkConfigOption {
 // WithKubeSpan configures a KubeSpan interface.
 func WithKubeSpan() NetworkConfigOption {
 	return func(_ machine.Type, cfg *NetworkConfig) error {
-		cfg.NetworkKubeSpan.KubeSpanEnabled = true
+		if cfg.NetworkKubeSpan == nil {
+			cfg.NetworkKubeSpan = &NetworkKubeSpan{}
+		}
+
+		cfg.NetworkKubeSpan.KubeSpanEnabled = pointer.To(true)
 
 		return nil
 	}

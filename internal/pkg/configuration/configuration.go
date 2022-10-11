@@ -10,6 +10,9 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
+
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
@@ -45,15 +48,19 @@ func Generate(ctx context.Context, in *machine.GenerateConfigurationRequest) (re
 				networkConfig.NetworkInterfaces = make([]*v1alpha1.Device, len(networkInterfaces))
 
 				for i, device := range networkInterfaces {
-					routes := make([]*v1alpha1.Route, len(device.Routes))
-
 					iface := &v1alpha1.Device{
 						DeviceInterface: device.Interface,
 						DeviceMTU:       int(device.Mtu),
 						DeviceCIDR:      device.Cidr,
-						DeviceDHCP:      device.Dhcp,
-						DeviceIgnore:    device.Ignore,
-						DeviceRoutes:    routes,
+						DeviceDHCP:      pointer.To(device.Dhcp),
+						DeviceIgnore:    pointer.To(device.Ignore),
+						DeviceRoutes: slices.Map(device.Routes, func(route *machine.RouteConfig) *v1alpha1.Route {
+							return &v1alpha1.Route{
+								RouteNetwork: route.Network,
+								RouteGateway: route.Gateway,
+								RouteMetric:  route.Metric,
+							}
+						}),
 					}
 
 					if device.DhcpOptions != nil {
@@ -92,7 +99,7 @@ func Generate(ctx context.Context, in *machine.GenerateConfigurationRequest) (re
 			}
 		}
 
-		options = append(options, generate.WithAllowSchedulingOnMasters(in.ClusterConfig.AllowSchedulingOnMasters))
+		options = append(options, generate.WithAllowSchedulingOnControlPlanes(in.ClusterConfig.AllowSchedulingOnControlPlanes))
 
 		var (
 			input         *generate.Input

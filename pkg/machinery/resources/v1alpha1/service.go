@@ -5,64 +5,45 @@
 package v1alpha1
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
+
+//nolint:lll
+//go:generate deep-copy -type ServiceSpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
 
 // ServiceType is type of Service resource.
 const ServiceType = resource.Type("Services.v1alpha1.talos.dev")
 
 // Service describes running service state.
-type Service struct {
-	md   resource.Metadata
-	spec ServiceSpec
-}
+type Service = typed.Resource[ServiceSpec, ServiceRD]
 
 // ServiceSpec describe service state.
+//
+//gotagsrewrite:gen
 type ServiceSpec struct {
-	Running bool `yaml:"running"`
-	Healthy bool `yaml:"healthy"`
-	Unknown bool `yaml:"unknown"`
+	Running bool `yaml:"running" protobuf:"1"`
+	Healthy bool `yaml:"healthy" protobuf:"2"`
+	Unknown bool `yaml:"unknown" protobuf:"3"`
 }
 
 // NewService initializes a Service resource.
 func NewService(id resource.ID) *Service {
-	r := &Service{
-		md:   resource.NewMetadata(NamespaceName, ServiceType, id, resource.VersionUndefined),
-		spec: ServiceSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[ServiceSpec, ServiceRD](
+		resource.NewMetadata(NamespaceName, ServiceType, id, resource.VersionUndefined),
+		ServiceSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Service) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *Service) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Service) String() string {
-	return fmt.Sprintf("v1alpha1.Service(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Service) DeepCopy() resource.Resource {
-	return &Service{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// ServiceRD provides auxiliary methods for Service.
+type ServiceRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Service) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (ServiceRD) ResourceDefinition(resource.Metadata, ServiceSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             ServiceType,
 		Aliases:          []resource.Type{"svc"},
@@ -84,32 +65,11 @@ func (r *Service) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// SetRunning changes .spec.running.
-func (r *Service) SetRunning(running bool) {
-	r.spec.Running = running
-}
+func init() {
+	proto.RegisterDefaultTypes()
 
-// SetHealthy changes .spec.healthy.
-func (r *Service) SetHealthy(healthy bool) {
-	r.spec.Healthy = healthy
-}
-
-// SetUnknown changes .spec.unknown.
-func (r *Service) SetUnknown(unknown bool) {
-	r.spec.Unknown = unknown
-}
-
-// Running returns .spec.running.
-func (r *Service) Running() bool {
-	return r.spec.Running
-}
-
-// Healthy returns .spec.healthy.
-func (r *Service) Healthy() bool {
-	return r.spec.Healthy
-}
-
-// Unknown returns .spec.unknown.
-func (r *Service) Unknown() bool {
-	return r.spec.Unknown
+	err := protobuf.RegisterDynamic[ServiceSpec](ServiceType, &Service{})
+	if err != nil {
+		panic(err)
+	}
 }

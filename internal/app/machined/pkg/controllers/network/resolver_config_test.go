@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"net/url"
 	"sync"
 	"testing"
@@ -22,7 +23,6 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-procfs/procfs"
 	"github.com/talos-systems/go-retry/retry"
-	"inet.af/netaddr"
 
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
@@ -40,7 +40,7 @@ type ResolverConfigSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -72,7 +72,10 @@ func (suite *ResolverConfigSuite) assertResolvers(requiredIDs []string, check fu
 		missingIDs[id] = struct{}{}
 	}
 
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(network.ConfigNamespaceName, network.ResolverSpecType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(
+		suite.ctx,
+		resource.NewMetadata(network.ConfigNamespaceName, network.ResolverSpecType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return err
 	}
@@ -98,7 +101,10 @@ func (suite *ResolverConfigSuite) assertResolvers(requiredIDs []string, check fu
 }
 
 func (suite *ResolverConfigSuite) assertNoResolver(id string) error {
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(network.ConfigNamespaceName, network.ResolverSpecType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(
+		suite.ctx,
+		resource.NewMetadata(network.ConfigNamespaceName, network.ResolverSpecType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return err
 	}
@@ -117,36 +123,60 @@ func (suite *ResolverConfigSuite) TestDefaults() {
 
 	suite.startRuntime()
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertResolvers([]string{
-				"default/resolvers",
-			}, func(r *network.ResolverSpec) error {
-				suite.Assert().Equal([]netaddr.IP{netaddr.MustParseIP(constants.DefaultPrimaryResolver), netaddr.MustParseIP(constants.DefaultSecondaryResolver)}, r.TypedSpec().DNSServers)
-				suite.Assert().Equal(network.ConfigDefault, r.TypedSpec().ConfigLayer)
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertResolvers(
+					[]string{
+						"default/resolvers",
+					}, func(r *network.ResolverSpec) error {
+						suite.Assert().Equal(
+							[]netip.Addr{
+								netip.MustParseAddr(constants.DefaultPrimaryResolver),
+								netip.MustParseAddr(constants.DefaultSecondaryResolver),
+							}, r.TypedSpec().DNSServers,
+						)
+						suite.Assert().Equal(network.ConfigDefault, r.TypedSpec().ConfigLayer)
 
-				return nil
-			})
-		}))
+						return nil
+					},
+				)
+			},
+		),
+	)
 }
 
 func (suite *ResolverConfigSuite) TestCmdline() {
-	suite.Require().NoError(suite.runtime.RegisterController(&netctrl.ResolverConfigController{
-		Cmdline: procfs.NewCmdline("ip=172.20.0.2:172.21.0.1:172.20.0.1:255.255.255.0:master1:eth1::10.0.0.1:10.0.0.2:10.0.0.1"),
-	}))
+	suite.Require().NoError(
+		suite.runtime.RegisterController(
+			&netctrl.ResolverConfigController{
+				Cmdline: procfs.NewCmdline("ip=172.20.0.2:172.21.0.1:172.20.0.1:255.255.255.0:master1:eth1::10.0.0.1:10.0.0.2:10.0.0.1"),
+			},
+		),
+	)
 
 	suite.startRuntime()
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertResolvers([]string{
-				"cmdline/resolvers",
-			}, func(r *network.ResolverSpec) error {
-				suite.Assert().Equal([]netaddr.IP{netaddr.MustParseIP("10.0.0.1"), netaddr.MustParseIP("10.0.0.2")}, r.TypedSpec().DNSServers)
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertResolvers(
+					[]string{
+						"cmdline/resolvers",
+					}, func(r *network.ResolverSpec) error {
+						suite.Assert().Equal(
+							[]netip.Addr{
+								netip.MustParseAddr("10.0.0.1"),
+								netip.MustParseAddr("10.0.0.2"),
+							}, r.TypedSpec().DNSServers,
+						)
 
-				return nil
-			})
-		}))
+						return nil
+					},
+				)
+			},
+		),
+	)
 }
 
 func (suite *ResolverConfigSuite) TestMachineConfiguration() {
@@ -157,46 +187,63 @@ func (suite *ResolverConfigSuite) TestMachineConfiguration() {
 	u, err := url.Parse("https://foo:6443")
 	suite.Require().NoError(err)
 
-	cfg := config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineNetwork: &v1alpha1.NetworkConfig{
-				NameServers: []string{"2.2.2.2", "3.3.3.3"},
+	cfg := config.NewMachineConfig(
+		&v1alpha1.Config{
+			ConfigVersion: "v1alpha1",
+			MachineConfig: &v1alpha1.MachineConfig{
+				MachineNetwork: &v1alpha1.NetworkConfig{
+					NameServers: []string{"2.2.2.2", "3.3.3.3"},
+				},
 			},
-		},
-		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: u,
+			ClusterConfig: &v1alpha1.ClusterConfig{
+				ControlPlane: &v1alpha1.ControlPlaneConfig{
+					Endpoint: &v1alpha1.Endpoint{
+						URL: u,
+					},
 				},
 			},
 		},
-	})
+	)
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertResolvers([]string{
-				"configuration/resolvers",
-			}, func(r *network.ResolverSpec) error {
-				suite.Assert().Equal([]netaddr.IP{netaddr.MustParseIP("2.2.2.2"), netaddr.MustParseIP("3.3.3.3")}, r.TypedSpec().DNSServers)
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertResolvers(
+					[]string{
+						"configuration/resolvers",
+					}, func(r *network.ResolverSpec) error {
+						suite.Assert().Equal(
+							[]netip.Addr{
+								netip.MustParseAddr("2.2.2.2"),
+								netip.MustParseAddr("3.3.3.3"),
+							}, r.TypedSpec().DNSServers,
+						)
 
-				return nil
-			})
-		}))
+						return nil
+					},
+				)
+			},
+		),
+	)
 
-	_, err = suite.state.UpdateWithConflicts(suite.ctx, cfg.Metadata(), func(r resource.Resource) error {
-		r.(*config.MachineConfig).Config().(*v1alpha1.Config).MachineConfig.MachineNetwork.NameServers = nil
+	_, err = suite.state.UpdateWithConflicts(
+		suite.ctx, cfg.Metadata(), func(r resource.Resource) error {
+			r.(*config.MachineConfig).Config().(*v1alpha1.Config).MachineConfig.MachineNetwork.NameServers = nil
 
-		return nil
-	})
+			return nil
+		},
+	)
 	suite.Require().NoError(err)
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertNoResolver("configuration/resolvers")
-		}))
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertNoResolver("configuration/resolvers")
+			},
+		),
+	)
 }
 
 func (suite *ResolverConfigSuite) TearDownTest() {
@@ -207,10 +254,14 @@ func (suite *ResolverConfigSuite) TearDownTest() {
 	suite.wg.Wait()
 
 	// trigger updates in resources to stop watch loops
-	err := suite.state.Create(context.Background(), config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{},
-	}))
+	err := suite.state.Create(
+		context.Background(), config.NewMachineConfig(
+			&v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{},
+			},
+		),
+	)
 	if state.IsConflictError(err) {
 		err = suite.state.Destroy(context.Background(), config.NewMachineConfig(nil).Metadata())
 	}

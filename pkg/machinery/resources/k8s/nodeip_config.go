@@ -5,66 +5,41 @@
 package k8s
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // NodeIPConfigType is type of NodeIPConfig resource.
 const NodeIPConfigType = resource.Type("NodeIPConfigs.kubernetes.talos.dev")
 
 // NodeIPConfig resource holds definition of Node IP specification.
-type NodeIPConfig struct {
-	md   resource.Metadata
-	spec *NodeIPConfigSpec
-}
+type NodeIPConfig = typed.Resource[NodeIPConfigSpec, NodeIPConfigRD]
 
 // NodeIPConfigSpec holds the Node IP specification.
+//
+//gotagsrewrite:gen
 type NodeIPConfigSpec struct {
-	ValidSubnets   []string `yaml:"validSubnets,omitempty"`
-	ExcludeSubnets []string `yaml:"excludeSubnets"`
+	ValidSubnets   []string `yaml:"validSubnets,omitempty" protobuf:"1"`
+	ExcludeSubnets []string `yaml:"excludeSubnets" protobuf:"2"`
 }
 
 // NewNodeIPConfig initializes an empty NodeIPConfig resource.
 func NewNodeIPConfig(namespace resource.Namespace, id resource.ID) *NodeIPConfig {
-	r := &NodeIPConfig{
-		md:   resource.NewMetadata(namespace, NodeIPConfigType, id, resource.VersionUndefined),
-		spec: &NodeIPConfigSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[NodeIPConfigSpec, NodeIPConfigRD](
+		resource.NewMetadata(namespace, NodeIPConfigType, id, resource.VersionUndefined),
+		NodeIPConfigSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *NodeIPConfig) Metadata() *resource.Metadata {
-	return &r.md
-}
+// NodeIPConfigRD provides auxiliary methods for NodeIPConfig.
+type NodeIPConfigRD struct{}
 
-// Spec implements resource.Resource.
-func (r *NodeIPConfig) Spec() interface{} {
-	return r.spec
-}
-
-func (r *NodeIPConfig) String() string {
-	return fmt.Sprintf("k8s.NodeIPConfig(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *NodeIPConfig) DeepCopy() resource.Resource {
-	return &NodeIPConfig{
-		md: r.md,
-		spec: &NodeIPConfigSpec{
-			ValidSubnets:   append([]string(nil), r.spec.ValidSubnets...),
-			ExcludeSubnets: append([]string(nil), r.spec.ExcludeSubnets...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *NodeIPConfig) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (NodeIPConfigRD) ResourceDefinition(resource.Metadata, NodeIPConfigSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             NodeIPConfigType,
 		Aliases:          []resource.Type{},
@@ -72,7 +47,11 @@ func (r *NodeIPConfig) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *NodeIPConfig) TypedSpec() *NodeIPConfigSpec {
-	return r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[NodeIPConfigSpec](NodeIPConfigType, &NodeIPConfig{})
+	if err != nil {
+		panic(err)
+	}
 }

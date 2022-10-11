@@ -15,14 +15,19 @@ import (
 	osruntime "github.com/cosi-project/runtime/pkg/controller/runtime"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/slices"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/cluster"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/config"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/cri"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/etcd"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/files"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/hardware"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/kubeaccess"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/kubespan"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/perf"
@@ -101,9 +106,23 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&config.MachineTypeController{},
 		&config.K8sAddressFilterController{},
 		&config.K8sControlPlaneController{},
+		&cri.SeccompProfileController{},
+		&cri.SeccompProfileFileController{
+			V1Alpha1Mode:             ctrl.v1alpha1Runtime.State().Platform().Mode(),
+			SeccompProfilesDirectory: constants.SeccompProfilesDirectory,
+		},
+		&etcd.AdvertisedPeerController{},
+		&etcd.ConfigController{},
+		&etcd.PKIController{},
+		&etcd.SpecController{},
+		&files.CRIConfigPartsController{},
+		&files.CRIRegistryConfigController{},
 		&files.EtcFileController{
 			EtcPath:    "/etc",
 			ShadowPath: constants.SystemEtcPath,
+		},
+		&hardware.SystemInfoController{
+			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
 		},
 		&k8s.ControlPlaneStaticPodController{},
 		&k8s.EndpointController{},
@@ -111,15 +130,23 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&k8s.KubeletConfigController{},
 		&k8s.KubeletServiceController{
 			V1Alpha1Services: system.Services(ctrl.v1alpha1Runtime),
+			V1Alpha1Mode:     ctrl.v1alpha1Runtime.State().Platform().Mode(),
 		},
-		&k8s.KubeletSpecController{},
+		&k8s.KubeletSpecController{
+			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
+		},
 		&k8s.KubeletStaticPodController{},
 		&k8s.ManifestController{},
 		&k8s.ManifestApplyController{},
 		&k8s.NodeIPController{},
 		&k8s.NodeIPConfigController{},
 		&k8s.NodenameController{},
+		&k8s.RenderConfigsStaticPodController{},
 		&k8s.RenderSecretsStaticPodController{},
+		&k8s.StaticPodConfigController{},
+		&kubeaccess.ConfigController{},
+		&kubeaccess.EndpointController{},
+		&kubeaccess.CRDController{},
 		&kubespan.ConfigController{},
 		&kubespan.EndpointController{},
 		&kubespan.IdentityController{},
@@ -135,6 +162,7 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&network.AddressMergeController{},
 		&network.AddressSpecController{},
 		&network.AddressStatusController{},
+		&network.DeviceConfigController{},
 		&network.EtcFileController{},
 		&network.HardwareAddrController{},
 		&network.HostnameConfigController{
@@ -154,12 +182,17 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&network.OperatorConfigController{
 			Cmdline: procfs.ProcCmdline(),
 		},
+		&network.OperatorMergeController{},
 		&network.OperatorSpecController{
 			V1alpha1Platform: ctrl.v1alpha1Runtime.State().Platform(),
 			State:            ctrl.v1alpha1Runtime.State().V1Alpha2().Resources(),
 		},
+		&network.OperatorVIPConfigController{
+			Cmdline: procfs.ProcCmdline(),
+		},
 		&network.PlatformConfigController{
 			V1alpha1Platform: ctrl.v1alpha1Runtime.State().Platform(),
+			PlatformState:    ctrl.v1alpha1Runtime.State().V1Alpha2().Resources(),
 		},
 		&network.ResolverConfigController{
 			Cmdline: procfs.ProcCmdline(),
@@ -184,6 +217,15 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 			Cmdline:        procfs.ProcCmdline(),
 			Drainer:        drainer,
 		},
+		&runtimecontrollers.ExtensionServiceController{
+			V1Alpha1Services: system.Services(ctrl.v1alpha1Runtime),
+			ConfigPath:       constants.ExtensionServicesConfigPath,
+		},
+		&runtimecontrollers.ExtensionStatusController{},
+		&runtimecontrollers.KernelModuleConfigController{},
+		&runtimecontrollers.KernelModuleSpecController{
+			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
+		},
 		&runtimecontrollers.KernelParamConfigController{},
 		&runtimecontrollers.KernelParamDefaultsController{
 			V1Alpha1Mode: ctrl.v1alpha1Runtime.State().Platform().Mode(),
@@ -193,6 +235,12 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 			Cmdline: procfs.ProcCmdline(),
 			Drainer: drainer,
 		},
+		&runtimecontrollers.MachineStatusController{
+			V1Alpha1Events: ctrl.v1alpha1Runtime.Events(),
+		},
+		&runtimecontrollers.MachineStatusPublisherController{
+			V1Alpha1Events: ctrl.v1alpha1Runtime.Events(),
+		},
 		&secrets.APIController{},
 		&secrets.APICertSANsController{},
 		&secrets.EtcdController{},
@@ -200,6 +248,7 @@ func (ctrl *Controller) Run(ctx context.Context, drainer *runtime.Drainer) error
 		&secrets.KubernetesController{},
 		&secrets.KubernetesCertSANsController{},
 		&secrets.RootController{},
+		&secrets.TrustdController{},
 		&siderolink.ManagerController{
 			Cmdline: procfs.ProcCmdline(),
 		},
@@ -297,10 +346,7 @@ func (ctrl *Controller) updateLoggingConfig(ctx context.Context, cfg talosconfig
 	var prevSenders []runtime.LogSender
 
 	if len(loggingEndpoints) > 0 {
-		senders := make([]runtime.LogSender, len(loggingEndpoints))
-		for i, u := range loggingEndpoints {
-			senders[i] = runtimelogging.NewJSONLines(u)
-		}
+		senders := slices.Map(loggingEndpoints, runtimelogging.NewJSONLines)
 
 		ctrl.logger.Info("enabling JSON logging")
 		prevSenders = ctrl.loggingManager.SetSenders(senders)

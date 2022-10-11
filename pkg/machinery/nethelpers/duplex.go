@@ -6,10 +6,14 @@ package nethelpers
 
 import "github.com/mdlayher/ethtool"
 
+//go:generate enumer -type=Duplex -text
+
 // Duplex wraps ethtool.Duplex for YAML marshaling.
 type Duplex ethtool.Duplex
 
-// MarshalYAML implements yaml.Marshaler interface.
-func (duplex Duplex) MarshalYAML() (interface{}, error) {
-	return ethtool.Duplex(duplex).String(), nil
-}
+// Possible Duplex type values.
+const (
+	Half    Duplex = Duplex(ethtool.Half)
+	Full    Duplex = Duplex(ethtool.Full)
+	Unknown Duplex = Duplex(ethtool.Unknown)
+)

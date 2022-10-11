@@ -7,13 +7,15 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
+	"github.com/talos-systems/talos/pkg/machinery/kernel"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/runtime"
 )
@@ -32,7 +34,7 @@ func (ctrl *KernelParamConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 		},
 	}
 }
@@ -65,19 +67,28 @@ func (ctrl *KernelParamConfigController) Run(ctx context.Context, r controller.R
 
 			touchedIDs := make(map[resource.ID]struct{})
 
+			setKernelParam := func(kind, key, value string) error {
+				item := runtime.NewKernelParamSpec(runtime.NamespaceName, strings.Join([]string{kind, key}, "."))
+
+				touchedIDs[item.Metadata().ID()] = struct{}{}
+
+				return r.Modify(ctx, item, func(res resource.Resource) error {
+					res.(*runtime.KernelParamSpec).TypedSpec().Value = value
+
+					return nil
+				})
+			}
+
 			if cfg != nil {
 				c, _ := cfg.(*config.MachineConfig) //nolint:errcheck
 				for key, value := range c.Config().Machine().Sysctls() {
-					touchedIDs[key] = struct{}{}
+					if err = setKernelParam(kernel.Sysctl, key, value); err != nil {
+						return err
+					}
+				}
 
-					value := value
-					item := runtime.NewKernelParamSpec(runtime.NamespaceName, key)
-
-					if err = r.Modify(ctx, item, func(res resource.Resource) error {
-						res.(*runtime.KernelParamSpec).TypedSpec().Value = value
-
-						return nil
-					}); err != nil {
+				for key, value := range c.Config().Machine().Sysfs() {
+					if err = setKernelParam(kernel.Sysfs, key, value); err != nil {
 						return err
 					}
 				}

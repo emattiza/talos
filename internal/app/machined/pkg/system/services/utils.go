@@ -6,11 +6,8 @@ package services
 
 import (
 	"fmt"
-	"io/fs"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 
@@ -27,7 +24,7 @@ func prepareRootfs(id string) error {
 
 	executablePath := filepath.Join(rootfsPath, id)
 
-	if err := ioutil.WriteFile(executablePath, nil, 0o555); err != nil { // r-xr-xr-x, non-root programs should be able to execute & read
+	if err := os.WriteFile(executablePath, nil, 0o555); err != nil { // r-xr-xr-x, non-root programs should be able to execute & read
 		return fmt.Errorf("failed to create empty executable %q: %w", executablePath, err)
 	}
 
@@ -36,19 +33,4 @@ func prepareRootfs(id string) error {
 	}
 
 	return nil
-}
-
-// chownRecursive changes file ownership recursively from the specified root.
-func chownRecursive(root string, uid, gid uint32) error {
-	return filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.Sys().(*syscall.Stat_t).Uid != uid || info.Sys().(*syscall.Stat_t).Gid != gid {
-			return os.Chown(path, int(uid), int(gid))
-		}
-
-		return nil
-	})
 }

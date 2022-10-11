@@ -6,9 +6,15 @@ package apid
 
 import (
 	"context"
+	"crypto/x509"
 	"flag"
+	"fmt"
 	"log"
+	"os/signal"
+	"reflect"
 	"regexp"
+	"syscall"
+	"time"
 
 	"github.com/cosi-project/runtime/api/v1alpha1"
 	"github.com/cosi-project/runtime/pkg/state"
@@ -30,8 +36,6 @@ import (
 	"github.com/talos-systems/talos/pkg/startup"
 )
 
-var rbacEnabled *bool
-
 func runDebugServer(ctx context.Context) {
 	const debugAddr = ":9981"
 
@@ -46,21 +50,34 @@ func runDebugServer(ctx context.Context) {
 
 // Main is the entrypoint of apid.
 func Main() {
+	if err := apidMain(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+//nolint:gocyclo
+func apidMain() error {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
 	log.SetFlags(log.Lshortfile | log.Ldate | log.Lmicroseconds | log.Ltime)
 
-	rbacEnabled = flag.Bool("enable-rbac", false, "enable RBAC for Talos API")
+	rbacEnabled := flag.Bool("enable-rbac", false, "enable RBAC for Talos API")
+	extKeyUsageCheckEnabled := flag.Bool("enable-ext-key-usage-check", false, "enable check for client certificate ext key usage")
 
 	flag.Parse()
 
-	go runDebugServer(context.TODO())
+	go runDebugServer(ctx)
+
+	startup.LimitMaxProcs(constants.ApidMaxProcs)
 
 	if err := startup.RandSeed(); err != nil {
-		log.Fatalf("failed to seed RNG: %v", err)
+		return fmt.Errorf("failed to seed RNG: %w", err)
 	}
 
 	runtimeConn, err := grpc.Dial("unix://"+constants.APIRuntimeSocketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("failed to dial runtime connection: %v", err)
+		return fmt.Errorf("failed to dial runtime connection: %w", err)
 	}
 
 	stateClient := v1alpha1.NewStateClient(runtimeConn)
@@ -68,23 +85,38 @@ func Main() {
 
 	tlsConfig, err := provider.NewTLSConfig(resources)
 	if err != nil {
-		log.Fatalf("failed to create remote certificate provider: %+v", err)
+		return fmt.Errorf("failed to create remote certificate provider: %w", err)
 	}
 
 	serverTLSConfig, err := tlsConfig.ServerConfig()
 	if err != nil {
-		log.Fatalf("failed to create OS-level TLS configuration: %v", err)
+		return fmt.Errorf("failed to create OS-level TLS configuration: %w", err)
+	}
+
+	if *extKeyUsageCheckEnabled {
+		serverTLSConfig.VerifyPeerCertificate = verifyExtKeyUsage
 	}
 
 	clientTLSConfig, err := tlsConfig.ClientConfig()
 	if err != nil {
-		log.Fatalf("failed to create client TLS config: %v", err)
+		return fmt.Errorf("failed to create client TLS config: %w", err)
 	}
 
-	backendFactory := apidbackend.NewAPIDFactory(clientTLSConfig)
+	var remoteFactory director.RemoteBackendFactory
+
+	if clientTLSConfig != nil {
+		backendFactory := apidbackend.NewAPIDFactory(clientTLSConfig)
+		remoteFactory = backendFactory.Get
+	}
+
+	localAddressProvider, err := director.NewLocalAddressProvider(resources)
+	if err != nil {
+		return fmt.Errorf("failed to create local address provider: %w", err)
+	}
+
 	localBackend := backend.NewLocal("machined", constants.MachineSocketPath)
 
-	router := director.NewRouter(backendFactory.Get, localBackend)
+	router := director.NewRouter(remoteFactory, localBackend, localAddressProvider)
 
 	// all existing streaming methods
 	for _, methodName := range []string{
@@ -96,6 +128,7 @@ func Main() {
 		"/machine.MachineService/Kubeconfig",
 		"/machine.MachineService/List",
 		"/machine.MachineService/Logs",
+		"/machine.MachineService/PacketCapture",
 		"/machine.MachineService/Read",
 		"/resource.ResourceService/List",
 		"/resource.ResourceService/Watch",
@@ -108,9 +141,22 @@ func Main() {
 	// register future pattern: method should have suffix "Stream"
 	router.RegisterStreamedRegex("Stream$")
 
-	var errGroup errgroup.Group
+	networkListener, err := factory.NewListener(
+		factory.Port(constants.ApidPort),
+	)
+	if err != nil {
+		return fmt.Errorf("error creating listner: %w", err)
+	}
 
-	errGroup.Go(func() error {
+	socketListener, err := factory.NewListener(
+		factory.Network("unix"),
+		factory.SocketPath(constants.APISocketPath),
+	)
+	if err != nil {
+		return fmt.Errorf("error creating listner: %w", err)
+	}
+
+	networkServer := func() *grpc.Server {
 		mode := authz.Disabled
 		if *rbacEnabled {
 			mode = authz.Enabled
@@ -121,9 +167,8 @@ func Main() {
 			Logger: log.New(log.Writer(), "apid/authz/injector/http ", log.Flags()).Printf,
 		}
 
-		return factory.ListenAndServe(
+		return factory.NewServer(
 			router,
-			factory.Port(constants.ApidPort),
 			factory.WithDefaultLog(),
 			factory.ServerOptions(
 				grpc.Creds(
@@ -139,18 +184,16 @@ func Main() {
 			factory.WithUnaryInterceptor(injector.UnaryInterceptor()),
 			factory.WithStreamInterceptor(injector.StreamInterceptor()),
 		)
-	})
+	}()
 
-	errGroup.Go(func() error {
+	socketServer := func() *grpc.Server {
 		injector := &authz.Injector{
 			Mode:   authz.MetadataOnly,
 			Logger: log.New(log.Writer(), "apid/authz/injector/unix ", log.Flags()).Printf,
 		}
 
-		return factory.ListenAndServe(
+		return factory.NewServer(
 			router,
-			factory.Network("unix"),
-			factory.SocketPath(constants.APISocketPath),
 			factory.WithDefaultLog(),
 			factory.ServerOptions(
 				grpc.CustomCodec(proxy.Codec()), //nolint:staticcheck
@@ -163,9 +206,49 @@ func Main() {
 			factory.WithUnaryInterceptor(injector.UnaryInterceptor()),
 			factory.WithStreamInterceptor(injector.StreamInterceptor()),
 		)
+	}()
+
+	errGroup, ctx := errgroup.WithContext(ctx)
+
+	errGroup.Go(func() error {
+		return networkServer.Serve(networkListener)
 	})
 
-	if err := errGroup.Wait(); err != nil {
-		log.Fatalf("listen: %v", err)
+	errGroup.Go(func() error {
+		return socketServer.Serve(socketListener)
+	})
+
+	errGroup.Go(func() error {
+		<-ctx.Done()
+
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+
+		factory.ServerGracefulStop(networkServer, shutdownCtx)
+		factory.ServerGracefulStop(socketServer, shutdownCtx)
+
+		return nil
+	})
+
+	return errGroup.Wait()
+}
+
+func verifyExtKeyUsage(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	if len(verifiedChains) == 0 {
+		return fmt.Errorf("no verified chains")
 	}
+
+	certs := verifiedChains[0]
+
+	for _, cert := range certs {
+		if cert.IsCA {
+			continue
+		}
+
+		if !reflect.DeepEqual(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}) {
+			return fmt.Errorf("certificate %q is missing the client auth extended key usage", cert.Subject)
+		}
+	}
+
+	return nil
 }

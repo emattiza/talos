@@ -5,69 +5,45 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // NodeAddressFilterType is type of NodeAddressFilter resource.
 const NodeAddressFilterType = resource.Type("NodeAddressFilters.net.talos.dev")
 
 // NodeAddressFilter resource holds filter for NodeAddress resources.
-type NodeAddressFilter struct {
-	md   resource.Metadata
-	spec NodeAddressFilterSpec
-}
+type NodeAddressFilter = typed.Resource[NodeAddressFilterSpec, NodeAddressFilterRD]
 
 // NodeAddressFilterSpec describes a filter for NodeAddresses.
+//
+//gotagsrewrite:gen
 type NodeAddressFilterSpec struct {
 	// Address is skipped if it doesn't match any of the includeSubnets (if includeSubnets is not empty).
-	IncludeSubnets []netaddr.IPPrefix `yaml:"includeSubnets"`
+	IncludeSubnets []netip.Prefix `yaml:"includeSubnets" protobuf:"1"`
 	// Address is skipped if it matches any of the includeSubnets.
-	ExcludeSubnets []netaddr.IPPrefix `yaml:"excludeSubnets"`
+	ExcludeSubnets []netip.Prefix `yaml:"excludeSubnets" protobuf:"2"`
 }
 
 // NewNodeAddressFilter initializes a NodeAddressFilter resource.
 func NewNodeAddressFilter(namespace resource.Namespace, id resource.ID) *NodeAddressFilter {
-	r := &NodeAddressFilter{
-		md:   resource.NewMetadata(namespace, NodeAddressFilterType, id, resource.VersionUndefined),
-		spec: NodeAddressFilterSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[NodeAddressFilterSpec, NodeAddressFilterRD](
+		resource.NewMetadata(namespace, NodeAddressFilterType, id, resource.VersionUndefined),
+		NodeAddressFilterSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *NodeAddressFilter) Metadata() *resource.Metadata {
-	return &r.md
-}
+// NodeAddressFilterRD provides auxiliary methods for NodeAddressFilter.
+type NodeAddressFilterRD struct{}
 
-// Spec implements resource.Resource.
-func (r *NodeAddressFilter) Spec() interface{} {
-	return r.spec
-}
-
-func (r *NodeAddressFilter) String() string {
-	return fmt.Sprintf("network.NodeAddressFilter(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *NodeAddressFilter) DeepCopy() resource.Resource {
-	return &NodeAddressFilter{
-		md: r.md,
-		spec: NodeAddressFilterSpec{
-			IncludeSubnets: append([]netaddr.IPPrefix(nil), r.spec.IncludeSubnets...),
-			ExcludeSubnets: append([]netaddr.IPPrefix(nil), r.spec.ExcludeSubnets...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *NodeAddressFilter) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (NodeAddressFilterRD) ResourceDefinition(resource.Metadata, NodeAddressFilterSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             NodeAddressFilterType,
 		Aliases:          []resource.Type{},
@@ -85,7 +61,11 @@ func (r *NodeAddressFilter) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *NodeAddressFilter) TypedSpec() *NodeAddressFilterSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[NodeAddressFilterSpec](NodeAddressFilterType, &NodeAddressFilter{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -5,11 +5,12 @@
 package cluster
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
@@ -20,58 +21,34 @@ const ConfigType = resource.Type("DiscoveryConfigs.cluster.talos.dev")
 const ConfigID = resource.ID("cluster")
 
 // Config resource holds KubeSpan configuration.
-type Config struct {
-	md   resource.Metadata
-	spec ConfigSpec
-}
+type Config = typed.Resource[ConfigSpec, ConfigRD]
 
-// ConfigSpec describes KubeSpan configuration..
+// ConfigSpec describes KubeSpan configuration.
+//
+//gotagsrewrite:gen
 type ConfigSpec struct {
-	DiscoveryEnabled          bool   `yaml:"discoveryEnabled"`
-	RegistryKubernetesEnabled bool   `yaml:"registryKubernetesEnabled"`
-	RegistryServiceEnabled    bool   `yaml:"registryServiceEnabled"`
-	ServiceEndpoint           string `yaml:"serviceEndpoint"`
-	ServiceEndpointInsecure   bool   `yaml:"serviceEndpointInsecure,omitempty"`
-	ServiceEncryptionKey      []byte `yaml:"serviceEncryptionKey"`
-	ServiceClusterID          string `yaml:"serviceClusterID"`
+	DiscoveryEnabled          bool   `yaml:"discoveryEnabled" protobuf:"1"`
+	RegistryKubernetesEnabled bool   `yaml:"registryKubernetesEnabled" protobuf:"2"`
+	RegistryServiceEnabled    bool   `yaml:"registryServiceEnabled" protobuf:"3"`
+	ServiceEndpoint           string `yaml:"serviceEndpoint" protobuf:"4"`
+	ServiceEndpointInsecure   bool   `yaml:"serviceEndpointInsecure,omitempty" protobuf:"5"`
+	ServiceEncryptionKey      []byte `yaml:"serviceEncryptionKey" protobuf:"6"`
+	ServiceClusterID          string `yaml:"serviceClusterID" protobuf:"7"`
 }
 
 // NewConfig initializes a Config resource.
 func NewConfig(namespace resource.Namespace, id resource.ID) *Config {
-	r := &Config{
-		md:   resource.NewMetadata(namespace, ConfigType, id, resource.VersionUndefined),
-		spec: ConfigSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[ConfigSpec, ConfigRD](
+		resource.NewMetadata(namespace, ConfigType, id, resource.VersionUndefined),
+		ConfigSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Config) Metadata() *resource.Metadata {
-	return &r.md
-}
+// ConfigRD provides auxiliary methods for Config.
+type ConfigRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Config) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Config) String() string {
-	return fmt.Sprintf("cluster.Config(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Config) DeepCopy() resource.Resource {
-	return &Config{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Config) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (c ConfigRD) ResourceDefinition(resource.Metadata, ConfigSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             ConfigType,
 		Aliases:          []resource.Type{},
@@ -81,7 +58,11 @@ func (r *Config) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Config) TypedSpec() *ConfigSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[ConfigSpec](ConfigType, &Config{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -28,7 +27,7 @@ func (suite *TimeSuite) SuiteName() string {
 
 // TestDefault runs default time check.
 func (suite *TimeSuite) TestDefault() {
-	suite.RunCLI([]string{"time", "--nodes", suite.RandomDiscoveredNode()},
+	suite.RunCLI([]string{"time", "--nodes", suite.RandomDiscoveredNodeInternalIP()},
 		base.StdoutShouldMatch(regexp.MustCompile(`NTP-SERVER`)),
 		base.StdoutShouldMatch(regexp.MustCompile(`UTC`)),
 		base.WithRetry(retry.Constant(time.Minute, retry.WithUnits(time.Second))),

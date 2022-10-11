@@ -8,19 +8,28 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"time"
 
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/talos-systems/go-retry/retry"
+
+	"github.com/talos-systems/talos/pkg/httpdefaults"
 )
 
 const b64 = "base64"
 
 type downloadOptions struct {
-	Headers map[string]string
-	Format  string
+	Headers    map[string]string
+	Format     string
+	LowSrcPort bool
+	Endpoint   string
 
 	ErrorOnNotFound      error
 	ErrorOnEmptyResponse error
@@ -57,6 +66,14 @@ func WithHeaders(headers map[string]string) Option {
 	}
 }
 
+// WithLowSrcPort sets low source port to download
+// the config.
+func WithLowSrcPort() Option {
+	return func(d *downloadOptions) {
+		d.LowSrcPort = true
+	}
+}
+
 // WithErrorOnNotFound provides specific error to return when response has HTTP 404 error.
 func WithErrorOnNotFound(e error) Option {
 	return func(d *downloadOptions) {
@@ -71,32 +88,20 @@ func WithErrorOnEmptyResponse(e error) Option {
 	}
 }
 
+// WithEndpointFunc provides a function that sets the endpoint of the download options.
+func WithEndpointFunc(endpointFunc func() string) Option {
+	return func(d *downloadOptions) {
+		d.Endpoint = endpointFunc()
+	}
+}
+
 // Download downloads a config.
+//
+//nolint:gocyclo
 func Download(ctx context.Context, endpoint string, opts ...Option) (b []byte, err error) {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return b, err
-	}
-
-	if u.Scheme == "file" {
-		return ioutil.ReadFile(u.Path)
-	}
-
 	dlOpts := downloadDefaults()
 
-	for _, opt := range opts {
-		opt(dlOpts)
-	}
-
-	var req *http.Request
-
-	if req, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil); err != nil {
-		return b, err
-	}
-
-	for k, v := range dlOpts.Headers {
-		req.Header.Set(k, v)
-	}
+	dlOpts.Endpoint = endpoint
 
 	err = retry.Exponential(180*time.Second, retry.WithUnits(time.Second), retry.WithJitter(time.Second), retry.WithErrorLogging(true)).Retry(func() error {
 		select {
@@ -105,12 +110,48 @@ func Download(ctx context.Context, endpoint string, opts ...Option) (b []byte, e
 		default:
 		}
 
+		dlOpts = downloadDefaults()
+
+		dlOpts.Endpoint = endpoint
+
+		for _, opt := range opts {
+			opt(dlOpts)
+		}
+
+		var u *url.URL
+		u, err = url.Parse(dlOpts.Endpoint)
+		if err != nil {
+			return err
+		}
+
+		if u.Scheme == "file" {
+			var fileContent []byte
+			fileContent, err = os.ReadFile(u.Path)
+			if err != nil {
+				return err
+			}
+
+			b = fileContent
+
+			return nil
+		}
+
+		var req *http.Request
+
+		if req, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil); err != nil {
+			return err
+		}
+
+		for k, v := range dlOpts.Headers {
+			req.Header.Set(k, v)
+		}
+
 		b, err = download(req, dlOpts)
 
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to download config from %q: %w", u.String(), err)
+		return nil, fmt.Errorf("failed to download config from %q: %w", dlOpts.Endpoint, err)
 	}
 
 	if dlOpts.Format == b64 {
@@ -128,7 +169,30 @@ func Download(ctx context.Context, endpoint string, opts ...Option) (b []byte, e
 }
 
 func download(req *http.Request, dlOpts *downloadOptions) (data []byte, err error) {
-	client := &http.Client{}
+	transport := httpdefaults.PatchTransport(cleanhttp.DefaultTransport())
+	transport.RegisterProtocol("tftp", NewTFTPTransport())
+
+	if dlOpts.LowSrcPort {
+		port := 100 + rand.Intn(512)
+
+		localTCPAddr, tcperr := net.ResolveTCPAddr("tcp", ":"+strconv.Itoa(port))
+		if tcperr != nil {
+			return nil, retry.ExpectedError(fmt.Errorf("resolving source tcp address: %s", tcperr.Error()))
+		}
+
+		d := (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+			DualStack: true,
+			LocalAddr: localTCPAddr,
+		}).DialContext
+
+		transport.DialContext = d
+	}
+
+	client := &http.Client{
+		Transport: transport,
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -145,7 +209,7 @@ func download(req *http.Request, dlOpts *downloadOptions) (data []byte, err erro
 		return data, retry.ExpectedError(fmt.Errorf("failed to download config, received %d", resp.StatusCode))
 	}
 
-	data, err = ioutil.ReadAll(resp.Body)
+	data, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return data, retry.ExpectedError(fmt.Errorf("read config: %s", err.Error()))
 	}
@@ -155,9 +219,4 @@ func download(req *http.Request, dlOpts *downloadOptions) (data []byte, err erro
 	}
 
 	return data, nil
-}
-
-func init() {
-	transport := (http.DefaultTransport.(*http.Transport))
-	transport.RegisterProtocol("tftp", NewTFTPTransport())
 }

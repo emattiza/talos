@@ -6,13 +6,14 @@ package network_test
 
 import (
 	"net"
+	"net/netip"
 	"testing"
+	"time"
 
-	"github.com/AlekSi/pointer"
+	"github.com/siderolabs/go-pointer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-	"inet.af/netaddr"
 
 	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
@@ -71,14 +72,14 @@ func TestWireguardSpecDecode(t *testing.T) {
 				PublicKey:    pub1.PublicKey().String(),
 				PresharedKey: priv.String(),
 				Endpoint:     "10.2.0.3:20000",
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.24.0.0/16"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.24.0.0/16"),
 				},
 			},
 			{
 				PublicKey: pub2.PublicKey().String(),
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.25.0.0/24"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.25.0.0/24"),
 				},
 			},
 		},
@@ -148,14 +149,14 @@ func TestWireguardSpecEncode(t *testing.T) {
 			{
 				PublicKey: pub1.PublicKey().String(),
 				Endpoint:  "10.2.0.3:20000",
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.24.0.0/16"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.24.0.0/16"),
 				},
 			},
 			{
 				PublicKey: pub2.PublicKey().String(),
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.25.0.0/24"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.25.0.0/24"),
 				},
 			},
 		},
@@ -174,8 +175,8 @@ func TestWireguardSpecEncode(t *testing.T) {
 
 	assert.Equal(t, &wgtypes.Config{
 		PrivateKey:   &priv,
-		ListenPort:   pointer.ToInt(30000),
-		FirewallMark: pointer.ToInt(1),
+		ListenPort:   pointer.To(30000),
+		FirewallMark: pointer.To(1),
 		Peers: []wgtypes.PeerConfig{
 			{
 				PublicKey: pub1.PublicKey(),
@@ -183,7 +184,7 @@ func TestWireguardSpecEncode(t *testing.T) {
 					IP:   net.ParseIP("10.2.0.3"),
 					Port: 20000,
 				},
-				PersistentKeepaliveInterval: pointer.ToDuration(0),
+				PersistentKeepaliveInterval: pointer.To[time.Duration](0),
 				ReplaceAllowedIPs:           true,
 				AllowedIPs: []net.IPNet{
 					{
@@ -194,7 +195,7 @@ func TestWireguardSpecEncode(t *testing.T) {
 			},
 			{
 				PublicKey:                   pub2.PublicKey(),
-				PersistentKeepaliveInterval: pointer.ToDuration(0),
+				PersistentKeepaliveInterval: pointer.To[time.Duration](0),
 				ReplaceAllowedIPs:           true,
 				AllowedIPs: []net.IPNet{
 					{
@@ -221,8 +222,8 @@ func TestWireguardSpecEncode(t *testing.T) {
 			{
 				PublicKey: pub1.PublicKey().String(),
 				Endpoint:  "10.2.0.3:20000",
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.24.0.0/16"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.24.0.0/16"),
 				},
 			},
 		},
@@ -249,8 +250,8 @@ func TestWireguardSpecEncode(t *testing.T) {
 			{
 				PublicKey:    pub1.PublicKey().String(),
 				PresharedKey: priv.String(),
-				AllowedIPs: []netaddr.IPPrefix{
-					netaddr.MustParseIPPrefix("172.24.0.0/16"),
+				AllowedIPs: []netip.Prefix{
+					netip.MustParsePrefix("172.24.0.0/16"),
 				},
 			},
 		},
@@ -260,12 +261,12 @@ func TestWireguardSpecEncode(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, &wgtypes.Config{
-		FirewallMark: pointer.ToInt(2),
+		FirewallMark: pointer.To(2),
 		Peers: []wgtypes.PeerConfig{
 			{
 				PublicKey:                   pub1.PublicKey(),
 				PresharedKey:                &priv,
-				PersistentKeepaliveInterval: pointer.ToDuration(0),
+				PersistentKeepaliveInterval: pointer.To[time.Duration](0),
 				ReplaceAllowedIPs:           true,
 				AllowedIPs: []net.IPNet{
 					{

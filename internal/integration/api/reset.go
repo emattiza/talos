@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -13,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/talos-systems/go-retry/retry"
+
 	"github.com/talos-systems/talos/internal/integration/base"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
+	"github.com/talos-systems/talos/pkg/machinery/client"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
@@ -23,7 +25,7 @@ import (
 type ResetSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -69,7 +71,7 @@ func (suite *ResetSuite) TestResetNodeByNode() {
 		}
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 	suite.Require().NotEmpty(nodes)
 
 	sort.Strings(nodes)
@@ -88,10 +90,12 @@ func (suite *ResetSuite) TestResetNodeByNode() {
 		preReset, err := suite.HashKubeletCert(suite.ctx, node)
 		suite.Require().NoError(err)
 
-		suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-			// force reboot after reset, as this is the only mode we can test
-			return base.IgnoreGRPCUnavailable(suite.Client.Reset(nodeCtx, true, true))
-		}, 10*time.Minute)
+		suite.AssertRebooted(
+			suite.ctx, node, func(nodeCtx context.Context) error {
+				// force reboot after reset, as this is the only mode we can test
+				return base.IgnoreGRPCUnavailable(suite.Client.Reset(nodeCtx, true, true))
+			}, 10*time.Minute,
+		)
 
 		suite.ClearConnectionRefused(suite.ctx, node)
 
@@ -111,17 +115,19 @@ func (suite *ResetSuite) testResetNoGraceful(nodeType machine.Type) {
 		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	node := suite.RandomDiscoveredNode(nodeType)
+	node := suite.RandomDiscoveredNodeInternalIP(nodeType)
 
 	suite.T().Logf("Resetting %s node !graceful %s", nodeType, node)
 
 	preReset, err := suite.HashKubeletCert(suite.ctx, node)
 	suite.Require().NoError(err)
 
-	suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-		// force reboot after reset, as this is the only mode we can test
-		return base.IgnoreGRPCUnavailable(suite.Client.Reset(nodeCtx, false, true))
-	}, 5*time.Minute)
+	suite.AssertRebooted(
+		suite.ctx, node, func(nodeCtx context.Context) error {
+			// force reboot after reset, as this is the only mode we can test
+			return base.IgnoreGRPCUnavailable(suite.Client.Reset(nodeCtx, false, true))
+		}, 5*time.Minute,
+	)
 
 	suite.ClearConnectionRefused(suite.ctx, node)
 
@@ -155,26 +161,32 @@ func (suite *ResetSuite) TestResetWithSpecEphemeral() {
 		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 
 	suite.T().Log("Resetting node with spec=[EPHEMERAL]", node)
 
 	preReset, err := suite.HashKubeletCert(suite.ctx, node)
 	suite.Require().NoError(err)
 
-	suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-		// force reboot after reset, as this is the only mode we can test
-		return base.IgnoreGRPCUnavailable(suite.Client.ResetGeneric(nodeCtx, &machineapi.ResetRequest{
-			Reboot:   true,
-			Graceful: true,
-			SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
-				{
-					Label: constants.EphemeralPartitionLabel,
-					Wipe:  true,
-				},
-			},
-		}))
-	}, 5*time.Minute)
+	suite.AssertRebooted(
+		suite.ctx, node, func(nodeCtx context.Context) error {
+			// force reboot after reset, as this is the only mode we can test
+			return base.IgnoreGRPCUnavailable(
+				suite.Client.ResetGeneric(
+					nodeCtx, &machineapi.ResetRequest{
+						Reboot:   true,
+						Graceful: true,
+						SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+							{
+								Label: constants.EphemeralPartitionLabel,
+								Wipe:  true,
+							},
+						},
+					},
+				),
+			)
+		}, 5*time.Minute,
+	)
 
 	suite.ClearConnectionRefused(suite.ctx, node)
 
@@ -198,26 +210,32 @@ func (suite *ResetSuite) TestResetWithSpecState() {
 		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 
 	suite.T().Log("Resetting node with spec=[STATE]", node)
 
 	preReset, err := suite.HashKubeletCert(suite.ctx, node)
 	suite.Require().NoError(err)
 
-	suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-		// force reboot after reset, as this is the only mode we can test
-		return base.IgnoreGRPCUnavailable(suite.Client.ResetGeneric(nodeCtx, &machineapi.ResetRequest{
-			Reboot:   true,
-			Graceful: true,
-			SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
-				{
-					Label: constants.StatePartitionLabel,
-					Wipe:  true,
-				},
-			},
-		}))
-	}, 5*time.Minute)
+	suite.AssertRebooted(
+		suite.ctx, node, func(nodeCtx context.Context) error {
+			// force reboot after reset, as this is the only mode we can test
+			return base.IgnoreGRPCUnavailable(
+				suite.Client.ResetGeneric(
+					nodeCtx, &machineapi.ResetRequest{
+						Reboot:   true,
+						Graceful: true,
+						SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+							{
+								Label: constants.StatePartitionLabel,
+								Wipe:  true,
+							},
+						},
+					},
+				),
+			)
+		}, 5*time.Minute,
+	)
 
 	suite.ClearConnectionRefused(suite.ctx, node)
 
@@ -225,6 +243,56 @@ func (suite *ResetSuite) TestResetWithSpecState() {
 	suite.Require().NoError(err)
 
 	suite.Assert().Equal(preReset, postReset, "ephemeral partition was not reset")
+}
+
+// TestResetDuringBoot resets the node multiple times, second reset is done
+// before boot sequence is complete.
+//
+//nolint:dupl
+func (suite *ResetSuite) TestResetDuringBoot() {
+	if !suite.Capabilities().SupportsReboot {
+		suite.T().Skip("cluster doesn't support reboot (and reset)")
+	}
+
+	if suite.Cluster == nil {
+		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP()
+	nodeCtx := client.WithNodes(suite.ctx, node)
+
+	suite.T().Log("Resetting node", node)
+
+	for i := 0; i < 2; i++ {
+		bootID := suite.ReadBootIDWithRetry(nodeCtx, time.Minute*5)
+
+		err := retry.Constant(5*time.Minute, retry.WithUnits(time.Millisecond*1000)).Retry(
+			func() error {
+				// force reboot after reset, as this is the only mode we can test
+				return retry.ExpectedError(
+					suite.Client.ResetGeneric(
+						client.WithNodes(suite.ctx, node), &machineapi.ResetRequest{
+							Reboot:   true,
+							Graceful: true,
+							SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+								{
+									Label: constants.EphemeralPartitionLabel,
+									Wipe:  true,
+								},
+							},
+						},
+					),
+				)
+			},
+		)
+
+		suite.Require().NoError(err)
+
+		suite.AssertBootIDChanged(nodeCtx, bootID, node, time.Minute*5)
+	}
+
+	suite.WaitForBootDone(suite.ctx)
+	suite.AssertClusterHealthy(suite.ctx)
 }
 
 func init() {

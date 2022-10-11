@@ -12,6 +12,7 @@ import (
 	"github.com/talos-systems/go-cmd/pkg/cmd"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/health"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner"
@@ -20,6 +21,8 @@ import (
 	"github.com/talos-systems/talos/pkg/conditions"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
+
+var _ system.HealthcheckedService = (*Udevd)(nil)
 
 // Udevd implements the Service interface. It serves as the concrete type with
 // the required methods.
@@ -79,7 +82,7 @@ func (c *Udevd) Runner(r runtime.Runtime) (runner.Runner, error) {
 		args,
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithEnv(env),
-		runner.WithCgroupPath(constants.CgroupRuntime),
+		runner.WithCgroupPath(constants.CgroupSystemRuntime),
 	),
 		restart.WithType(restart.Forever),
 	), nil
@@ -89,7 +92,11 @@ func (c *Udevd) Runner(r runtime.Runtime) (runner.Runner, error) {
 func (c *Udevd) HealthFunc(runtime.Runtime) health.Check {
 	return func(ctx context.Context) error {
 		if !c.triggered {
-			if _, err := cmd.RunContext(ctx, "/sbin/udevadm", "trigger"); err != nil {
+			if _, err := cmd.RunContext(ctx, "/sbin/udevadm", "trigger", "--type=devices", "--action=add"); err != nil {
+				return err
+			}
+
+			if _, err := cmd.RunContext(ctx, "/sbin/udevadm", "trigger", "--type=subsystems", "--action=add"); err != nil {
 				return err
 			}
 

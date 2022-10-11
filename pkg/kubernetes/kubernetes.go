@@ -14,7 +14,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 	"github.com/talos-systems/go-retry/retry"
 	"golang.org/x/sync/errgroup"
 	appsv1 "k8s.io/api/apps/v1"
@@ -170,24 +170,6 @@ func (h *Client) Close() error {
 	return nil
 }
 
-// MasterIPs returns a list of control plane endpoints (IP addresses).
-func (h *Client) MasterIPs(ctx context.Context) (addrs []string, err error) {
-	endpoints, err := h.CoreV1().Endpoints("default").Get(ctx, "kubernetes", metav1.GetOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	addrs = []string{}
-
-	for _, endpoint := range endpoints.Subsets {
-		for _, addr := range endpoint.Addresses {
-			addrs = append(addrs, addr.IP)
-		}
-	}
-
-	return addrs, nil
-}
-
 // NodeIPs returns list of node IP addresses by machine type.
 //
 //nolint:gocyclo
@@ -232,10 +214,10 @@ func (h *Client) NodeIPs(ctx context.Context, machineType machine.Type) (addrs [
 	return addrs, nil
 }
 
-// LabelNodeAsMaster labels a node with the required master label and NoSchedule taint.
+// LabelNodeAsControlPlane labels a node with the required control-plane label and NoSchedule taint.
 //
 //nolint:gocyclo
-func (h *Client) LabelNodeAsMaster(ctx context.Context, name string, taintNoSchedule bool) (err error) {
+func (h *Client) LabelNodeAsControlPlane(ctx context.Context, name string, taintNoSchedule bool) (err error) {
 	n, err := h.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -252,29 +234,29 @@ func (h *Client) LabelNodeAsMaster(ctx context.Context, name string, taintNoSche
 		return fmt.Errorf("failed to marshal unmodified node %q into JSON: %w", n.Name, err)
 	}
 
-	n.Labels[constants.LabelNodeRoleMaster] = ""
 	n.Labels[constants.LabelNodeRoleControlPlane] = ""
+	// TODO: frezbo
+	// remove all references to `constants.LabelNodeRoleMaster` when Talos supports k8s v1.27
+	delete(n.Labels, constants.LabelNodeRoleMaster)
 
-	taintIndex := -1
+	newTaints := make([]corev1.Taint, 0, len(n.Spec.Taints))
 
-	// TODO: with K8s 1.21, add new taint LabelNodeRoleControlPlane
-
-	for i, taint := range n.Spec.Taints {
-		if taint.Key == constants.LabelNodeRoleMaster {
-			taintIndex = i
-
-			break
+	for _, taint := range n.Spec.Taints {
+		if taint.Key == constants.LabelNodeRoleMaster || taint.Key == constants.LabelNodeRoleControlPlane {
+			continue
 		}
+
+		newTaints = append(newTaints, taint)
 	}
 
-	if taintIndex == -1 && taintNoSchedule {
-		n.Spec.Taints = append(n.Spec.Taints, corev1.Taint{
-			Key:    constants.LabelNodeRoleMaster,
+	if taintNoSchedule {
+		newTaints = append(newTaints, corev1.Taint{
+			Key:    constants.LabelNodeRoleControlPlane,
 			Effect: corev1.TaintEffectNoSchedule,
 		})
-	} else if taintIndex != -1 && !taintNoSchedule {
-		n.Spec.Taints = append(n.Spec.Taints[:taintIndex], n.Spec.Taints[taintIndex+1:]...)
 	}
+
+	n.Spec.Taints = newTaints
 
 	newData, err := json.Marshal(n)
 	if err != nil {

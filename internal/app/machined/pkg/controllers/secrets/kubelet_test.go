@@ -6,64 +6,35 @@
 package secrets_test
 
 import (
-	"context"
-	"log"
 	"net/url"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/cosi-project/runtime/pkg/controller/runtime"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
-	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/siderolabs/crypto/x509"
 	"github.com/stretchr/testify/suite"
-	"github.com/talos-systems/crypto/x509"
 	"github.com/talos-systems/go-retry/retry"
 
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/ctest"
 	secretsctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/secrets"
-	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
 
+func TestKubeletSuite(t *testing.T) {
+	suite.Run(t, &KubeletSuite{
+		DefaultSuite: ctest.DefaultSuite{
+			AfterSetup: func(suite *ctest.DefaultSuite) {
+				suite.Require().NoError(suite.Runtime().RegisterController(&secretsctrl.KubeletController{}))
+			},
+		},
+	})
+}
+
 type KubeletSuite struct {
-	suite.Suite
-
-	state state.State
-
-	runtime *runtime.Runtime
-	wg      sync.WaitGroup
-
-	ctx       context.Context
-	ctxCancel context.CancelFunc
-}
-
-func (suite *KubeletSuite) SetupTest() {
-	suite.ctx, suite.ctxCancel = context.WithTimeout(context.Background(), 3*time.Minute)
-
-	suite.state = state.WrapCore(namespaced.NewState(inmem.Build))
-
-	var err error
-
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
-	suite.Require().NoError(err)
-
-	suite.Require().NoError(suite.runtime.RegisterController(&secretsctrl.KubeletController{}))
-
-	suite.startRuntime()
-}
-
-func (suite *KubeletSuite) startRuntime() {
-	suite.wg.Add(1)
-
-	go func() {
-		defer suite.wg.Done()
-
-		suite.Assert().NoError(suite.runtime.Run(suite.ctx))
-	}()
+	ctest.DefaultSuite
 }
 
 func (suite *KubeletSuite) TestReconcile() {
@@ -75,53 +46,53 @@ func (suite *KubeletSuite) TestReconcile() {
 
 	k8sCA := x509.NewCertificateAndKeyFromCertificateAuthority(ca)
 
-	cfg := config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{},
-		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: u,
+	cfg := config.NewMachineConfig(
+		&v1alpha1.Config{
+			ConfigVersion: "v1alpha1",
+			MachineConfig: &v1alpha1.MachineConfig{},
+			ClusterConfig: &v1alpha1.ClusterConfig{
+				ControlPlane: &v1alpha1.ControlPlaneConfig{
+					Endpoint: &v1alpha1.Endpoint{
+						URL: u,
+					},
 				},
+				ClusterCA:      k8sCA,
+				BootstrapToken: "abc.def",
 			},
-			ClusterCA:      k8sCA,
-			BootstrapToken: "abc.def",
 		},
-	})
+	)
 
-	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
+	suite.Require().NoError(suite.State().Create(suite.Ctx(), cfg))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			kubeletSecrets, err := suite.state.Get(suite.ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubeletType, secrets.KubeletID, resource.VersionUndefined))
-			if err != nil {
-				if state.IsNotFoundError(err) {
-					return retry.ExpectedError(err)
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				kubeletSecrets, err := ctest.Get[*secrets.Kubelet](
+					suite,
+					resource.NewMetadata(
+						secrets.NamespaceName,
+						secrets.KubeletType,
+						secrets.KubeletID,
+						resource.VersionUndefined,
+					),
+				)
+				if err != nil {
+					if state.IsNotFoundError(err) {
+						return retry.ExpectedError(err)
+					}
+
+					return err
 				}
 
-				return err
-			}
+				spec := kubeletSecrets.TypedSpec()
 
-			spec := kubeletSecrets.(*secrets.Kubelet).TypedSpec()
+				suite.Assert().Equal("https://foo:6443", spec.Endpoint.String())
+				suite.Assert().Equal(k8sCA, spec.CA)
+				suite.Assert().Equal("abc", spec.BootstrapTokenID)
+				suite.Assert().Equal("def", spec.BootstrapTokenSecret)
 
-			suite.Assert().Equal("https://foo:6443", spec.Endpoint.String())
-			suite.Assert().Equal(k8sCA, spec.CA)
-			suite.Assert().Equal("abc", spec.BootstrapTokenID)
-			suite.Assert().Equal("def", spec.BootstrapTokenSecret)
-
-			return nil
-		},
-	))
-}
-
-func (suite *KubeletSuite) TearDownTest() {
-	suite.T().Log("tear down")
-
-	suite.ctxCancel()
-
-	suite.wg.Wait()
-}
-
-func TestKubeletSuite(t *testing.T) {
-	suite.Run(t, new(KubeletSuite))
+				return nil
+			},
+		),
+	)
 }

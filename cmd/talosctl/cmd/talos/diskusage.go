@@ -7,14 +7,13 @@ package talos
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"text/tabwriter"
 
 	humanize "github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/codes"
 
+	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 )
@@ -30,6 +29,21 @@ var duCmd = &cobra.Command{
 	Aliases: []string{"du"},
 	Short:   "Retrieve a disk usage",
 	Long:    ``,
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
+		}
+
+		var completeOnlyPaths []string
+
+		for _, path := range completePathFromNode(toComplete) {
+			if path[len(path)-1:] == "/" {
+				completeOnlyPaths = append(completeOnlyPaths, path)
+			}
+		}
+
+		return completeOnlyPaths, cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			var paths []string
@@ -41,22 +55,18 @@ var duCmd = &cobra.Command{
 			}
 
 			stream, err := c.DiskUsage(ctx, &machineapi.DiskUsageRequest{
-				RecursionDepth: recursionDepth,
+				RecursionDepth: recursionDepth + 1,
 				All:            all,
 				Threshold:      threshold,
 				Paths:          paths,
 			})
 			if err != nil {
-				return fmt.Errorf("error fetching logs: %s", err)
+				return fmt.Errorf("error fetching disk usage: %s", err)
 			}
 
 			addedHeader := false
-			defaultNode := client.RemotePeer(stream.Context())
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-
-			multipleNodes := false
-			node := defaultNode
 
 			stringifySize := func(s int64) string {
 				if humanizeFlag {
@@ -66,20 +76,11 @@ var duCmd = &cobra.Command{
 				return fmt.Sprintf("%d", s)
 			}
 
-			for {
-				info, err := stream.Recv()
-				if err != nil {
-					if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-						return w.Flush()
-					}
+			defer w.Flush() //nolint:errcheck
 
-					return fmt.Errorf("error streaming results: %s", err)
-				}
-
+			return helpers.ReadGRPCStream(stream, func(info *machineapi.DiskUsageInfo, node string, multipleNodes bool) error {
 				if info.Error != "" {
-					fmt.Fprintf(os.Stderr, "%s: error reading file %s: %s\n", node, info.Name, info.Error)
-
-					continue
+					return helpers.NonFatalError(fmt.Errorf(info.Error))
 				}
 
 				pattern := "%s\t%s\n"
@@ -104,19 +105,15 @@ var duCmd = &cobra.Command{
 					addedHeader = true
 				}
 
-				if info.Metadata != nil && info.Metadata.Error != "" {
-					fmt.Fprintf(os.Stderr, "%s: %s\n", node, info.Metadata.Error)
-
-					continue
-				}
-
 				if multipleNodes {
 					pattern = "%s\t%s\t%s\n"
 					args = append([]interface{}{node}, args...)
 				}
 
 				fmt.Fprintf(w, pattern, args...)
-			}
+
+				return nil
+			})
 		})
 	},
 }

@@ -5,13 +5,15 @@
 package cluster
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // MemberType is type of Member resource.
@@ -20,62 +22,32 @@ const MemberType = resource.Type("Members.cluster.talos.dev")
 // Member resource contains information about discovered cluster members.
 //
 // Members are usually derived from Affiliates.
-type Member struct {
-	md   resource.Metadata
-	spec MemberSpec
-}
+type Member = typed.Resource[MemberSpec, MemberRD]
 
 // MemberSpec describes Member state.
+//
+//gotagsrewrite:gen
 type MemberSpec struct {
-	NodeID          string       `yaml:"nodeId"`
-	Addresses       []netaddr.IP `yaml:"addresses"`
-	Hostname        string       `yaml:"hostname"`
-	MachineType     machine.Type `yaml:"machineType"`
-	OperatingSystem string       `yaml:"operatingSystem"`
+	NodeID          string       `yaml:"nodeId" protobuf:"1"`
+	Addresses       []netip.Addr `yaml:"addresses" protobuf:"2"`
+	Hostname        string       `yaml:"hostname" protobuf:"3"`
+	MachineType     machine.Type `yaml:"machineType" protobuf:"4"`
+	OperatingSystem string       `yaml:"operatingSystem" protobuf:"5"`
 }
 
 // NewMember initializes a Member resource.
 func NewMember(namespace resource.Namespace, id resource.ID) *Member {
-	r := &Member{
-		md:   resource.NewMetadata(namespace, MemberType, id, resource.VersionUndefined),
-		spec: MemberSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[MemberSpec, MemberRD](
+		resource.NewMetadata(namespace, MemberType, id, resource.VersionUndefined),
+		MemberSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Member) Metadata() *resource.Metadata {
-	return &r.md
-}
+// MemberRD provides auxiliary methods for Member.
+type MemberRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Member) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Member) String() string {
-	return fmt.Sprintf("cluster.Member(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Member) DeepCopy() resource.Resource {
-	return &Member{
-		md: r.md,
-		spec: MemberSpec{
-			NodeID:          r.spec.NodeID,
-			Addresses:       append([]netaddr.IP(nil), r.spec.Addresses...),
-			Hostname:        r.spec.Hostname,
-			MachineType:     r.spec.MachineType,
-			OperatingSystem: r.spec.OperatingSystem,
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Member) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (MemberRD) ResourceDefinition(resource.Metadata, MemberSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             MemberType,
 		Aliases:          []resource.Type{},
@@ -101,7 +73,11 @@ func (r *Member) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Member) TypedSpec() *MemberSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[MemberSpec](MemberType, &Member{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -25,7 +24,7 @@ func (suite *VersionSuite) SuiteName() string {
 
 // TestExpectedVersionMaster verifies master node version matches expected.
 func (suite *VersionSuite) TestExpectedVersionMaster() {
-	suite.RunCLI([]string{"version", "--nodes", suite.RandomDiscoveredNode()},
+	suite.RunCLI([]string{"version", "--nodes", suite.RandomDiscoveredNodeInternalIP()},
 		base.StdoutShouldMatch(regexp.MustCompile(`Client:\n\s*Tag:\s*`+regexp.QuoteMeta(suite.Version))),
 		base.StdoutShouldMatch(regexp.MustCompile(`Server:\n(\s*NODE:[^\n]+\n)?\s*Tag:\s*`+regexp.QuoteMeta(suite.Version))),
 	)
@@ -33,7 +32,7 @@ func (suite *VersionSuite) TestExpectedVersionMaster() {
 
 // TestShortVersion verifies short version output.
 func (suite *VersionSuite) TestShortVersion() {
-	suite.RunCLI([]string{"version", "--short", "--nodes", suite.RandomDiscoveredNode()},
+	suite.RunCLI([]string{"version", "--short", "--nodes", suite.RandomDiscoveredNodeInternalIP()},
 		base.StdoutShouldMatch(regexp.MustCompile(`Client\s*`+regexp.QuoteMeta(suite.Version))),
 	)
 }

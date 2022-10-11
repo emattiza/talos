@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +18,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
-	"github.com/talos-systems/talos/internal/pkg/kubeconfig"
+	"github.com/talos-systems/talos/pkg/kubeconfig"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 )
 
@@ -50,7 +49,7 @@ Otherwise kubeconfig will be written to PWD or [local-path] if specified.`,
 				var err error
 
 				if merge {
-					localPath, err = kubeconfig.DefaultPath()
+					localPath, err = kubeconfig.SinglePath()
 					if err != nil {
 						return err
 					}
@@ -120,7 +119,7 @@ Otherwise kubeconfig will be written to PWD or [local-path] if specified.`,
 				return extractAndMerge(data, localPath)
 			}
 
-			return ioutil.WriteFile(localPath, data, 0o640)
+			return os.WriteFile(localPath, data, 0o600)
 		})
 	},
 }

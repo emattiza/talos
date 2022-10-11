@@ -5,13 +5,16 @@
 package secrets
 
 import (
-	"fmt"
 	"net"
 	"net/url"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/crypto/x509"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // KubernetesRootType is type of KubernetesRoot secret resource.
@@ -21,65 +24,42 @@ const KubernetesRootType = resource.Type("KubernetesRootSecrets.secrets.talos.de
 const KubernetesRootID = resource.ID("k8s")
 
 // KubernetesRoot contains root (not generated) secrets.
-type KubernetesRoot struct {
-	md   resource.Metadata
-	spec KubernetesRootSpec
-}
+type KubernetesRoot = typed.Resource[KubernetesRootSpec, KubernetesRootRD]
 
 // KubernetesRootSpec describes root Kubernetes secrets.
+//
+//gotagsrewrite:gen
 type KubernetesRootSpec struct {
-	Name         string   `yaml:"name"`
-	Endpoint     *url.URL `yaml:"endpoint"`
-	CertSANs     []string `yaml:"certSANs"`
-	APIServerIPs []net.IP `yaml:"apiServerIPs"`
-	DNSDomain    string   `yaml:"dnsDomain"`
+	Name          string   `yaml:"name" protobuf:"1"`
+	Endpoint      *url.URL `yaml:"endpoint" protobuf:"2"`
+	LocalEndpoint *url.URL `yaml:"local_endpoint" protobuf:"3"`
+	CertSANs      []string `yaml:"certSANs" protobuf:"4"`
+	APIServerIPs  []net.IP `yaml:"apiServerIPs" protobuf:"5"`
+	DNSDomain     string   `yaml:"dnsDomain" protobuf:"6"`
 
-	CA             *x509.PEMEncodedCertificateAndKey `yaml:"ca"`
-	ServiceAccount *x509.PEMEncodedKey               `yaml:"serviceAccount"`
-	AggregatorCA   *x509.PEMEncodedCertificateAndKey `yaml:"aggregatorCA"`
+	CA             *x509.PEMEncodedCertificateAndKey `yaml:"ca" protobuf:"7"`
+	ServiceAccount *x509.PEMEncodedKey               `yaml:"serviceAccount" protobuf:"8"`
+	AggregatorCA   *x509.PEMEncodedCertificateAndKey `yaml:"aggregatorCA" protobuf:"9"`
 
-	AESCBCEncryptionSecret string `yaml:"aesCBCEncryptionSecret"`
+	AESCBCEncryptionSecret string `yaml:"aesCBCEncryptionSecret" protobuf:"10"`
 
-	BootstrapTokenID     string `yaml:"bootstrapTokenID"`
-	BootstrapTokenSecret string `yaml:"bootstrapTokenSecret"`
+	BootstrapTokenID     string `yaml:"bootstrapTokenID" protobuf:"11"`
+	BootstrapTokenSecret string `yaml:"bootstrapTokenSecret" protobuf:"12"`
 }
 
 // NewKubernetesRoot initializes a KubernetesRoot resource.
 func NewKubernetesRoot(id resource.ID) *KubernetesRoot {
-	r := &KubernetesRoot{
-		md:   resource.NewMetadata(NamespaceName, KubernetesRootType, id, resource.VersionUndefined),
-		spec: KubernetesRootSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[KubernetesRootSpec, KubernetesRootRD](
+		resource.NewMetadata(NamespaceName, KubernetesRootType, id, resource.VersionUndefined),
+		KubernetesRootSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *KubernetesRoot) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *KubernetesRoot) Spec() interface{} {
-	return &r.spec
-}
-
-func (r *KubernetesRoot) String() string {
-	return fmt.Sprintf("secrets.KubernetesRoot(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *KubernetesRoot) DeepCopy() resource.Resource {
-	return &KubernetesRoot{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// KubernetesRootRD provides auxiliary methods for KubernetesRoot.
+type KubernetesRootRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *KubernetesRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (KubernetesRootRD) ResourceDefinition(resource.Metadata, KubernetesRootSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             KubernetesRootType,
 		Aliases:          []resource.Type{},
@@ -88,7 +68,11 @@ func (r *KubernetesRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *KubernetesRoot) TypedSpec() *KubernetesRootSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[KubernetesRootSpec](KubernetesRootType, &KubernetesRoot{})
+	if err != nil {
+		panic(err)
+	}
 }

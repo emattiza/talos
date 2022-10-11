@@ -7,6 +7,8 @@
 package v1alpha1
 
 import (
+	"github.com/siderolabs/go-pointer"
+
 	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
@@ -14,6 +16,7 @@ import (
 var (
 	ConfigDoc                         encoder.Doc
 	MachineConfigDoc                  encoder.Doc
+	MachineSeccompProfileDoc          encoder.Doc
 	ClusterConfigDoc                  encoder.Doc
 	ExtraMountDoc                     encoder.Doc
 	MachineControlPlaneConfigDoc      encoder.Doc
@@ -24,6 +27,7 @@ var (
 	NetworkConfigDoc                  encoder.Doc
 	InstallConfigDoc                  encoder.Doc
 	InstallDiskSelectorDoc            encoder.Doc
+	InstallExtensionConfigDoc         encoder.Doc
 	TimeConfigDoc                     encoder.Doc
 	RegistriesConfigDoc               encoder.Doc
 	PodCheckpointerDoc                encoder.Doc
@@ -31,6 +35,7 @@ var (
 	EndpointDoc                       encoder.Doc
 	ControlPlaneConfigDoc             encoder.Doc
 	APIServerConfigDoc                encoder.Doc
+	AdmissionPluginConfigDoc          encoder.Doc
 	ControllerManagerConfigDoc        encoder.Doc
 	ProxyConfigDoc                    encoder.Doc
 	SchedulerConfigDoc                encoder.Doc
@@ -55,6 +60,8 @@ var (
 	VIPEquinixMetalConfigDoc          encoder.Doc
 	VIPHCloudConfigDoc                encoder.Doc
 	BondDoc                           encoder.Doc
+	STPDoc                            encoder.Doc
+	BridgeDoc                         encoder.Doc
 	VlanDoc                           encoder.Doc
 	RouteDoc                          encoder.Doc
 	RegistryMirrorConfigDoc           encoder.Doc
@@ -63,9 +70,11 @@ var (
 	RegistryTLSConfigDoc              encoder.Doc
 	SystemDiskEncryptionConfigDoc     encoder.Doc
 	FeaturesConfigDoc                 encoder.Doc
+	KubernetesTalosAPIAccessConfigDoc encoder.Doc
 	VolumeMountConfigDoc              encoder.Doc
 	ClusterInlineManifestDoc          encoder.Doc
 	NetworkKubeSpanDoc                encoder.Doc
+	NetworkDeviceSelectorDoc          encoder.Doc
 	ClusterDiscoveryConfigDoc         encoder.Doc
 	DiscoveryRegistriesConfigDoc      encoder.Doc
 	RegistryKubernetesConfigDoc       encoder.Doc
@@ -73,6 +82,8 @@ var (
 	UdevConfigDoc                     encoder.Doc
 	LoggingConfigDoc                  encoder.Doc
 	LoggingDestinationDoc             encoder.Doc
+	KernelConfigDoc                   encoder.Doc
+	KernelModuleConfigDoc             encoder.Doc
 )
 
 func init() {
@@ -93,7 +104,7 @@ func init() {
 	ConfigDoc.Fields[1].Name = "debug"
 	ConfigDoc.Fields[1].Type = "bool"
 	ConfigDoc.Fields[1].Note = ""
-	ConfigDoc.Fields[1].Description = "Enable verbose logging to the console.\nAll system containers logs will flow into serial console.\n\n> Note: To avoid breaking Talos bootstrap flow enable this option only if serial console can handle high message throughput."
+	ConfigDoc.Fields[1].Description = "Enable verbose logging to the console.\nAll system containers logs will flow into serial console.\n\n**Note:** To avoid breaking Talos bootstrap flow enable this option only if serial console can handle high message throughput."
 	ConfigDoc.Fields[1].Comments[encoder.LineComment] = "Enable verbose logging to the console."
 	ConfigDoc.Fields[1].Values = []string{
 		"true",
@@ -134,14 +145,13 @@ func init() {
 			FieldName: "machine",
 		},
 	}
-	MachineConfigDoc.Fields = make([]encoder.Doc, 18)
+	MachineConfigDoc.Fields = make([]encoder.Doc, 22)
 	MachineConfigDoc.Fields[0].Name = "type"
 	MachineConfigDoc.Fields[0].Type = "string"
 	MachineConfigDoc.Fields[0].Note = ""
-	MachineConfigDoc.Fields[0].Description = "Defines the role of the machine within the cluster.\n\n#### Init\n\nInit node type designates the first control plane node to come up.\nYou can think of it like a bootstrap node.\nThis node will perform the initial steps to bootstrap the cluster -- generation of TLS assets, starting of the control plane, etc.\n\n#### Control Plane\n\nControl Plane node type designates the node as a control plane member.\nThis means it will host etcd along with the Kubernetes master components such as API Server, Controller Manager, Scheduler.\n\n#### Worker\n\nWorker node type designates the node as a worker node.\nThis means it will be an available compute node for scheduling workloads.\n\nThis node type was previously known as \"join\"; that value is still supported but deprecated."
+	MachineConfigDoc.Fields[0].Description = "Defines the role of the machine within the cluster.\n\n**Control Plane**\n\nControl Plane node type designates the node as a control plane member.\nThis means it will host etcd along with the Kubernetes controlplane components such as API Server, Controller Manager, Scheduler.\n\n**Worker**\n\nWorker node type designates the node as a worker node.\nThis means it will be an available compute node for scheduling workloads.\n\nThis node type was previously known as \"join\"; that value is still supported but deprecated."
 	MachineConfigDoc.Fields[0].Comments[encoder.LineComment] = "Defines the role of the machine within the cluster."
 	MachineConfigDoc.Fields[0].Values = []string{
-		"init",
 		"controlplane",
 		"worker",
 	}
@@ -169,8 +179,8 @@ func init() {
 	MachineConfigDoc.Fields[4].Name = "controlPlane"
 	MachineConfigDoc.Fields[4].Type = "MachineControlPlaneConfig"
 	MachineConfigDoc.Fields[4].Note = ""
-	MachineConfigDoc.Fields[4].Description = "Provides machine specific contolplane configuration options."
-	MachineConfigDoc.Fields[4].Comments[encoder.LineComment] = "Provides machine specific contolplane configuration options."
+	MachineConfigDoc.Fields[4].Description = "Provides machine specific control plane configuration options."
+	MachineConfigDoc.Fields[4].Comments[encoder.LineComment] = "Provides machine specific control plane configuration options."
 
 	MachineConfigDoc.Fields[4].AddExample("ControlPlane definition example.", machineControlplaneExample)
 	MachineConfigDoc.Fields[5].Name = "kubelet"
@@ -180,101 +190,152 @@ func init() {
 	MachineConfigDoc.Fields[5].Comments[encoder.LineComment] = "Used to provide additional options to the kubelet."
 
 	MachineConfigDoc.Fields[5].AddExample("Kubelet definition example.", machineKubeletExample)
-	MachineConfigDoc.Fields[6].Name = "network"
-	MachineConfigDoc.Fields[6].Type = "NetworkConfig"
+	MachineConfigDoc.Fields[6].Name = "pods"
+	MachineConfigDoc.Fields[6].Type = "[]Unstructured"
 	MachineConfigDoc.Fields[6].Note = ""
-	MachineConfigDoc.Fields[6].Description = "Provides machine specific network configuration options."
-	MachineConfigDoc.Fields[6].Comments[encoder.LineComment] = "Provides machine specific network configuration options."
+	MachineConfigDoc.Fields[6].Description = "Used to provide static pod definitions to be run by the kubelet directly bypassing the kube-apiserver.\n\nStatic pods can be used to run components which should be started before the Kubernetes control plane is up.\nTalos doesn't validate the pod definition.\nUpdates to this field can be applied without a reboot.\n\nSee https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/."
+	MachineConfigDoc.Fields[6].Comments[encoder.LineComment] = "Used to provide static pod definitions to be run by the kubelet directly bypassing the kube-apiserver."
 
-	MachineConfigDoc.Fields[6].AddExample("Network definition example.", machineNetworkConfigExample)
-	MachineConfigDoc.Fields[7].Name = "disks"
-	MachineConfigDoc.Fields[7].Type = "[]MachineDisk"
-	MachineConfigDoc.Fields[7].Note = "Note: `size` is in units of bytes.\n"
-	MachineConfigDoc.Fields[7].Description = "Used to partition, format and mount additional disks.\nSince the rootfs is read only with the exception of `/var`, mounts are only valid if they are under `/var`.\nNote that the partitioning and formating is done only once, if and only if no existing partitions are found.\nIf `size:` is omitted, the partition is sized to occupy the full disk."
-	MachineConfigDoc.Fields[7].Comments[encoder.LineComment] = "Used to partition, format and mount additional disks."
+	MachineConfigDoc.Fields[6].AddExample("nginx static pod.", machinePodsExample)
+	MachineConfigDoc.Fields[7].Name = "network"
+	MachineConfigDoc.Fields[7].Type = "NetworkConfig"
+	MachineConfigDoc.Fields[7].Note = ""
+	MachineConfigDoc.Fields[7].Description = "Provides machine specific network configuration options."
+	MachineConfigDoc.Fields[7].Comments[encoder.LineComment] = "Provides machine specific network configuration options."
 
-	MachineConfigDoc.Fields[7].AddExample("MachineDisks list example.", machineDisksExample)
-	MachineConfigDoc.Fields[8].Name = "install"
-	MachineConfigDoc.Fields[8].Type = "InstallConfig"
-	MachineConfigDoc.Fields[8].Note = ""
-	MachineConfigDoc.Fields[8].Description = "Used to provide instructions for installations."
-	MachineConfigDoc.Fields[8].Comments[encoder.LineComment] = "Used to provide instructions for installations."
+	MachineConfigDoc.Fields[7].AddExample("Network definition example.", machineNetworkConfigExample)
+	MachineConfigDoc.Fields[8].Name = "disks"
+	MachineConfigDoc.Fields[8].Type = "[]MachineDisk"
+	MachineConfigDoc.Fields[8].Note = "Note: `size` is in units of bytes.\n"
+	MachineConfigDoc.Fields[8].Description = "Used to partition, format and mount additional disks.\nSince the rootfs is read only with the exception of `/var`, mounts are only valid if they are under `/var`.\nNote that the partitioning and formating is done only once, if and only if no existing partitions are found.\nIf `size:` is omitted, the partition is sized to occupy the full disk."
+	MachineConfigDoc.Fields[8].Comments[encoder.LineComment] = "Used to partition, format and mount additional disks."
 
-	MachineConfigDoc.Fields[8].AddExample("MachineInstall config usage example.", machineInstallExample)
-	MachineConfigDoc.Fields[9].Name = "files"
-	MachineConfigDoc.Fields[9].Type = "[]MachineFile"
-	MachineConfigDoc.Fields[9].Note = "Note: The specified `path` is relative to `/var`.\n"
-	MachineConfigDoc.Fields[9].Description = "Allows the addition of user specified files.\nThe value of `op` can be `create`, `overwrite`, or `append`.\nIn the case of `create`, `path` must not exist.\nIn the case of `overwrite`, and `append`, `path` must be a valid file.\nIf an `op` value of `append` is used, the existing file will be appended.\nNote that the file contents are not required to be base64 encoded."
-	MachineConfigDoc.Fields[9].Comments[encoder.LineComment] = "Allows the addition of user specified files."
+	MachineConfigDoc.Fields[8].AddExample("MachineDisks list example.", machineDisksExample)
+	MachineConfigDoc.Fields[9].Name = "install"
+	MachineConfigDoc.Fields[9].Type = "InstallConfig"
+	MachineConfigDoc.Fields[9].Note = ""
+	MachineConfigDoc.Fields[9].Description = "Used to provide instructions for installations."
+	MachineConfigDoc.Fields[9].Comments[encoder.LineComment] = "Used to provide instructions for installations."
 
-	MachineConfigDoc.Fields[9].AddExample("MachineFiles usage example.", machineFilesExample)
-	MachineConfigDoc.Fields[10].Name = "env"
-	MachineConfigDoc.Fields[10].Type = "Env"
-	MachineConfigDoc.Fields[10].Note = ""
-	MachineConfigDoc.Fields[10].Description = "The `env` field allows for the addition of environment variables.\nAll environment variables are set on PID 1 in addition to every service."
-	MachineConfigDoc.Fields[10].Comments[encoder.LineComment] = "The `env` field allows for the addition of environment variables."
+	MachineConfigDoc.Fields[9].AddExample("MachineInstall config usage example.", machineInstallExample)
+	MachineConfigDoc.Fields[10].Name = "files"
+	MachineConfigDoc.Fields[10].Type = "[]MachineFile"
+	MachineConfigDoc.Fields[10].Note = "Note: The specified `path` is relative to `/var`.\n"
+	MachineConfigDoc.Fields[10].Description = "Allows the addition of user specified files.\nThe value of `op` can be `create`, `overwrite`, or `append`.\nIn the case of `create`, `path` must not exist.\nIn the case of `overwrite`, and `append`, `path` must be a valid file.\nIf an `op` value of `append` is used, the existing file will be appended.\nNote that the file contents are not required to be base64 encoded."
+	MachineConfigDoc.Fields[10].Comments[encoder.LineComment] = "Allows the addition of user specified files."
 
-	MachineConfigDoc.Fields[10].AddExample("Environment variables definition examples.", machineEnvExamples[0])
+	MachineConfigDoc.Fields[10].AddExample("MachineFiles usage example.", machineFilesExample)
+	MachineConfigDoc.Fields[11].Name = "env"
+	MachineConfigDoc.Fields[11].Type = "Env"
+	MachineConfigDoc.Fields[11].Note = ""
+	MachineConfigDoc.Fields[11].Description = "The `env` field allows for the addition of environment variables.\nAll environment variables are set on PID 1 in addition to every service."
+	MachineConfigDoc.Fields[11].Comments[encoder.LineComment] = "The `env` field allows for the addition of environment variables."
 
-	MachineConfigDoc.Fields[10].AddExample("", machineEnvExamples[1])
+	MachineConfigDoc.Fields[11].AddExample("Environment variables definition examples.", machineEnvExamples[0])
 
-	MachineConfigDoc.Fields[10].AddExample("", machineEnvExamples[2])
-	MachineConfigDoc.Fields[10].Values = []string{
+	MachineConfigDoc.Fields[11].AddExample("", machineEnvExamples[1])
+
+	MachineConfigDoc.Fields[11].AddExample("", machineEnvExamples[2])
+	MachineConfigDoc.Fields[11].Values = []string{
 		"`GRPC_GO_LOG_VERBOSITY_LEVEL`",
 		"`GRPC_GO_LOG_SEVERITY_LEVEL`",
 		"`http_proxy`",
 		"`https_proxy`",
 		"`no_proxy`",
 	}
-	MachineConfigDoc.Fields[11].Name = "time"
-	MachineConfigDoc.Fields[11].Type = "TimeConfig"
-	MachineConfigDoc.Fields[11].Note = ""
-	MachineConfigDoc.Fields[11].Description = "Used to configure the machine's time settings."
-	MachineConfigDoc.Fields[11].Comments[encoder.LineComment] = "Used to configure the machine's time settings."
-
-	MachineConfigDoc.Fields[11].AddExample("Example configuration for cloudflare ntp server.", machineTimeExample)
-	MachineConfigDoc.Fields[12].Name = "sysctls"
-	MachineConfigDoc.Fields[12].Type = "map[string]string"
+	MachineConfigDoc.Fields[12].Name = "time"
+	MachineConfigDoc.Fields[12].Type = "TimeConfig"
 	MachineConfigDoc.Fields[12].Note = ""
-	MachineConfigDoc.Fields[12].Description = "Used to configure the machine's sysctls."
-	MachineConfigDoc.Fields[12].Comments[encoder.LineComment] = "Used to configure the machine's sysctls."
+	MachineConfigDoc.Fields[12].Description = "Used to configure the machine's time settings."
+	MachineConfigDoc.Fields[12].Comments[encoder.LineComment] = "Used to configure the machine's time settings."
 
-	MachineConfigDoc.Fields[12].AddExample("MachineSysctls usage example.", machineSysctlsExample)
-	MachineConfigDoc.Fields[13].Name = "registries"
-	MachineConfigDoc.Fields[13].Type = "RegistriesConfig"
+	MachineConfigDoc.Fields[12].AddExample("Example configuration for cloudflare ntp server.", machineTimeExample)
+	MachineConfigDoc.Fields[13].Name = "sysctls"
+	MachineConfigDoc.Fields[13].Type = "map[string]string"
 	MachineConfigDoc.Fields[13].Note = ""
-	MachineConfigDoc.Fields[13].Description = "Used to configure the machine's container image registry mirrors.\n\nAutomatically generates matching CRI configuration for registry mirrors.\n\nThe `mirrors` section allows to redirect requests for images to non-default registry,\nwhich might be local registry or caching mirror.\n\nThe `config` section provides a way to authenticate to the registry with TLS client\nidentity, provide registry CA, or authentication information.\nAuthentication information has same meaning with the corresponding field in `.docker/config.json`.\n\nSee also matching configuration for [CRI containerd plugin](https://github.com/containerd/cri/blob/master/docs/registry.md)."
-	MachineConfigDoc.Fields[13].Comments[encoder.LineComment] = "Used to configure the machine's container image registry mirrors."
+	MachineConfigDoc.Fields[13].Description = "Used to configure the machine's sysctls."
+	MachineConfigDoc.Fields[13].Comments[encoder.LineComment] = "Used to configure the machine's sysctls."
 
-	MachineConfigDoc.Fields[13].AddExample("", machineConfigRegistriesExample)
-	MachineConfigDoc.Fields[14].Name = "systemDiskEncryption"
-	MachineConfigDoc.Fields[14].Type = "SystemDiskEncryptionConfig"
+	MachineConfigDoc.Fields[13].AddExample("MachineSysctls usage example.", machineSysctlsExample)
+	MachineConfigDoc.Fields[14].Name = "sysfs"
+	MachineConfigDoc.Fields[14].Type = "map[string]string"
 	MachineConfigDoc.Fields[14].Note = ""
-	MachineConfigDoc.Fields[14].Description = "Machine system disk encryption configuration.\nDefines each system partition encryption parameters."
-	MachineConfigDoc.Fields[14].Comments[encoder.LineComment] = "Machine system disk encryption configuration."
+	MachineConfigDoc.Fields[14].Description = "Used to configure the machine's sysfs."
+	MachineConfigDoc.Fields[14].Comments[encoder.LineComment] = "Used to configure the machine's sysfs."
 
-	MachineConfigDoc.Fields[14].AddExample("", machineSystemDiskEncryptionExample)
-	MachineConfigDoc.Fields[15].Name = "features"
-	MachineConfigDoc.Fields[15].Type = "FeaturesConfig"
+	MachineConfigDoc.Fields[14].AddExample("MachineSysfs usage example.", machineSysfsExample)
+	MachineConfigDoc.Fields[15].Name = "registries"
+	MachineConfigDoc.Fields[15].Type = "RegistriesConfig"
 	MachineConfigDoc.Fields[15].Note = ""
-	MachineConfigDoc.Fields[15].Description = "Features describe individual Talos features that can be switched on or off."
-	MachineConfigDoc.Fields[15].Comments[encoder.LineComment] = "Features describe individual Talos features that can be switched on or off."
+	MachineConfigDoc.Fields[15].Description = "Used to configure the machine's container image registry mirrors.\n\nAutomatically generates matching CRI configuration for registry mirrors.\n\nThe `mirrors` section allows to redirect requests for images to non-default registry,\nwhich might be local registry or caching mirror.\n\nThe `config` section provides a way to authenticate to the registry with TLS client\nidentity, provide registry CA, or authentication information.\nAuthentication information has same meaning with the corresponding field in `.docker/config.json`.\n\nSee also matching configuration for [CRI containerd plugin](https://github.com/containerd/cri/blob/master/docs/registry.md)."
+	MachineConfigDoc.Fields[15].Comments[encoder.LineComment] = "Used to configure the machine's container image registry mirrors."
 
-	MachineConfigDoc.Fields[15].AddExample("", machineFeaturesExample)
-	MachineConfigDoc.Fields[16].Name = "udev"
-	MachineConfigDoc.Fields[16].Type = "UdevConfig"
+	MachineConfigDoc.Fields[15].AddExample("", machineConfigRegistriesExample)
+	MachineConfigDoc.Fields[16].Name = "systemDiskEncryption"
+	MachineConfigDoc.Fields[16].Type = "SystemDiskEncryptionConfig"
 	MachineConfigDoc.Fields[16].Note = ""
-	MachineConfigDoc.Fields[16].Description = "Configures the udev system."
-	MachineConfigDoc.Fields[16].Comments[encoder.LineComment] = "Configures the udev system."
+	MachineConfigDoc.Fields[16].Description = "Machine system disk encryption configuration.\nDefines each system partition encryption parameters."
+	MachineConfigDoc.Fields[16].Comments[encoder.LineComment] = "Machine system disk encryption configuration."
 
-	MachineConfigDoc.Fields[16].AddExample("", machineUdevExample)
-	MachineConfigDoc.Fields[17].Name = "logging"
-	MachineConfigDoc.Fields[17].Type = "LoggingConfig"
+	MachineConfigDoc.Fields[16].AddExample("", machineSystemDiskEncryptionExample)
+	MachineConfigDoc.Fields[17].Name = "features"
+	MachineConfigDoc.Fields[17].Type = "FeaturesConfig"
 	MachineConfigDoc.Fields[17].Note = ""
-	MachineConfigDoc.Fields[17].Description = "Configures the logging system."
-	MachineConfigDoc.Fields[17].Comments[encoder.LineComment] = "Configures the logging system."
+	MachineConfigDoc.Fields[17].Description = "Features describe individual Talos features that can be switched on or off."
+	MachineConfigDoc.Fields[17].Comments[encoder.LineComment] = "Features describe individual Talos features that can be switched on or off."
 
-	MachineConfigDoc.Fields[17].AddExample("", machineLoggingExample)
+	MachineConfigDoc.Fields[17].AddExample("", machineFeaturesExample)
+	MachineConfigDoc.Fields[18].Name = "udev"
+	MachineConfigDoc.Fields[18].Type = "UdevConfig"
+	MachineConfigDoc.Fields[18].Note = ""
+	MachineConfigDoc.Fields[18].Description = "Configures the udev system."
+	MachineConfigDoc.Fields[18].Comments[encoder.LineComment] = "Configures the udev system."
+
+	MachineConfigDoc.Fields[18].AddExample("", machineUdevExample)
+	MachineConfigDoc.Fields[19].Name = "logging"
+	MachineConfigDoc.Fields[19].Type = "LoggingConfig"
+	MachineConfigDoc.Fields[19].Note = ""
+	MachineConfigDoc.Fields[19].Description = "Configures the logging system."
+	MachineConfigDoc.Fields[19].Comments[encoder.LineComment] = "Configures the logging system."
+
+	MachineConfigDoc.Fields[19].AddExample("", machineLoggingExample)
+	MachineConfigDoc.Fields[20].Name = "kernel"
+	MachineConfigDoc.Fields[20].Type = "KernelConfig"
+	MachineConfigDoc.Fields[20].Note = ""
+	MachineConfigDoc.Fields[20].Description = "Configures the kernel."
+	MachineConfigDoc.Fields[20].Comments[encoder.LineComment] = "Configures the kernel."
+
+	MachineConfigDoc.Fields[20].AddExample("", machineKernelExample)
+	MachineConfigDoc.Fields[21].Name = "seccompProfiles"
+	MachineConfigDoc.Fields[21].Type = "[]MachineSeccompProfile"
+	MachineConfigDoc.Fields[21].Note = ""
+	MachineConfigDoc.Fields[21].Description = "Configures the seccomp profiles for the machine."
+	MachineConfigDoc.Fields[21].Comments[encoder.LineComment] = "Configures the seccomp profiles for the machine."
+
+	MachineConfigDoc.Fields[21].AddExample("", machineSeccompExample)
+
+	MachineSeccompProfileDoc.Type = "MachineSeccompProfile"
+	MachineSeccompProfileDoc.Comments[encoder.LineComment] = "MachineSeccompProfile defines seccomp profiles for the machine."
+	MachineSeccompProfileDoc.Description = "MachineSeccompProfile defines seccomp profiles for the machine."
+
+	MachineSeccompProfileDoc.AddExample("", machineSeccompExample)
+	MachineSeccompProfileDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "MachineConfig",
+			FieldName: "seccompProfiles",
+		},
+	}
+	MachineSeccompProfileDoc.Fields = make([]encoder.Doc, 2)
+	MachineSeccompProfileDoc.Fields[0].Name = "name"
+	MachineSeccompProfileDoc.Fields[0].Type = "string"
+	MachineSeccompProfileDoc.Fields[0].Note = ""
+	MachineSeccompProfileDoc.Fields[0].Description = "The `name` field is used to provide the file name of the seccomp profile."
+	MachineSeccompProfileDoc.Fields[0].Comments[encoder.LineComment] = "The `name` field is used to provide the file name of the seccomp profile."
+	MachineSeccompProfileDoc.Fields[1].Name = "value"
+	MachineSeccompProfileDoc.Fields[1].Type = "Unstructured"
+	MachineSeccompProfileDoc.Fields[1].Note = ""
+	MachineSeccompProfileDoc.Fields[1].Description = "The `value` field is used to provide the seccomp profile."
+	MachineSeccompProfileDoc.Fields[1].Comments[encoder.LineComment] = "The `value` field is used to provide the seccomp profile."
 
 	ClusterConfigDoc.Type = "ClusterConfig"
 	ClusterConfigDoc.Comments[encoder.LineComment] = "ClusterConfig represents the cluster-wide config values."
@@ -287,7 +348,7 @@ func init() {
 			FieldName: "cluster",
 		},
 	}
-	ClusterConfigDoc.Fields = make([]encoder.Doc, 23)
+	ClusterConfigDoc.Fields = make([]encoder.Doc, 24)
 	ClusterConfigDoc.Fields[0].Name = "id"
 	ClusterConfigDoc.Fields[0].Type = "string"
 	ClusterConfigDoc.Fields[0].Note = ""
@@ -442,12 +503,12 @@ func init() {
 	ClusterConfigDoc.Fields[21].Comments[encoder.LineComment] = "Settings for admin kubeconfig generation."
 
 	ClusterConfigDoc.Fields[21].AddExample("", clusterAdminKubeconfigExample)
-	ClusterConfigDoc.Fields[22].Name = "allowSchedulingOnMasters"
-	ClusterConfigDoc.Fields[22].Type = "bool"
-	ClusterConfigDoc.Fields[22].Note = ""
-	ClusterConfigDoc.Fields[22].Description = "Allows running workload on master nodes."
-	ClusterConfigDoc.Fields[22].Comments[encoder.LineComment] = "Allows running workload on master nodes."
-	ClusterConfigDoc.Fields[22].Values = []string{
+	ClusterConfigDoc.Fields[23].Name = "allowSchedulingOnControlPlanes"
+	ClusterConfigDoc.Fields[23].Type = "bool"
+	ClusterConfigDoc.Fields[23].Note = ""
+	ClusterConfigDoc.Fields[23].Description = "Allows running workload on control-plane nodes."
+	ClusterConfigDoc.Fields[23].Comments[encoder.LineComment] = "Allows running workload on control-plane nodes."
+	ClusterConfigDoc.Fields[23].Values = []string{
 		"true",
 		"yes",
 		"false",
@@ -533,7 +594,7 @@ func init() {
 			FieldName: "kubelet",
 		},
 	}
-	KubeletConfigDoc.Fields = make([]encoder.Doc, 6)
+	KubeletConfigDoc.Fields = make([]encoder.Doc, 9)
 	KubeletConfigDoc.Fields[0].Name = "image"
 	KubeletConfigDoc.Fields[0].Type = "string"
 	KubeletConfigDoc.Fields[0].Note = ""
@@ -564,24 +625,53 @@ func init() {
 	KubeletConfigDoc.Fields[3].Comments[encoder.LineComment] = "The `extraMounts` field is used to add additional mounts to the kubelet container."
 
 	KubeletConfigDoc.Fields[3].AddExample("", kubeletExtraMountsExample)
-	KubeletConfigDoc.Fields[4].Name = "registerWithFQDN"
-	KubeletConfigDoc.Fields[4].Type = "bool"
+	KubeletConfigDoc.Fields[4].Name = "extraConfig"
+	KubeletConfigDoc.Fields[4].Type = "Unstructured"
 	KubeletConfigDoc.Fields[4].Note = ""
-	KubeletConfigDoc.Fields[4].Description = "The `registerWithFQDN` field is used to force kubelet to use the node FQDN for registration.\nThis is required in clouds like AWS."
-	KubeletConfigDoc.Fields[4].Comments[encoder.LineComment] = "The `registerWithFQDN` field is used to force kubelet to use the node FQDN for registration."
-	KubeletConfigDoc.Fields[4].Values = []string{
+	KubeletConfigDoc.Fields[4].Description = "The `extraConfig` field is used to provide kubelet configuration overrides.\n\nSome fields are not allowed to be overridden: authentication and authorization, cgroups\nconfiguration, ports, etc."
+	KubeletConfigDoc.Fields[4].Comments[encoder.LineComment] = "The `extraConfig` field is used to provide kubelet configuration overrides."
+
+	KubeletConfigDoc.Fields[4].AddExample("", kubeletExtraConfigExample)
+	KubeletConfigDoc.Fields[5].Name = "defaultRuntimeSeccompProfileEnabled"
+	KubeletConfigDoc.Fields[5].Type = "bool"
+	KubeletConfigDoc.Fields[5].Note = ""
+	KubeletConfigDoc.Fields[5].Description = "Enable container runtime default Seccomp profile."
+	KubeletConfigDoc.Fields[5].Comments[encoder.LineComment] = "Enable container runtime default Seccomp profile."
+	KubeletConfigDoc.Fields[5].Values = []string{
 		"true",
 		"yes",
 		"false",
 		"no",
 	}
-	KubeletConfigDoc.Fields[5].Name = "nodeIP"
-	KubeletConfigDoc.Fields[5].Type = "KubeletNodeIPConfig"
-	KubeletConfigDoc.Fields[5].Note = ""
-	KubeletConfigDoc.Fields[5].Description = "The `nodeIP` field is used to configure `--node-ip` flag for the kubelet.\nThis is used when a node has multiple addresses to choose from."
-	KubeletConfigDoc.Fields[5].Comments[encoder.LineComment] = "The `nodeIP` field is used to configure `--node-ip` flag for the kubelet."
+	KubeletConfigDoc.Fields[6].Name = "registerWithFQDN"
+	KubeletConfigDoc.Fields[6].Type = "bool"
+	KubeletConfigDoc.Fields[6].Note = ""
+	KubeletConfigDoc.Fields[6].Description = "The `registerWithFQDN` field is used to force kubelet to use the node FQDN for registration.\nThis is required in clouds like AWS."
+	KubeletConfigDoc.Fields[6].Comments[encoder.LineComment] = "The `registerWithFQDN` field is used to force kubelet to use the node FQDN for registration."
+	KubeletConfigDoc.Fields[6].Values = []string{
+		"true",
+		"yes",
+		"false",
+		"no",
+	}
+	KubeletConfigDoc.Fields[7].Name = "nodeIP"
+	KubeletConfigDoc.Fields[7].Type = "KubeletNodeIPConfig"
+	KubeletConfigDoc.Fields[7].Note = ""
+	KubeletConfigDoc.Fields[7].Description = "The `nodeIP` field is used to configure `--node-ip` flag for the kubelet.\nThis is used when a node has multiple addresses to choose from."
+	KubeletConfigDoc.Fields[7].Comments[encoder.LineComment] = "The `nodeIP` field is used to configure `--node-ip` flag for the kubelet."
 
-	KubeletConfigDoc.Fields[5].AddExample("", kubeletNodeIPExample)
+	KubeletConfigDoc.Fields[7].AddExample("", kubeletNodeIPExample)
+	KubeletConfigDoc.Fields[8].Name = "skipNodeRegistration"
+	KubeletConfigDoc.Fields[8].Type = "bool"
+	KubeletConfigDoc.Fields[8].Note = ""
+	KubeletConfigDoc.Fields[8].Description = "The `skipNodeRegistration` is used to run the kubelet without registering with the apiserver.\nThis runs kubelet as standalone and only runs static pods."
+	KubeletConfigDoc.Fields[8].Comments[encoder.LineComment] = "The `skipNodeRegistration` is used to run the kubelet without registering with the apiserver."
+	KubeletConfigDoc.Fields[8].Values = []string{
+		"true",
+		"yes",
+		"false",
+		"no",
+	}
 
 	KubeletNodeIPConfigDoc.Type = "KubeletNodeIPConfig"
 	KubeletNodeIPConfigDoc.Comments[encoder.LineComment] = "KubeletNodeIPConfig represents the kubelet node IP configuration."
@@ -612,7 +702,7 @@ func init() {
 			FieldName: "network",
 		},
 	}
-	NetworkConfigDoc.Fields = make([]encoder.Doc, 5)
+	NetworkConfigDoc.Fields = make([]encoder.Doc, 6)
 	NetworkConfigDoc.Fields[0].Name = "hostname"
 	NetworkConfigDoc.Fields[0].Type = "string"
 	NetworkConfigDoc.Fields[0].Note = ""
@@ -646,6 +736,17 @@ func init() {
 	NetworkConfigDoc.Fields[4].Comments[encoder.LineComment] = "Configures KubeSpan feature."
 
 	NetworkConfigDoc.Fields[4].AddExample("", networkKubeSpanExample)
+	NetworkConfigDoc.Fields[5].Name = "disableSearchDomain"
+	NetworkConfigDoc.Fields[5].Type = "bool"
+	NetworkConfigDoc.Fields[5].Note = ""
+	NetworkConfigDoc.Fields[5].Description = "Disable generating a default search domain in /etc/resolv.conf\nbased on the machine hostname.\nDefaults to `false`."
+	NetworkConfigDoc.Fields[5].Comments[encoder.LineComment] = "Disable generating a default search domain in /etc/resolv.conf"
+	NetworkConfigDoc.Fields[5].Values = []string{
+		"true",
+		"yes",
+		"false",
+		"no",
+	}
 
 	InstallConfigDoc.Type = "InstallConfig"
 	InstallConfigDoc.Comments[encoder.LineComment] = "InstallConfig represents the installation options for preparing a node."
@@ -658,7 +759,7 @@ func init() {
 			FieldName: "install",
 		},
 	}
-	InstallConfigDoc.Fields = make([]encoder.Doc, 7)
+	InstallConfigDoc.Fields = make([]encoder.Doc, 8)
 	InstallConfigDoc.Fields[0].Name = "disk"
 	InstallConfigDoc.Fields[0].Type = "string"
 	InstallConfigDoc.Fields[0].Note = ""
@@ -685,37 +786,44 @@ func init() {
 	InstallConfigDoc.Fields[3].Name = "image"
 	InstallConfigDoc.Fields[3].Type = "string"
 	InstallConfigDoc.Fields[3].Note = ""
-	InstallConfigDoc.Fields[3].Description = "Allows for supplying the image used to perform the installation.\nImage reference for each Talos release can be found on\n[GitHub releases page](https://github.com/talos-systems/talos/releases)."
+	InstallConfigDoc.Fields[3].Description = "Allows for supplying the image used to perform the installation.\nImage reference for each Talos release can be found on\n[GitHub releases page](https://github.com/siderolabs/talos/releases)."
 	InstallConfigDoc.Fields[3].Comments[encoder.LineComment] = "Allows for supplying the image used to perform the installation."
 
-	InstallConfigDoc.Fields[3].AddExample("", "ghcr.io/talos-systems/installer:latest")
-	InstallConfigDoc.Fields[4].Name = "bootloader"
-	InstallConfigDoc.Fields[4].Type = "bool"
+	InstallConfigDoc.Fields[3].AddExample("", "ghcr.io/siderolabs/installer:latest")
+	InstallConfigDoc.Fields[4].Name = "extensions"
+	InstallConfigDoc.Fields[4].Type = "[]InstallExtensionConfig"
 	InstallConfigDoc.Fields[4].Note = ""
-	InstallConfigDoc.Fields[4].Description = "Indicates if a bootloader should be installed."
-	InstallConfigDoc.Fields[4].Comments[encoder.LineComment] = "Indicates if a bootloader should be installed."
-	InstallConfigDoc.Fields[4].Values = []string{
-		"true",
-		"yes",
-		"false",
-		"no",
-	}
-	InstallConfigDoc.Fields[5].Name = "wipe"
+	InstallConfigDoc.Fields[4].Description = "Allows for supplying additional system extension images to install on top of base Talos image."
+	InstallConfigDoc.Fields[4].Comments[encoder.LineComment] = "Allows for supplying additional system extension images to install on top of base Talos image."
+
+	InstallConfigDoc.Fields[4].AddExample("", installExtensionsExample)
+	InstallConfigDoc.Fields[5].Name = "bootloader"
 	InstallConfigDoc.Fields[5].Type = "bool"
 	InstallConfigDoc.Fields[5].Note = ""
-	InstallConfigDoc.Fields[5].Description = "Indicates if the installation disk should be wiped at installation time.\nDefaults to `true`."
-	InstallConfigDoc.Fields[5].Comments[encoder.LineComment] = "Indicates if the installation disk should be wiped at installation time."
+	InstallConfigDoc.Fields[5].Description = "Indicates if a bootloader should be installed."
+	InstallConfigDoc.Fields[5].Comments[encoder.LineComment] = "Indicates if a bootloader should be installed."
 	InstallConfigDoc.Fields[5].Values = []string{
 		"true",
 		"yes",
 		"false",
 		"no",
 	}
-	InstallConfigDoc.Fields[6].Name = "legacyBIOSSupport"
+	InstallConfigDoc.Fields[6].Name = "wipe"
 	InstallConfigDoc.Fields[6].Type = "bool"
 	InstallConfigDoc.Fields[6].Note = ""
-	InstallConfigDoc.Fields[6].Description = "Indicates if MBR partition should be marked as bootable (active).\nShould be enabled only for the systems with legacy BIOS that doesn't support GPT partitioning scheme."
-	InstallConfigDoc.Fields[6].Comments[encoder.LineComment] = "Indicates if MBR partition should be marked as bootable (active)."
+	InstallConfigDoc.Fields[6].Description = "Indicates if the installation disk should be wiped at installation time.\nDefaults to `true`."
+	InstallConfigDoc.Fields[6].Comments[encoder.LineComment] = "Indicates if the installation disk should be wiped at installation time."
+	InstallConfigDoc.Fields[6].Values = []string{
+		"true",
+		"yes",
+		"false",
+		"no",
+	}
+	InstallConfigDoc.Fields[7].Name = "legacyBIOSSupport"
+	InstallConfigDoc.Fields[7].Type = "bool"
+	InstallConfigDoc.Fields[7].Note = ""
+	InstallConfigDoc.Fields[7].Description = "Indicates if MBR partition should be marked as bootable (active).\nShould be enabled only for the systems with legacy BIOS that doesn't support GPT partitioning scheme."
+	InstallConfigDoc.Fields[7].Comments[encoder.LineComment] = "Indicates if MBR partition should be marked as bootable (active)."
 
 	InstallDiskSelectorDoc.Type = "InstallDiskSelector"
 	InstallDiskSelectorDoc.Comments[encoder.LineComment] = "InstallDiskSelector represents a disk query parameters for the install disk lookup."
@@ -728,7 +836,7 @@ func init() {
 			FieldName: "diskSelector",
 		},
 	}
-	InstallDiskSelectorDoc.Fields = make([]encoder.Doc, 8)
+	InstallDiskSelectorDoc.Fields = make([]encoder.Doc, 9)
 	InstallDiskSelectorDoc.Fields[0].Name = "size"
 	InstallDiskSelectorDoc.Fields[0].Type = "InstallDiskSizeMatcher"
 	InstallDiskSelectorDoc.Fields[0].Note = ""
@@ -781,6 +889,33 @@ func init() {
 		"nvme",
 		"sd",
 	}
+	InstallDiskSelectorDoc.Fields[8].Name = "busPath"
+	InstallDiskSelectorDoc.Fields[8].Type = "string"
+	InstallDiskSelectorDoc.Fields[8].Note = ""
+	InstallDiskSelectorDoc.Fields[8].Description = "Disk bus path."
+	InstallDiskSelectorDoc.Fields[8].Comments[encoder.LineComment] = "Disk bus path."
+
+	InstallDiskSelectorDoc.Fields[8].AddExample("", "/pci0000:00/0000:00:17.0/ata1/host0/target0:0:0/0:0:0:0")
+
+	InstallDiskSelectorDoc.Fields[8].AddExample("", "/pci0000:00/*")
+
+	InstallExtensionConfigDoc.Type = "InstallExtensionConfig"
+	InstallExtensionConfigDoc.Comments[encoder.LineComment] = "InstallExtensionConfig represents a configuration for a system extension."
+	InstallExtensionConfigDoc.Description = "InstallExtensionConfig represents a configuration for a system extension."
+
+	InstallExtensionConfigDoc.AddExample("", installExtensionsExample)
+	InstallExtensionConfigDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "InstallConfig",
+			FieldName: "extensions",
+		},
+	}
+	InstallExtensionConfigDoc.Fields = make([]encoder.Doc, 1)
+	InstallExtensionConfigDoc.Fields[0].Name = "image"
+	InstallExtensionConfigDoc.Fields[0].Type = "string"
+	InstallExtensionConfigDoc.Fields[0].Note = ""
+	InstallExtensionConfigDoc.Fields[0].Description = "System extension image."
+	InstallExtensionConfigDoc.Fields[0].Comments[encoder.LineComment] = "System extension image."
 
 	TimeConfigDoc.Type = "TimeConfig"
 	TimeConfigDoc.Comments[encoder.LineComment] = "TimeConfig represents the options for configuring time on a machine."
@@ -825,7 +960,7 @@ func init() {
 	RegistriesConfigDoc.Fields[0].Name = "mirrors"
 	RegistriesConfigDoc.Fields[0].Type = "map[string]RegistryMirrorConfig"
 	RegistriesConfigDoc.Fields[0].Note = ""
-	RegistriesConfigDoc.Fields[0].Description = "Specifies mirror configuration for each registry.\nThis setting allows to use local pull-through caching registires,\nair-gapped installations, etc.\n\nRegistry name is the first segment of image identifier, with 'docker.io'\nbeing default one.\nTo catch any registry names not specified explicitly, use '*'."
+	RegistriesConfigDoc.Fields[0].Description = "Specifies mirror configuration for each registry.\nThis setting allows to use local pull-through caching registires,\nair-gapped installations, etc.\n\nRegistry name is the first segment of image identifier, with 'docker.io'\nbeing default one."
 	RegistriesConfigDoc.Fields[0].Comments[encoder.LineComment] = "Specifies mirror configuration for each registry."
 
 	RegistriesConfigDoc.Fields[0].AddExample("", machineConfigRegistryMirrorsExample)
@@ -931,7 +1066,7 @@ func init() {
 			FieldName: "apiServer",
 		},
 	}
-	APIServerConfigDoc.Fields = make([]encoder.Doc, 5)
+	APIServerConfigDoc.Fields = make([]encoder.Doc, 8)
 	APIServerConfigDoc.Fields[0].Name = "image"
 	APIServerConfigDoc.Fields[0].Type = "string"
 	APIServerConfigDoc.Fields[0].Note = ""
@@ -949,16 +1084,58 @@ func init() {
 	APIServerConfigDoc.Fields[2].Note = ""
 	APIServerConfigDoc.Fields[2].Description = "Extra volumes to mount to the API server static pod."
 	APIServerConfigDoc.Fields[2].Comments[encoder.LineComment] = "Extra volumes to mount to the API server static pod."
-	APIServerConfigDoc.Fields[3].Name = "certSANs"
-	APIServerConfigDoc.Fields[3].Type = "[]string"
+	APIServerConfigDoc.Fields[3].Name = "env"
+	APIServerConfigDoc.Fields[3].Type = "Env"
 	APIServerConfigDoc.Fields[3].Note = ""
-	APIServerConfigDoc.Fields[3].Description = "Extra certificate subject alternative names for the API server's certificate."
-	APIServerConfigDoc.Fields[3].Comments[encoder.LineComment] = "Extra certificate subject alternative names for the API server's certificate."
-	APIServerConfigDoc.Fields[4].Name = "disablePodSecurityPolicy"
-	APIServerConfigDoc.Fields[4].Type = "bool"
+	APIServerConfigDoc.Fields[3].Description = "The `env` field allows for the addition of environment variables for the control plane component."
+	APIServerConfigDoc.Fields[3].Comments[encoder.LineComment] = "The `env` field allows for the addition of environment variables for the control plane component."
+	APIServerConfigDoc.Fields[4].Name = "certSANs"
+	APIServerConfigDoc.Fields[4].Type = "[]string"
 	APIServerConfigDoc.Fields[4].Note = ""
-	APIServerConfigDoc.Fields[4].Description = "Disable PodSecurityPolicy in the API server and default manifests."
-	APIServerConfigDoc.Fields[4].Comments[encoder.LineComment] = "Disable PodSecurityPolicy in the API server and default manifests."
+	APIServerConfigDoc.Fields[4].Description = "Extra certificate subject alternative names for the API server's certificate."
+	APIServerConfigDoc.Fields[4].Comments[encoder.LineComment] = "Extra certificate subject alternative names for the API server's certificate."
+	APIServerConfigDoc.Fields[5].Name = "disablePodSecurityPolicy"
+	APIServerConfigDoc.Fields[5].Type = "bool"
+	APIServerConfigDoc.Fields[5].Note = ""
+	APIServerConfigDoc.Fields[5].Description = "Disable PodSecurityPolicy in the API server and default manifests."
+	APIServerConfigDoc.Fields[5].Comments[encoder.LineComment] = "Disable PodSecurityPolicy in the API server and default manifests."
+	APIServerConfigDoc.Fields[6].Name = "admissionControl"
+	APIServerConfigDoc.Fields[6].Type = "[]AdmissionPluginConfig"
+	APIServerConfigDoc.Fields[6].Note = ""
+	APIServerConfigDoc.Fields[6].Description = "Configure the API server admission plugins."
+	APIServerConfigDoc.Fields[6].Comments[encoder.LineComment] = "Configure the API server admission plugins."
+
+	APIServerConfigDoc.Fields[6].AddExample("", admissionControlConfigExample)
+	APIServerConfigDoc.Fields[7].Name = "auditPolicy"
+	APIServerConfigDoc.Fields[7].Type = "Unstructured"
+	APIServerConfigDoc.Fields[7].Note = ""
+	APIServerConfigDoc.Fields[7].Description = "Configure the API server audit policy."
+	APIServerConfigDoc.Fields[7].Comments[encoder.LineComment] = "Configure the API server audit policy."
+
+	APIServerConfigDoc.Fields[7].AddExample("", APIServerDefaultAuditPolicy)
+
+	AdmissionPluginConfigDoc.Type = "AdmissionPluginConfig"
+	AdmissionPluginConfigDoc.Comments[encoder.LineComment] = "AdmissionPluginConfig represents the API server admission plugin configuration."
+	AdmissionPluginConfigDoc.Description = "AdmissionPluginConfig represents the API server admission plugin configuration."
+
+	AdmissionPluginConfigDoc.AddExample("", admissionControlConfigExample)
+	AdmissionPluginConfigDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "APIServerConfig",
+			FieldName: "admissionControl",
+		},
+	}
+	AdmissionPluginConfigDoc.Fields = make([]encoder.Doc, 2)
+	AdmissionPluginConfigDoc.Fields[0].Name = "name"
+	AdmissionPluginConfigDoc.Fields[0].Type = "string"
+	AdmissionPluginConfigDoc.Fields[0].Note = ""
+	AdmissionPluginConfigDoc.Fields[0].Description = "Name is the name of the admission controller.\nIt must match the registered admission plugin name."
+	AdmissionPluginConfigDoc.Fields[0].Comments[encoder.LineComment] = "Name is the name of the admission controller."
+	AdmissionPluginConfigDoc.Fields[1].Name = "configuration"
+	AdmissionPluginConfigDoc.Fields[1].Type = "Unstructured"
+	AdmissionPluginConfigDoc.Fields[1].Note = ""
+	AdmissionPluginConfigDoc.Fields[1].Description = "Configuration is an embedded configuration object to be used as the plugin's\nconfiguration."
+	AdmissionPluginConfigDoc.Fields[1].Comments[encoder.LineComment] = "Configuration is an embedded configuration object to be used as the plugin's"
 
 	ControllerManagerConfigDoc.Type = "ControllerManagerConfig"
 	ControllerManagerConfigDoc.Comments[encoder.LineComment] = "ControllerManagerConfig represents the kube controller manager configuration options."
@@ -971,7 +1148,7 @@ func init() {
 			FieldName: "controllerManager",
 		},
 	}
-	ControllerManagerConfigDoc.Fields = make([]encoder.Doc, 3)
+	ControllerManagerConfigDoc.Fields = make([]encoder.Doc, 4)
 	ControllerManagerConfigDoc.Fields[0].Name = "image"
 	ControllerManagerConfigDoc.Fields[0].Type = "string"
 	ControllerManagerConfigDoc.Fields[0].Note = ""
@@ -989,6 +1166,11 @@ func init() {
 	ControllerManagerConfigDoc.Fields[2].Note = ""
 	ControllerManagerConfigDoc.Fields[2].Description = "Extra volumes to mount to the controller manager static pod."
 	ControllerManagerConfigDoc.Fields[2].Comments[encoder.LineComment] = "Extra volumes to mount to the controller manager static pod."
+	ControllerManagerConfigDoc.Fields[3].Name = "env"
+	ControllerManagerConfigDoc.Fields[3].Type = "Env"
+	ControllerManagerConfigDoc.Fields[3].Note = ""
+	ControllerManagerConfigDoc.Fields[3].Description = "The `env` field allows for the addition of environment variables for the control plane component."
+	ControllerManagerConfigDoc.Fields[3].Comments[encoder.LineComment] = "The `env` field allows for the addition of environment variables for the control plane component."
 
 	ProxyConfigDoc.Type = "ProxyConfig"
 	ProxyConfigDoc.Comments[encoder.LineComment] = "ProxyConfig represents the kube proxy configuration options."
@@ -1008,7 +1190,7 @@ func init() {
 	ProxyConfigDoc.Fields[0].Description = "Disable kube-proxy deployment on cluster bootstrap."
 	ProxyConfigDoc.Fields[0].Comments[encoder.LineComment] = "Disable kube-proxy deployment on cluster bootstrap."
 
-	ProxyConfigDoc.Fields[0].AddExample("", false)
+	ProxyConfigDoc.Fields[0].AddExample("", pointer.To(false))
 	ProxyConfigDoc.Fields[1].Name = "image"
 	ProxyConfigDoc.Fields[1].Type = "string"
 	ProxyConfigDoc.Fields[1].Note = ""
@@ -1038,7 +1220,7 @@ func init() {
 			FieldName: "scheduler",
 		},
 	}
-	SchedulerConfigDoc.Fields = make([]encoder.Doc, 3)
+	SchedulerConfigDoc.Fields = make([]encoder.Doc, 4)
 	SchedulerConfigDoc.Fields[0].Name = "image"
 	SchedulerConfigDoc.Fields[0].Type = "string"
 	SchedulerConfigDoc.Fields[0].Note = ""
@@ -1056,6 +1238,11 @@ func init() {
 	SchedulerConfigDoc.Fields[2].Note = ""
 	SchedulerConfigDoc.Fields[2].Description = "Extra volumes to mount to the scheduler static pod."
 	SchedulerConfigDoc.Fields[2].Comments[encoder.LineComment] = "Extra volumes to mount to the scheduler static pod."
+	SchedulerConfigDoc.Fields[3].Name = "env"
+	SchedulerConfigDoc.Fields[3].Type = "Env"
+	SchedulerConfigDoc.Fields[3].Note = ""
+	SchedulerConfigDoc.Fields[3].Description = "The `env` field allows for the addition of environment variables for the control plane component."
+	SchedulerConfigDoc.Fields[3].Comments[encoder.LineComment] = "The `env` field allows for the addition of environment variables for the control plane component."
 
 	EtcdConfigDoc.Type = "EtcdConfig"
 	EtcdConfigDoc.Comments[encoder.LineComment] = "EtcdConfig represents the etcd configuration options."
@@ -1068,7 +1255,7 @@ func init() {
 			FieldName: "etcd",
 		},
 	}
-	EtcdConfigDoc.Fields = make([]encoder.Doc, 4)
+	EtcdConfigDoc.Fields = make([]encoder.Doc, 6)
 	EtcdConfigDoc.Fields[0].Name = "image"
 	EtcdConfigDoc.Fields[0].Type = "string"
 	EtcdConfigDoc.Fields[0].Note = ""
@@ -1089,13 +1276,18 @@ func init() {
 	EtcdConfigDoc.Fields[2].Description = "Extra arguments to supply to etcd.\nNote that the following args are not allowed:\n\n- `name`\n- `data-dir`\n- `initial-cluster-state`\n- `listen-peer-urls`\n- `listen-client-urls`\n- `cert-file`\n- `key-file`\n- `trusted-ca-file`\n- `peer-client-cert-auth`\n- `peer-cert-file`\n- `peer-trusted-ca-file`\n- `peer-key-file`"
 	EtcdConfigDoc.Fields[2].Comments[encoder.LineComment] = "Extra arguments to supply to etcd."
 
-	EtcdConfigDoc.Fields[3].Name = "subnet"
-	EtcdConfigDoc.Fields[3].Type = "string"
-	EtcdConfigDoc.Fields[3].Note = ""
-	EtcdConfigDoc.Fields[3].Description = "The subnet from which the advertise URL should be."
-	EtcdConfigDoc.Fields[3].Comments[encoder.LineComment] = "The subnet from which the advertise URL should be."
+	EtcdConfigDoc.Fields[4].Name = "advertisedSubnets"
+	EtcdConfigDoc.Fields[4].Type = "[]string"
+	EtcdConfigDoc.Fields[4].Note = ""
+	EtcdConfigDoc.Fields[4].Description = "The `advertisedSubnets` field configures the networks to pick etcd advertised IP from.\n\nIPs can be excluded from the list by using negative match with `!`, e.g `!10.0.0.0/8`.\nNegative subnet matches should be specified last to filter out IPs picked by positive matches.\nIf not specified, advertised IP is selected as the first routable address of the node."
+	EtcdConfigDoc.Fields[4].Comments[encoder.LineComment] = "The `advertisedSubnets` field configures the networks to pick etcd advertised IP from."
 
-	EtcdConfigDoc.Fields[3].AddExample("", clusterEtcdSubnetExample)
+	EtcdConfigDoc.Fields[4].AddExample("", clusterEtcdAdvertisedSubnetsExample)
+	EtcdConfigDoc.Fields[5].Name = "listenSubnets"
+	EtcdConfigDoc.Fields[5].Type = "[]string"
+	EtcdConfigDoc.Fields[5].Note = ""
+	EtcdConfigDoc.Fields[5].Description = "The `listenSubnets` field configures the networks for the etcd to listen for peer and client connections.\n\nIf `listenSubnets` is not set, but `advertisedSubnets` is set, `listenSubnets` defaults to\n`advertisedSubnets`.\n\nIf neither `advertisedSubnets` nor `listenSubnets` is set, `listenSubnets` defaults to listen on all addresses.\n\nIPs can be excluded from the list by using negative match with `!`, e.g `!10.0.0.0/8`.\nNegative subnet matches should be specified last to filter out IPs picked by positive matches.\nIf not specified, advertised IP is selected as the first routable address of the node."
+	EtcdConfigDoc.Fields[5].Comments[encoder.LineComment] = "The `listenSubnets` field configures the networks for the etcd to listen for peer and client connections."
 
 	ClusterNetworkConfigDoc.Type = "ClusterNetworkConfig"
 	ClusterNetworkConfigDoc.Comments[encoder.LineComment] = "ClusterNetworkConfig represents kube networking configuration options."
@@ -1454,85 +1646,101 @@ func init() {
 			FieldName: "interfaces",
 		},
 	}
-	DeviceDoc.Fields = make([]encoder.Doc, 13)
+	DeviceDoc.Fields = make([]encoder.Doc, 15)
 	DeviceDoc.Fields[0].Name = "interface"
 	DeviceDoc.Fields[0].Type = "string"
 	DeviceDoc.Fields[0].Note = ""
-	DeviceDoc.Fields[0].Description = "The interface name."
+	DeviceDoc.Fields[0].Description = "The interface name.\nMutually exclusive with `deviceSelector`."
 	DeviceDoc.Fields[0].Comments[encoder.LineComment] = "The interface name."
 
 	DeviceDoc.Fields[0].AddExample("", "eth0")
-	DeviceDoc.Fields[1].Name = "addresses"
-	DeviceDoc.Fields[1].Type = "[]string"
+	DeviceDoc.Fields[1].Name = "deviceSelector"
+	DeviceDoc.Fields[1].Type = "NetworkDeviceSelector"
 	DeviceDoc.Fields[1].Note = ""
-	DeviceDoc.Fields[1].Description = "Assigns static IP addresses to the interface.\nAn address can be specified either in proper CIDR notation or as a standalone address (netmask of all ones is assumed)."
-	DeviceDoc.Fields[1].Comments[encoder.LineComment] = "Assigns static IP addresses to the interface."
+	DeviceDoc.Fields[1].Description = "Picks a network device using the selector.\nMutually exclusive with `interface`.\nSupports partial match using wildcard syntax."
+	DeviceDoc.Fields[1].Comments[encoder.LineComment] = "Picks a network device using the selector."
 
-	DeviceDoc.Fields[1].AddExample("", []string{"10.5.0.0/16", "192.168.3.7"})
-	DeviceDoc.Fields[3].Name = "routes"
-	DeviceDoc.Fields[3].Type = "[]Route"
-	DeviceDoc.Fields[3].Note = ""
-	DeviceDoc.Fields[3].Description = "A list of routes associated with the interface.\nIf used in combination with DHCP, these routes will be appended to routes returned by DHCP server."
-	DeviceDoc.Fields[3].Comments[encoder.LineComment] = "A list of routes associated with the interface."
+	DeviceDoc.Fields[1].AddExample("select a device with bus prefix 00:*.", networkDeviceSelectorExamples[0])
 
-	DeviceDoc.Fields[3].AddExample("", networkConfigRoutesExample)
-	DeviceDoc.Fields[4].Name = "bond"
-	DeviceDoc.Fields[4].Type = "Bond"
+	DeviceDoc.Fields[1].AddExample("select a device with mac address matching `*:f0:ab` and `virtio` kernel driver.", networkDeviceSelectorExamples[1])
+	DeviceDoc.Fields[2].Name = "addresses"
+	DeviceDoc.Fields[2].Type = "[]string"
+	DeviceDoc.Fields[2].Note = ""
+	DeviceDoc.Fields[2].Description = "Assigns static IP addresses to the interface.\nAn address can be specified either in proper CIDR notation or as a standalone address (netmask of all ones is assumed)."
+	DeviceDoc.Fields[2].Comments[encoder.LineComment] = "Assigns static IP addresses to the interface."
+
+	DeviceDoc.Fields[2].AddExample("", []string{"10.5.0.0/16", "192.168.3.7"})
+	DeviceDoc.Fields[4].Name = "routes"
+	DeviceDoc.Fields[4].Type = "[]Route"
 	DeviceDoc.Fields[4].Note = ""
-	DeviceDoc.Fields[4].Description = "Bond specific options."
-	DeviceDoc.Fields[4].Comments[encoder.LineComment] = "Bond specific options."
+	DeviceDoc.Fields[4].Description = "A list of routes associated with the interface.\nIf used in combination with DHCP, these routes will be appended to routes returned by DHCP server."
+	DeviceDoc.Fields[4].Comments[encoder.LineComment] = "A list of routes associated with the interface."
 
-	DeviceDoc.Fields[4].AddExample("", networkConfigBondExample)
-	DeviceDoc.Fields[5].Name = "vlans"
-	DeviceDoc.Fields[5].Type = "[]Vlan"
+	DeviceDoc.Fields[4].AddExample("", networkConfigRoutesExample)
+	DeviceDoc.Fields[5].Name = "bond"
+	DeviceDoc.Fields[5].Type = "Bond"
 	DeviceDoc.Fields[5].Note = ""
-	DeviceDoc.Fields[5].Description = "VLAN specific options."
-	DeviceDoc.Fields[5].Comments[encoder.LineComment] = "VLAN specific options."
-	DeviceDoc.Fields[6].Name = "mtu"
-	DeviceDoc.Fields[6].Type = "int"
-	DeviceDoc.Fields[6].Note = ""
-	DeviceDoc.Fields[6].Description = "The interface's MTU.\nIf used in combination with DHCP, this will override any MTU settings returned from DHCP server."
-	DeviceDoc.Fields[6].Comments[encoder.LineComment] = "The interface's MTU."
-	DeviceDoc.Fields[7].Name = "dhcp"
-	DeviceDoc.Fields[7].Type = "bool"
-	DeviceDoc.Fields[7].Note = ""
-	DeviceDoc.Fields[7].Description = "Indicates if DHCP should be used to configure the interface.\nThe following DHCP options are supported:\n\n- `OptionClasslessStaticRoute`\n- `OptionDomainNameServer`\n- `OptionDNSDomainSearchList`\n- `OptionHostName`"
-	DeviceDoc.Fields[7].Comments[encoder.LineComment] = "Indicates if DHCP should be used to configure the interface."
+	DeviceDoc.Fields[5].Description = "Bond specific options."
+	DeviceDoc.Fields[5].Comments[encoder.LineComment] = "Bond specific options."
 
-	DeviceDoc.Fields[7].AddExample("", true)
-	DeviceDoc.Fields[8].Name = "ignore"
-	DeviceDoc.Fields[8].Type = "bool"
+	DeviceDoc.Fields[5].AddExample("", networkConfigBondExample)
+	DeviceDoc.Fields[6].Name = "bridge"
+	DeviceDoc.Fields[6].Type = "Bridge"
+	DeviceDoc.Fields[6].Note = ""
+	DeviceDoc.Fields[6].Description = "Bridge specific options."
+	DeviceDoc.Fields[6].Comments[encoder.LineComment] = "Bridge specific options."
+
+	DeviceDoc.Fields[6].AddExample("", networkConfigBridgeExample)
+	DeviceDoc.Fields[7].Name = "vlans"
+	DeviceDoc.Fields[7].Type = "[]Vlan"
+	DeviceDoc.Fields[7].Note = ""
+	DeviceDoc.Fields[7].Description = "VLAN specific options."
+	DeviceDoc.Fields[7].Comments[encoder.LineComment] = "VLAN specific options."
+	DeviceDoc.Fields[8].Name = "mtu"
+	DeviceDoc.Fields[8].Type = "int"
 	DeviceDoc.Fields[8].Note = ""
-	DeviceDoc.Fields[8].Description = "Indicates if the interface should be ignored (skips configuration)."
-	DeviceDoc.Fields[8].Comments[encoder.LineComment] = "Indicates if the interface should be ignored (skips configuration)."
-	DeviceDoc.Fields[9].Name = "dummy"
+	DeviceDoc.Fields[8].Description = "The interface's MTU.\nIf used in combination with DHCP, this will override any MTU settings returned from DHCP server."
+	DeviceDoc.Fields[8].Comments[encoder.LineComment] = "The interface's MTU."
+	DeviceDoc.Fields[9].Name = "dhcp"
 	DeviceDoc.Fields[9].Type = "bool"
 	DeviceDoc.Fields[9].Note = ""
-	DeviceDoc.Fields[9].Description = "Indicates if the interface is a dummy interface.\n`dummy` is used to specify that this interface should be a virtual-only, dummy interface."
-	DeviceDoc.Fields[9].Comments[encoder.LineComment] = "Indicates if the interface is a dummy interface."
-	DeviceDoc.Fields[10].Name = "dhcpOptions"
-	DeviceDoc.Fields[10].Type = "DHCPOptions"
+	DeviceDoc.Fields[9].Description = "Indicates if DHCP should be used to configure the interface.\nThe following DHCP options are supported:\n\n- `OptionClasslessStaticRoute`\n- `OptionDomainNameServer`\n- `OptionDNSDomainSearchList`\n- `OptionHostName`"
+	DeviceDoc.Fields[9].Comments[encoder.LineComment] = "Indicates if DHCP should be used to configure the interface."
+
+	DeviceDoc.Fields[9].AddExample("", true)
+	DeviceDoc.Fields[10].Name = "ignore"
+	DeviceDoc.Fields[10].Type = "bool"
 	DeviceDoc.Fields[10].Note = ""
-	DeviceDoc.Fields[10].Description = "DHCP specific options.\n`dhcp` *must* be set to true for these to take effect."
-	DeviceDoc.Fields[10].Comments[encoder.LineComment] = "DHCP specific options."
-
-	DeviceDoc.Fields[10].AddExample("", networkConfigDHCPOptionsExample)
-	DeviceDoc.Fields[11].Name = "wireguard"
-	DeviceDoc.Fields[11].Type = "DeviceWireguardConfig"
+	DeviceDoc.Fields[10].Description = "Indicates if the interface should be ignored (skips configuration)."
+	DeviceDoc.Fields[10].Comments[encoder.LineComment] = "Indicates if the interface should be ignored (skips configuration)."
+	DeviceDoc.Fields[11].Name = "dummy"
+	DeviceDoc.Fields[11].Type = "bool"
 	DeviceDoc.Fields[11].Note = ""
-	DeviceDoc.Fields[11].Description = "Wireguard specific configuration.\nIncludes things like private key, listen port, peers."
-	DeviceDoc.Fields[11].Comments[encoder.LineComment] = "Wireguard specific configuration."
-
-	DeviceDoc.Fields[11].AddExample("wireguard server example", networkConfigWireguardHostExample)
-
-	DeviceDoc.Fields[11].AddExample("wireguard peer example", networkConfigWireguardPeerExample)
-	DeviceDoc.Fields[12].Name = "vip"
-	DeviceDoc.Fields[12].Type = "DeviceVIPConfig"
+	DeviceDoc.Fields[11].Description = "Indicates if the interface is a dummy interface.\n`dummy` is used to specify that this interface should be a virtual-only, dummy interface."
+	DeviceDoc.Fields[11].Comments[encoder.LineComment] = "Indicates if the interface is a dummy interface."
+	DeviceDoc.Fields[12].Name = "dhcpOptions"
+	DeviceDoc.Fields[12].Type = "DHCPOptions"
 	DeviceDoc.Fields[12].Note = ""
-	DeviceDoc.Fields[12].Description = "Virtual (shared) IP address configuration."
-	DeviceDoc.Fields[12].Comments[encoder.LineComment] = "Virtual (shared) IP address configuration."
+	DeviceDoc.Fields[12].Description = "DHCP specific options.\n`dhcp` *must* be set to true for these to take effect."
+	DeviceDoc.Fields[12].Comments[encoder.LineComment] = "DHCP specific options."
 
-	DeviceDoc.Fields[12].AddExample("", networkConfigVIPLayer2Example)
+	DeviceDoc.Fields[12].AddExample("", networkConfigDHCPOptionsExample)
+	DeviceDoc.Fields[13].Name = "wireguard"
+	DeviceDoc.Fields[13].Type = "DeviceWireguardConfig"
+	DeviceDoc.Fields[13].Note = ""
+	DeviceDoc.Fields[13].Description = "Wireguard specific configuration.\nIncludes things like private key, listen port, peers."
+	DeviceDoc.Fields[13].Comments[encoder.LineComment] = "Wireguard specific configuration."
+
+	DeviceDoc.Fields[13].AddExample("wireguard server example", networkConfigWireguardHostExample)
+
+	DeviceDoc.Fields[13].AddExample("wireguard peer example", networkConfigWireguardPeerExample)
+	DeviceDoc.Fields[14].Name = "vip"
+	DeviceDoc.Fields[14].Type = "DeviceVIPConfig"
+	DeviceDoc.Fields[14].Note = ""
+	DeviceDoc.Fields[14].Description = "Virtual (shared) IP address configuration."
+	DeviceDoc.Fields[14].Comments[encoder.LineComment] = "Virtual (shared) IP address configuration."
+
+	DeviceDoc.Fields[14].AddExample("layer2 vip example", networkConfigVIPLayer2Example)
 
 	DHCPOptionsDoc.Type = "DHCPOptions"
 	DHCPOptionsDoc.Comments[encoder.LineComment] = "DHCPOptions contains options for configuring the DHCP settings for a given interface."
@@ -1544,8 +1752,12 @@ func init() {
 			TypeName:  "Device",
 			FieldName: "dhcpOptions",
 		},
+		{
+			TypeName:  "Vlan",
+			FieldName: "dhcpOptions",
+		},
 	}
-	DHCPOptionsDoc.Fields = make([]encoder.Doc, 3)
+	DHCPOptionsDoc.Fields = make([]encoder.Doc, 4)
 	DHCPOptionsDoc.Fields[0].Name = "routeMetric"
 	DHCPOptionsDoc.Fields[0].Type = "uint32"
 	DHCPOptionsDoc.Fields[0].Note = ""
@@ -1561,6 +1773,11 @@ func init() {
 	DHCPOptionsDoc.Fields[2].Note = ""
 	DHCPOptionsDoc.Fields[2].Description = "Enables DHCPv6 protocol for the interface (default is disabled)."
 	DHCPOptionsDoc.Fields[2].Comments[encoder.LineComment] = "Enables DHCPv6 protocol for the interface (default is disabled)."
+	DHCPOptionsDoc.Fields[3].Name = "duidv6"
+	DHCPOptionsDoc.Fields[3].Type = "string"
+	DHCPOptionsDoc.Fields[3].Note = ""
+	DHCPOptionsDoc.Fields[3].Description = "Set client DUID (hex string)."
+	DHCPOptionsDoc.Fields[3].Comments[encoder.LineComment] = "Set client DUID (hex string)."
 
 	DeviceWireguardConfigDoc.Type = "DeviceWireguardConfig"
 	DeviceWireguardConfigDoc.Comments[encoder.LineComment] = "DeviceWireguardConfig contains settings for configuring Wireguard network interface."
@@ -1632,7 +1849,7 @@ func init() {
 	DeviceVIPConfigDoc.Comments[encoder.LineComment] = "DeviceVIPConfig contains settings for configuring a Virtual Shared IP on an interface."
 	DeviceVIPConfigDoc.Description = "DeviceVIPConfig contains settings for configuring a Virtual Shared IP on an interface."
 
-	DeviceVIPConfigDoc.AddExample("", networkConfigVIPLayer2Example)
+	DeviceVIPConfigDoc.AddExample("layer2 vip example", networkConfigVIPLayer2Example)
 	DeviceVIPConfigDoc.AppearsIn = []encoder.Appearance{
 		{
 			TypeName:  "Device",
@@ -1840,6 +2057,45 @@ func init() {
 	BondDoc.Fields[26].Description = "A bond option.\nPlease see the official kernel documentation."
 	BondDoc.Fields[26].Comments[encoder.LineComment] = "A bond option."
 
+	STPDoc.Type = "STP"
+	STPDoc.Comments[encoder.LineComment] = "STP contains the various options for configuring the STP properties of a bridge interface."
+	STPDoc.Description = "STP contains the various options for configuring the STP properties of a bridge interface."
+	STPDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "Bridge",
+			FieldName: "stp",
+		},
+	}
+	STPDoc.Fields = make([]encoder.Doc, 1)
+	STPDoc.Fields[0].Name = "enabled"
+	STPDoc.Fields[0].Type = "bool"
+	STPDoc.Fields[0].Note = ""
+	STPDoc.Fields[0].Description = "Whether Spanning Tree Protocol (STP) is enabled."
+	STPDoc.Fields[0].Comments[encoder.LineComment] = "Whether Spanning Tree Protocol (STP) is enabled."
+
+	BridgeDoc.Type = "Bridge"
+	BridgeDoc.Comments[encoder.LineComment] = "Bridge contains the various options for configuring a bridge interface."
+	BridgeDoc.Description = "Bridge contains the various options for configuring a bridge interface."
+
+	BridgeDoc.AddExample("", networkConfigBridgeExample)
+	BridgeDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "Device",
+			FieldName: "bridge",
+		},
+	}
+	BridgeDoc.Fields = make([]encoder.Doc, 2)
+	BridgeDoc.Fields[0].Name = "interfaces"
+	BridgeDoc.Fields[0].Type = "[]string"
+	BridgeDoc.Fields[0].Note = ""
+	BridgeDoc.Fields[0].Description = "The interfaces that make up the bridge."
+	BridgeDoc.Fields[0].Comments[encoder.LineComment] = "The interfaces that make up the bridge."
+	BridgeDoc.Fields[1].Name = "stp"
+	BridgeDoc.Fields[1].Type = "STP"
+	BridgeDoc.Fields[1].Note = ""
+	BridgeDoc.Fields[1].Description = "A bridge option.\nPlease see the official kernel documentation."
+	BridgeDoc.Fields[1].Comments[encoder.LineComment] = "A bridge option."
+
 	VlanDoc.Type = "Vlan"
 	VlanDoc.Comments[encoder.LineComment] = "Vlan represents vlan settings for a device."
 	VlanDoc.Description = "Vlan represents vlan settings for a device."
@@ -1849,7 +2105,7 @@ func init() {
 			FieldName: "vlans",
 		},
 	}
-	VlanDoc.Fields = make([]encoder.Doc, 7)
+	VlanDoc.Fields = make([]encoder.Doc, 8)
 	VlanDoc.Fields[0].Name = "addresses"
 	VlanDoc.Fields[0].Type = "[]string"
 	VlanDoc.Fields[0].Note = ""
@@ -1880,6 +2136,11 @@ func init() {
 	VlanDoc.Fields[6].Note = ""
 	VlanDoc.Fields[6].Description = "The VLAN's virtual IP address configuration."
 	VlanDoc.Fields[6].Comments[encoder.LineComment] = "The VLAN's virtual IP address configuration."
+	VlanDoc.Fields[7].Name = "dhcpOptions"
+	VlanDoc.Fields[7].Type = "DHCPOptions"
+	VlanDoc.Fields[7].Note = ""
+	VlanDoc.Fields[7].Description = "DHCP specific options.\n`dhcp` *must* be set to true for these to take effect."
+	VlanDoc.Fields[7].Comments[encoder.LineComment] = "DHCP specific options."
 
 	RouteDoc.Type = "Route"
 	RouteDoc.Comments[encoder.LineComment] = "Route represents a network route."
@@ -1896,17 +2157,17 @@ func init() {
 			FieldName: "routes",
 		},
 	}
-	RouteDoc.Fields = make([]encoder.Doc, 4)
+	RouteDoc.Fields = make([]encoder.Doc, 5)
 	RouteDoc.Fields[0].Name = "network"
 	RouteDoc.Fields[0].Type = "string"
 	RouteDoc.Fields[0].Note = ""
-	RouteDoc.Fields[0].Description = "The route's network."
-	RouteDoc.Fields[0].Comments[encoder.LineComment] = "The route's network."
+	RouteDoc.Fields[0].Description = "The route's network (destination)."
+	RouteDoc.Fields[0].Comments[encoder.LineComment] = "The route's network (destination)."
 	RouteDoc.Fields[1].Name = "gateway"
 	RouteDoc.Fields[1].Type = "string"
 	RouteDoc.Fields[1].Note = ""
-	RouteDoc.Fields[1].Description = "The route's gateway."
-	RouteDoc.Fields[1].Comments[encoder.LineComment] = "The route's gateway."
+	RouteDoc.Fields[1].Description = "The route's gateway (if empty, creates link scope route)."
+	RouteDoc.Fields[1].Comments[encoder.LineComment] = "The route's gateway (if empty, creates link scope route)."
 	RouteDoc.Fields[2].Name = "source"
 	RouteDoc.Fields[2].Type = "string"
 	RouteDoc.Fields[2].Note = ""
@@ -1917,6 +2178,11 @@ func init() {
 	RouteDoc.Fields[3].Note = ""
 	RouteDoc.Fields[3].Description = "The optional metric for the route."
 	RouteDoc.Fields[3].Comments[encoder.LineComment] = "The optional metric for the route."
+	RouteDoc.Fields[4].Name = "mtu"
+	RouteDoc.Fields[4].Type = "uint32"
+	RouteDoc.Fields[4].Note = ""
+	RouteDoc.Fields[4].Description = "The optional MTU for the route."
+	RouteDoc.Fields[4].Comments[encoder.LineComment] = "The optional MTU for the route."
 
 	RegistryMirrorConfigDoc.Type = "RegistryMirrorConfig"
 	RegistryMirrorConfigDoc.Comments[encoder.LineComment] = "RegistryMirrorConfig represents mirror configuration for a registry."
@@ -1960,7 +2226,7 @@ func init() {
 	RegistryConfigDoc.Fields[1].Name = "auth"
 	RegistryConfigDoc.Fields[1].Type = "RegistryAuthConfig"
 	RegistryConfigDoc.Fields[1].Note = ""
-	RegistryConfigDoc.Fields[1].Description = "The auth configuration for this registry."
+	RegistryConfigDoc.Fields[1].Description = "The auth configuration for this registry.\nNote: changes to the registry auth will not be picked up by the CRI containerd plugin without a reboot."
 	RegistryConfigDoc.Fields[1].Comments[encoder.LineComment] = "The auth configuration for this registry."
 
 	RegistryConfigDoc.Fields[1].AddExample("", machineConfigRegistryAuthConfigExample)
@@ -2054,8 +2320,8 @@ func init() {
 	SystemDiskEncryptionConfigDoc.Fields[1].Comments[encoder.LineComment] = "Ephemeral partition encryption."
 
 	FeaturesConfigDoc.Type = "FeaturesConfig"
-	FeaturesConfigDoc.Comments[encoder.LineComment] = "FeaturesConfig describe individual Talos features that can be switched on or off."
-	FeaturesConfigDoc.Description = "FeaturesConfig describe individual Talos features that can be switched on or off."
+	FeaturesConfigDoc.Comments[encoder.LineComment] = "FeaturesConfig describes individual Talos features that can be switched on or off."
+	FeaturesConfigDoc.Description = "FeaturesConfig describes individual Talos features that can be switched on or off."
 
 	FeaturesConfigDoc.AddExample("", machineFeaturesExample)
 	FeaturesConfigDoc.AppearsIn = []encoder.Appearance{
@@ -2064,12 +2330,57 @@ func init() {
 			FieldName: "features",
 		},
 	}
-	FeaturesConfigDoc.Fields = make([]encoder.Doc, 1)
+	FeaturesConfigDoc.Fields = make([]encoder.Doc, 4)
 	FeaturesConfigDoc.Fields[0].Name = "rbac"
 	FeaturesConfigDoc.Fields[0].Type = "bool"
 	FeaturesConfigDoc.Fields[0].Note = ""
 	FeaturesConfigDoc.Fields[0].Description = "Enable role-based access control (RBAC)."
 	FeaturesConfigDoc.Fields[0].Comments[encoder.LineComment] = "Enable role-based access control (RBAC)."
+	FeaturesConfigDoc.Fields[1].Name = "stableHostname"
+	FeaturesConfigDoc.Fields[1].Type = "bool"
+	FeaturesConfigDoc.Fields[1].Note = ""
+	FeaturesConfigDoc.Fields[1].Description = "Enable stable default hostname."
+	FeaturesConfigDoc.Fields[1].Comments[encoder.LineComment] = "Enable stable default hostname."
+	FeaturesConfigDoc.Fields[2].Name = "kubernetesTalosAPIAccess"
+	FeaturesConfigDoc.Fields[2].Type = "KubernetesTalosAPIAccessConfig"
+	FeaturesConfigDoc.Fields[2].Note = ""
+	FeaturesConfigDoc.Fields[2].Description = "Configure Talos API access from Kubernetes pods.\n\nThis feature is disabled if the feature config is not specified."
+	FeaturesConfigDoc.Fields[2].Comments[encoder.LineComment] = "Configure Talos API access from Kubernetes pods."
+
+	FeaturesConfigDoc.Fields[2].AddExample("", kubernetesTalosAPIAccessConfigExample)
+	FeaturesConfigDoc.Fields[3].Name = "apidCheckExtKeyUsage"
+	FeaturesConfigDoc.Fields[3].Type = "bool"
+	FeaturesConfigDoc.Fields[3].Note = ""
+	FeaturesConfigDoc.Fields[3].Description = "Enable checks for extended key usage of client certificates in apid."
+	FeaturesConfigDoc.Fields[3].Comments[encoder.LineComment] = "Enable checks for extended key usage of client certificates in apid."
+
+	KubernetesTalosAPIAccessConfigDoc.Type = "KubernetesTalosAPIAccessConfig"
+	KubernetesTalosAPIAccessConfigDoc.Comments[encoder.LineComment] = "KubernetesTalosAPIAccessConfig describes the configuration for the Talos API access from Kubernetes pods."
+	KubernetesTalosAPIAccessConfigDoc.Description = "KubernetesTalosAPIAccessConfig describes the configuration for the Talos API access from Kubernetes pods."
+
+	KubernetesTalosAPIAccessConfigDoc.AddExample("", kubernetesTalosAPIAccessConfigExample)
+	KubernetesTalosAPIAccessConfigDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "FeaturesConfig",
+			FieldName: "kubernetesTalosAPIAccess",
+		},
+	}
+	KubernetesTalosAPIAccessConfigDoc.Fields = make([]encoder.Doc, 3)
+	KubernetesTalosAPIAccessConfigDoc.Fields[0].Name = "enabled"
+	KubernetesTalosAPIAccessConfigDoc.Fields[0].Type = "bool"
+	KubernetesTalosAPIAccessConfigDoc.Fields[0].Note = ""
+	KubernetesTalosAPIAccessConfigDoc.Fields[0].Description = "Enable Talos API access from Kubernetes pods."
+	KubernetesTalosAPIAccessConfigDoc.Fields[0].Comments[encoder.LineComment] = "Enable Talos API access from Kubernetes pods."
+	KubernetesTalosAPIAccessConfigDoc.Fields[1].Name = "allowedRoles"
+	KubernetesTalosAPIAccessConfigDoc.Fields[1].Type = "[]string"
+	KubernetesTalosAPIAccessConfigDoc.Fields[1].Note = ""
+	KubernetesTalosAPIAccessConfigDoc.Fields[1].Description = "The list of Talos API roles which can be granted for access from Kubernetes pods.\n\nEmpty list means that no roles can be granted, so access is blocked."
+	KubernetesTalosAPIAccessConfigDoc.Fields[1].Comments[encoder.LineComment] = "The list of Talos API roles which can be granted for access from Kubernetes pods."
+	KubernetesTalosAPIAccessConfigDoc.Fields[2].Name = "allowedKubernetesNamespaces"
+	KubernetesTalosAPIAccessConfigDoc.Fields[2].Type = "[]string"
+	KubernetesTalosAPIAccessConfigDoc.Fields[2].Note = ""
+	KubernetesTalosAPIAccessConfigDoc.Fields[2].Description = "The list of Kubernetes namespaces Talos API access is available from."
+	KubernetesTalosAPIAccessConfigDoc.Fields[2].Comments[encoder.LineComment] = "The list of Kubernetes namespaces Talos API access is available from."
 
 	VolumeMountConfigDoc.Type = "VolumeMountConfig"
 	VolumeMountConfigDoc.Comments[encoder.LineComment] = "VolumeMountConfig struct describes extra volume mount for the static pods."
@@ -2141,17 +2452,57 @@ func init() {
 			FieldName: "kubespan",
 		},
 	}
-	NetworkKubeSpanDoc.Fields = make([]encoder.Doc, 2)
+	NetworkKubeSpanDoc.Fields = make([]encoder.Doc, 3)
 	NetworkKubeSpanDoc.Fields[0].Name = "enabled"
 	NetworkKubeSpanDoc.Fields[0].Type = "bool"
 	NetworkKubeSpanDoc.Fields[0].Note = ""
 	NetworkKubeSpanDoc.Fields[0].Description = "Enable the KubeSpan feature.\nCluster discovery should be enabled with .cluster.discovery.enabled for KubeSpan to be enabled."
 	NetworkKubeSpanDoc.Fields[0].Comments[encoder.LineComment] = "Enable the KubeSpan feature."
-	NetworkKubeSpanDoc.Fields[1].Name = "allowDownPeerBypass"
+	NetworkKubeSpanDoc.Fields[1].Name = "advertiseKubernetesNetworks"
 	NetworkKubeSpanDoc.Fields[1].Type = "bool"
 	NetworkKubeSpanDoc.Fields[1].Note = ""
-	NetworkKubeSpanDoc.Fields[1].Description = "Skip sending traffic via KubeSpan if the peer connection state is not up.\nThis provides configurable choice between connectivity and security: either traffic is always\nforced to go via KubeSpan (even if Wireguard peer connection is not up), or traffic can go directly\nto the peer if Wireguard connection can't be established."
-	NetworkKubeSpanDoc.Fields[1].Comments[encoder.LineComment] = "Skip sending traffic via KubeSpan if the peer connection state is not up."
+	NetworkKubeSpanDoc.Fields[1].Description = "Control whether Kubernetes pod CIDRs are announced over KubeSpan from the node.\nIf disabled, CNI handles encapsulating pod-to-pod traffic into some node-to-node tunnel,\nand KubeSpan handles the node-to-node traffic.\nIf enabled, KubeSpan will take over pod-to-pod traffic and send it over KubeSpan directly.\nWhen enabled, KubeSpan should have a way to detect complete pod CIDRs of the node which\nis not always the case with CNIs not relying on Kubernetes for IPAM."
+	NetworkKubeSpanDoc.Fields[1].Comments[encoder.LineComment] = "Control whether Kubernetes pod CIDRs are announced over KubeSpan from the node."
+	NetworkKubeSpanDoc.Fields[2].Name = "allowDownPeerBypass"
+	NetworkKubeSpanDoc.Fields[2].Type = "bool"
+	NetworkKubeSpanDoc.Fields[2].Note = ""
+	NetworkKubeSpanDoc.Fields[2].Description = "Skip sending traffic via KubeSpan if the peer connection state is not up.\nThis provides configurable choice between connectivity and security: either traffic is always\nforced to go via KubeSpan (even if Wireguard peer connection is not up), or traffic can go directly\nto the peer if Wireguard connection can't be established."
+	NetworkKubeSpanDoc.Fields[2].Comments[encoder.LineComment] = "Skip sending traffic via KubeSpan if the peer connection state is not up."
+
+	NetworkDeviceSelectorDoc.Type = "NetworkDeviceSelector"
+	NetworkDeviceSelectorDoc.Comments[encoder.LineComment] = "NetworkDeviceSelector struct describes network device selector."
+	NetworkDeviceSelectorDoc.Description = "NetworkDeviceSelector struct describes network device selector."
+
+	NetworkDeviceSelectorDoc.AddExample("select a device with bus prefix 00:*.", networkDeviceSelectorExamples[0])
+
+	NetworkDeviceSelectorDoc.AddExample("select a device with mac address matching `*:f0:ab` and `virtio` kernel driver.", networkDeviceSelectorExamples[1])
+	NetworkDeviceSelectorDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "Device",
+			FieldName: "deviceSelector",
+		},
+	}
+	NetworkDeviceSelectorDoc.Fields = make([]encoder.Doc, 4)
+	NetworkDeviceSelectorDoc.Fields[0].Name = "busPath"
+	NetworkDeviceSelectorDoc.Fields[0].Type = "string"
+	NetworkDeviceSelectorDoc.Fields[0].Note = ""
+	NetworkDeviceSelectorDoc.Fields[0].Description = "PCI, USB bus prefix, supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[0].Comments[encoder.LineComment] = "PCI, USB bus prefix, supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[1].Name = "hardwareAddr"
+	NetworkDeviceSelectorDoc.Fields[1].Type = "string"
+	NetworkDeviceSelectorDoc.Fields[1].Note = ""
+	NetworkDeviceSelectorDoc.Fields[1].Description = "Device hardware address, supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[1].Comments[encoder.LineComment] = "Device hardware address, supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[2].Name = "pciID"
+	NetworkDeviceSelectorDoc.Fields[2].Type = "string"
+	NetworkDeviceSelectorDoc.Fields[2].Note = ""
+	NetworkDeviceSelectorDoc.Fields[2].Description = "PCI ID (vendor ID, product ID), supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[2].Comments[encoder.LineComment] = "PCI ID (vendor ID, product ID), supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[3].Name = "driver"
+	NetworkDeviceSelectorDoc.Fields[3].Type = "string"
+	NetworkDeviceSelectorDoc.Fields[3].Note = ""
+	NetworkDeviceSelectorDoc.Fields[3].Description = "Kernel driver, supports matching by wildcard."
+	NetworkDeviceSelectorDoc.Fields[3].Comments[encoder.LineComment] = "Kernel driver, supports matching by wildcard."
 
 	ClusterDiscoveryConfigDoc.Type = "ClusterDiscoveryConfig"
 	ClusterDiscoveryConfigDoc.Comments[encoder.LineComment] = "ClusterDiscoveryConfig struct configures cluster membership discovery."
@@ -2299,6 +2650,45 @@ func init() {
 	LoggingDestinationDoc.Fields[1].Values = []string{
 		"json_lines",
 	}
+
+	KernelConfigDoc.Type = "KernelConfig"
+	KernelConfigDoc.Comments[encoder.LineComment] = "KernelConfig struct configures Talos Linux kernel."
+	KernelConfigDoc.Description = "KernelConfig struct configures Talos Linux kernel."
+
+	KernelConfigDoc.AddExample("", machineKernelExample)
+	KernelConfigDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "MachineConfig",
+			FieldName: "kernel",
+		},
+	}
+	KernelConfigDoc.Fields = make([]encoder.Doc, 1)
+	KernelConfigDoc.Fields[0].Name = "modules"
+	KernelConfigDoc.Fields[0].Type = "[]KernelModuleConfig"
+	KernelConfigDoc.Fields[0].Note = ""
+	KernelConfigDoc.Fields[0].Description = "Kernel modules to load."
+	KernelConfigDoc.Fields[0].Comments[encoder.LineComment] = "Kernel modules to load."
+
+	KernelModuleConfigDoc.Type = "KernelModuleConfig"
+	KernelModuleConfigDoc.Comments[encoder.LineComment] = "KernelModuleConfig struct configures Linux kernel modules to load."
+	KernelModuleConfigDoc.Description = "KernelModuleConfig struct configures Linux kernel modules to load."
+	KernelModuleConfigDoc.AppearsIn = []encoder.Appearance{
+		{
+			TypeName:  "KernelConfig",
+			FieldName: "modules",
+		},
+	}
+	KernelModuleConfigDoc.Fields = make([]encoder.Doc, 2)
+	KernelModuleConfigDoc.Fields[0].Name = "name"
+	KernelModuleConfigDoc.Fields[0].Type = "string"
+	KernelModuleConfigDoc.Fields[0].Note = ""
+	KernelModuleConfigDoc.Fields[0].Description = "Module name."
+	KernelModuleConfigDoc.Fields[0].Comments[encoder.LineComment] = "Module name."
+	KernelModuleConfigDoc.Fields[1].Name = "parameters"
+	KernelModuleConfigDoc.Fields[1].Type = "[]string"
+	KernelModuleConfigDoc.Fields[1].Note = ""
+	KernelModuleConfigDoc.Fields[1].Description = "Module parameters, changes applied after reboot."
+	KernelModuleConfigDoc.Fields[1].Comments[encoder.LineComment] = "Module parameters, changes applied after reboot."
 }
 
 func (_ Config) Doc() *encoder.Doc {
@@ -2307,6 +2697,10 @@ func (_ Config) Doc() *encoder.Doc {
 
 func (_ MachineConfig) Doc() *encoder.Doc {
 	return &MachineConfigDoc
+}
+
+func (_ MachineSeccompProfile) Doc() *encoder.Doc {
+	return &MachineSeccompProfileDoc
 }
 
 func (_ ClusterConfig) Doc() *encoder.Doc {
@@ -2349,6 +2743,10 @@ func (_ InstallDiskSelector) Doc() *encoder.Doc {
 	return &InstallDiskSelectorDoc
 }
 
+func (_ InstallExtensionConfig) Doc() *encoder.Doc {
+	return &InstallExtensionConfigDoc
+}
+
 func (_ TimeConfig) Doc() *encoder.Doc {
 	return &TimeConfigDoc
 }
@@ -2375,6 +2773,10 @@ func (_ ControlPlaneConfig) Doc() *encoder.Doc {
 
 func (_ APIServerConfig) Doc() *encoder.Doc {
 	return &APIServerConfigDoc
+}
+
+func (_ AdmissionPluginConfig) Doc() *encoder.Doc {
+	return &AdmissionPluginConfigDoc
 }
 
 func (_ ControllerManagerConfig) Doc() *encoder.Doc {
@@ -2473,6 +2875,14 @@ func (_ Bond) Doc() *encoder.Doc {
 	return &BondDoc
 }
 
+func (_ STP) Doc() *encoder.Doc {
+	return &STPDoc
+}
+
+func (_ Bridge) Doc() *encoder.Doc {
+	return &BridgeDoc
+}
+
 func (_ Vlan) Doc() *encoder.Doc {
 	return &VlanDoc
 }
@@ -2505,6 +2915,10 @@ func (_ FeaturesConfig) Doc() *encoder.Doc {
 	return &FeaturesConfigDoc
 }
 
+func (_ KubernetesTalosAPIAccessConfig) Doc() *encoder.Doc {
+	return &KubernetesTalosAPIAccessConfigDoc
+}
+
 func (_ VolumeMountConfig) Doc() *encoder.Doc {
 	return &VolumeMountConfigDoc
 }
@@ -2515,6 +2929,10 @@ func (_ ClusterInlineManifest) Doc() *encoder.Doc {
 
 func (_ NetworkKubeSpan) Doc() *encoder.Doc {
 	return &NetworkKubeSpanDoc
+}
+
+func (_ NetworkDeviceSelector) Doc() *encoder.Doc {
+	return &NetworkDeviceSelectorDoc
 }
 
 func (_ ClusterDiscoveryConfig) Doc() *encoder.Doc {
@@ -2545,14 +2963,23 @@ func (_ LoggingDestination) Doc() *encoder.Doc {
 	return &LoggingDestinationDoc
 }
 
+func (_ KernelConfig) Doc() *encoder.Doc {
+	return &KernelConfigDoc
+}
+
+func (_ KernelModuleConfig) Doc() *encoder.Doc {
+	return &KernelModuleConfigDoc
+}
+
 // GetConfigurationDoc returns documentation for the file ./v1alpha1_types_doc.go.
 func GetConfigurationDoc() *encoder.FileDoc {
 	return &encoder.FileDoc{
-		Name: "Configuration",
+		Name:        "Configuration",
 		Description: "Package v1alpha1 configuration file contains all the options available for configuring a machine.\n\nTo generate a set of basic configuration files, run:\n\n	talosctl gen config --version v1alpha1 <cluster name> <cluster endpoint>\n\nThis will generate a machine config for each node type, and a talosconfig for the CLI.\n",
 		Structs: []*encoder.Doc{
 			&ConfigDoc,
 			&MachineConfigDoc,
+			&MachineSeccompProfileDoc,
 			&ClusterConfigDoc,
 			&ExtraMountDoc,
 			&MachineControlPlaneConfigDoc,
@@ -2563,6 +2990,7 @@ func GetConfigurationDoc() *encoder.FileDoc {
 			&NetworkConfigDoc,
 			&InstallConfigDoc,
 			&InstallDiskSelectorDoc,
+			&InstallExtensionConfigDoc,
 			&TimeConfigDoc,
 			&RegistriesConfigDoc,
 			&PodCheckpointerDoc,
@@ -2570,6 +2998,7 @@ func GetConfigurationDoc() *encoder.FileDoc {
 			&EndpointDoc,
 			&ControlPlaneConfigDoc,
 			&APIServerConfigDoc,
+			&AdmissionPluginConfigDoc,
 			&ControllerManagerConfigDoc,
 			&ProxyConfigDoc,
 			&SchedulerConfigDoc,
@@ -2594,6 +3023,8 @@ func GetConfigurationDoc() *encoder.FileDoc {
 			&VIPEquinixMetalConfigDoc,
 			&VIPHCloudConfigDoc,
 			&BondDoc,
+			&STPDoc,
+			&BridgeDoc,
 			&VlanDoc,
 			&RouteDoc,
 			&RegistryMirrorConfigDoc,
@@ -2602,9 +3033,11 @@ func GetConfigurationDoc() *encoder.FileDoc {
 			&RegistryTLSConfigDoc,
 			&SystemDiskEncryptionConfigDoc,
 			&FeaturesConfigDoc,
+			&KubernetesTalosAPIAccessConfigDoc,
 			&VolumeMountConfigDoc,
 			&ClusterInlineManifestDoc,
 			&NetworkKubeSpanDoc,
+			&NetworkDeviceSelectorDoc,
 			&ClusterDiscoveryConfigDoc,
 			&DiscoveryRegistriesConfigDoc,
 			&RegistryKubernetesConfigDoc,
@@ -2612,6 +3045,8 @@ func GetConfigurationDoc() *encoder.FileDoc {
 			&UdevConfigDoc,
 			&LoggingConfigDoc,
 			&LoggingDestinationDoc,
+			&KernelConfigDoc,
+			&KernelModuleConfigDoc,
 		},
 	}
 }

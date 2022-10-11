@@ -7,7 +7,10 @@ package check
 
 import (
 	"context"
+	"net/netip"
 	"time"
+
+	"github.com/siderolabs/gen/slices"
 
 	"github.com/talos-systems/talos/pkg/cluster"
 	"github.com/talos-systems/talos/pkg/conditions"
@@ -29,7 +32,7 @@ type ClusterCheck func(ClusterInfo) conditions.Condition
 //
 // It is supposed that reporter drops duplicate messages.
 type Reporter interface {
-	Update(check conditions.Condition)
+	Update(condition conditions.Condition)
 }
 
 // Wait run the checks against the cluster and waits for the full set to succeed.
@@ -80,4 +83,16 @@ func Wait(ctx context.Context, cluster ClusterInfo, checks []ClusterCheck, repor
 	}
 
 	return nil
+}
+
+func flatMapNodeInfosToIPs(nodes []cluster.NodeInfo) []netip.Addr {
+	return slices.FlatMap(nodes, func(node cluster.NodeInfo) []netip.Addr { return node.IPs })
+}
+
+func mapNodeInfosToInternalIPs(nodes []cluster.NodeInfo) []netip.Addr {
+	return slices.Map(nodes, func(node cluster.NodeInfo) netip.Addr { return node.InternalIP })
+}
+
+func mapIPsToStrings(input []netip.Addr) []string {
+	return slices.Map(input, func(ip netip.Addr) string { return ip.String() })
 }

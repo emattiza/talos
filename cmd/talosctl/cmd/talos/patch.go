@@ -8,55 +8,63 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"strings"
+	"time"
 
-	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/spf13/cobra"
-	yaml "gopkg.in/yaml.v3"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"gopkg.in/yaml.v3"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
-	"github.com/talos-systems/talos/pkg/cli"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 	"github.com/talos-systems/talos/pkg/machinery/config/configpatcher"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 )
 
 var patchCmdFlags struct {
-	namespace string
-	patch     string
-	patchFile string
-	immediate bool
-	onReboot  bool
+	helpers.Mode
+	namespace        string
+	patch            []string
+	patchFile        string
+	dryRun           bool
+	configTryTimeout time.Duration
 }
 
-func patchFn(c *client.Client, patch jsonpatch.Patch) func(context.Context, client.ResourceResponse) error {
-	return func(ctx context.Context, msg client.ResourceResponse) error {
-		if msg.Resource == nil {
-			if msg.Definition.Metadata().ID() != strings.ToLower(config.MachineConfigType) {
-				return fmt.Errorf("only the machineconfig resource can be edited")
-			}
-
-			return nil
+func patchFn(c *client.Client, patches []configpatcher.Patch) func(context.Context, string, resource.Resource, error) error {
+	return func(ctx context.Context, node string, mc resource.Resource, callError error) error {
+		if callError != nil {
+			return fmt.Errorf("%s: %w", node, callError)
 		}
 
-		body, err := yaml.Marshal(msg.Resource.Spec())
+		if mc.Metadata().Type() != config.MachineConfigType {
+			return fmt.Errorf("%s: unsupported resource type: %s", node, mc.Metadata().Type())
+		}
+
+		body, err := yaml.Marshal(mc.Spec())
 		if err != nil {
 			return err
 		}
 
-		patched, err := configpatcher.JSON6902(body, patch)
+		cfg, err := configpatcher.Apply(configpatcher.WithBytes(body), patches)
+		if err != nil {
+			return err
+		}
+
+		patched, err := cfg.Bytes()
 		if err != nil {
 			return err
 		}
 
 		resp, err := c.ApplyConfiguration(ctx, &machine.ApplyConfigurationRequest{
-			Data:      patched,
-			Immediate: patchCmdFlags.immediate,
-			OnReboot:  patchCmdFlags.onReboot,
+			Data:           patched,
+			Mode:           patchCmdFlags.Mode.Mode,
+			OnReboot:       patchCmdFlags.OnReboot,
+			Immediate:      patchCmdFlags.Immediate,
+			DryRun:         patchCmdFlags.dryRun,
+			TryModeTimeout: durationpb.New(patchCmdFlags.configTryTimeout),
 		})
 
 		if bytes.Equal(
@@ -69,16 +77,12 @@ func patchFn(c *client.Client, patch jsonpatch.Patch) func(context.Context, clie
 		}
 
 		fmt.Printf("patched %s/%s at the node %s\n",
-			msg.Resource.Metadata().Type(),
-			msg.Resource.Metadata().ID(),
-			msg.Metadata.GetHostname(),
+			mc.Metadata().Type(),
+			mc.Metadata().ID(),
+			node,
 		)
 
-		for _, m := range resp.GetMessages() {
-			for _, w := range m.GetWarnings() {
-				cli.Warning("%s", w)
-			}
-		}
+		helpers.PrintApplyResults(resp)
 
 		return err
 	}
@@ -91,36 +95,26 @@ var patchCmd = &cobra.Command{
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
-			var (
-				patch     jsonpatch.Patch
-				patchData []byte
-			)
+			if patchCmdFlags.patchFile != "" {
+				patchCmdFlags.patch = append(patchCmdFlags.patch, "@"+patchCmdFlags.patchFile)
+			}
 
-			switch {
-			case patchCmdFlags.patch != "":
-				patchData = []byte(patchCmdFlags.patch)
-			case patchCmdFlags.patchFile != "":
-				f, err := os.Open(patchCmdFlags.patchFile)
-				if err != nil {
-					return err
-				}
-
-				patchData, err = ioutil.ReadAll(f)
-				if err != nil {
-					return err
-				}
-			default:
+			if len(patchCmdFlags.patch) == 0 {
 				return fmt.Errorf("either --patch or --patch-file should be defined")
 			}
 
-			patch, err := jsonpatch.DecodePatch(patchData)
+			patches, err := configpatcher.LoadPatches(patchCmdFlags.patch)
 			if err != nil {
 				return err
 			}
 
-			for _, node := range Nodes {
+			if err := helpers.ClientVersionCheck(ctx, c); err != nil {
+				return err
+			}
+
+			for _, node := range GlobalArgs.Nodes {
 				nodeCtx := client.WithNodes(ctx, node)
-				if err := helpers.ForEachResource(nodeCtx, c, patchFn(c, patch), patchCmdFlags.namespace, args...); err != nil {
+				if err := helpers.ForEachResource(nodeCtx, c, nil, patchFn(c, patches), patchCmdFlags.namespace, args...); err != nil {
 					return err
 				}
 			}
@@ -133,8 +127,9 @@ var patchCmd = &cobra.Command{
 func init() {
 	patchCmd.Flags().StringVar(&patchCmdFlags.namespace, "namespace", "", "resource namespace (default is to use default namespace per resource)")
 	patchCmd.Flags().StringVar(&patchCmdFlags.patchFile, "patch-file", "", "a file containing a patch to be applied to the resource.")
-	patchCmd.Flags().StringVarP(&patchCmdFlags.patch, "patch", "p", "", "the patch to be applied to the resource file.")
-	patchCmd.Flags().BoolVar(&patchCmdFlags.immediate, "immediate", false, "apply the change immediately (without a reboot)")
-	patchCmd.Flags().BoolVar(&patchCmdFlags.onReboot, "on-reboot", false, "apply the change on next reboot")
+	patchCmd.Flags().StringArrayVarP(&patchCmdFlags.patch, "patch", "p", nil, "the patch to be applied to the resource file, use @file to read a patch from file.")
+	patchCmd.Flags().BoolVar(&patchCmdFlags.dryRun, "dry-run", false, "print the change summary and patch preview without applying the changes")
+	patchCmd.Flags().DurationVar(&patchCmdFlags.configTryTimeout, "timeout", constants.ConfigTryTimeout, "the config will be rolled back after specified timeout (if try mode is selected)")
+	helpers.AddModeFlags(&patchCmdFlags.Mode, patchCmd)
 	addCommand(patchCmd)
 }

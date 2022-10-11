@@ -7,16 +7,18 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"net/url"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
@@ -35,13 +37,13 @@ func (ctrl *RootController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineTypeType,
-			ID:        pointer.ToString(config.MachineTypeID),
+			ID:        pointer.To(config.MachineTypeID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -138,11 +140,19 @@ func (ctrl *RootController) updateOSSecrets(cfgProvider talosconfig.Provider, os
 	osSecrets.CertSANDNSNames = nil
 
 	for _, san := range cfgProvider.Machine().Security().CertSANs() {
-		if ip, err := netaddr.ParseIP(san); err == nil {
+		if ip, err := netip.ParseAddr(san); err == nil {
 			osSecrets.CertSANIPs = append(osSecrets.CertSANIPs, ip)
 		} else {
 			osSecrets.CertSANDNSNames = append(osSecrets.CertSANDNSNames, san)
 		}
+	}
+
+	if cfgProvider.Machine().Features().KubernetesTalosAPIAccess().Enabled() {
+		// add Kubernetes Talos service name to the list of SANs
+		osSecrets.CertSANDNSNames = append(osSecrets.CertSANDNSNames,
+			constants.KubernetesTalosAPIServiceName,
+			constants.KubernetesTalosAPIServiceName+"."+constants.KubernetesTalosAPIServiceNamespace,
+		)
 	}
 
 	osSecrets.Token = cfgProvider.Machine().Security().Token()
@@ -161,12 +171,16 @@ func (ctrl *RootController) updateEtcdSecrets(cfgProvider talosconfig.Provider, 
 }
 
 func (ctrl *RootController) updateK8sSecrets(cfgProvider talosconfig.Provider, k8sSecrets *secrets.KubernetesRootSpec) error {
+	localEndpoint, err := url.Parse(fmt.Sprintf("https://localhost:%d", cfgProvider.Cluster().LocalAPIServerPort()))
+	if err != nil {
+		return err
+	}
+
 	k8sSecrets.Name = cfgProvider.Cluster().Name()
 	k8sSecrets.Endpoint = cfgProvider.Cluster().Endpoint()
+	k8sSecrets.LocalEndpoint = localEndpoint
 	k8sSecrets.CertSANs = cfgProvider.Cluster().CertSANs()
 	k8sSecrets.DNSDomain = cfgProvider.Cluster().Network().DNSDomain()
-
-	var err error
 
 	k8sSecrets.APIServerIPs, err = cfgProvider.Cluster().Network().APIServerIPs()
 	if err != nil {

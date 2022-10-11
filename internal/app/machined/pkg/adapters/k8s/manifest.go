@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/siderolabs/gen/slices"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/yaml"
 
@@ -67,7 +68,7 @@ func (a manifest) SetYAML(yamlBytes []byte) error {
 			return fmt.Errorf("error loading JSON manifest into unstructured: %w", err)
 		}
 
-		a.Manifest.TypedSpec().Items = append(a.Manifest.TypedSpec().Items, obj.Object)
+		a.Manifest.TypedSpec().Items = append(a.Manifest.TypedSpec().Items, k8s.SingleManifest{Object: obj.Object})
 	}
 
 	return nil
@@ -75,13 +76,7 @@ func (a manifest) SetYAML(yamlBytes []byte) error {
 
 // Objects returns list of unstructured object.
 func (a manifest) Objects() []*unstructured.Unstructured {
-	result := make([]*unstructured.Unstructured, len(a.Manifest.TypedSpec().Items))
-
-	for i := range result {
-		result[i] = &unstructured.Unstructured{
-			Object: a.Manifest.TypedSpec().Items[i],
-		}
-	}
-
-	return result
+	return slices.Map(a.Manifest.TypedSpec().Items, func(item k8s.SingleManifest) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: item.Object}
+	})
 }

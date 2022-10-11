@@ -6,19 +6,16 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/talos-systems/go-retry/retry"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -32,13 +29,11 @@ import (
 // Controller represents the controller responsible for managing the execution
 // of sequences.
 type Controller struct {
+	s  runtime.Sequencer
 	r  *Runtime
-	s  *Sequencer
 	v2 *v1alpha2.Controller
 
-	semaphore int32
-	cancelCtx context.CancelFunc
-	ctxMutex  sync.Mutex
+	priorityLock *PriorityLock[runtime.Sequence]
 }
 
 // NewController intializes and returns a controller.
@@ -62,8 +57,9 @@ func NewController() (*Controller, error) {
 	l := logging.NewCircularBufferLoggingManager(log.New(os.Stdout, "machined fallback logger: ", log.Flags()))
 
 	ctlr := &Controller{
-		r: NewRuntime(nil, s, e, l),
-		s: NewSequencer(),
+		r:            NewRuntime(nil, s, e, l),
+		s:            NewSequencer(),
+		priorityLock: NewPriorityLock[runtime.Sequence](),
 	}
 
 	ctlr.v2, err = v1alpha2.NewController(ctlr.r)
@@ -76,52 +72,19 @@ func NewController() (*Controller, error) {
 
 // Run executes all phases known to the controller in serial. `Controller`
 // aborts immediately if any phase fails.
+//
 //nolint:gocyclo
-func (c *Controller) Run(ctx context.Context, seq runtime.Sequence, data interface{}, setters ...runtime.ControllerOption) error {
+func (c *Controller) Run(ctx context.Context, seq runtime.Sequence, data interface{}, setters ...runtime.LockOption) error {
 	// We must ensure that the runtime is configured since all sequences depend
 	// on the runtime.
 	if c.r == nil {
 		return runtime.ErrUndefinedRuntime
 	}
 
-	opts := runtime.DefaultControllerOptions()
-
-	for _, f := range setters {
-		if err := f(&opts); err != nil {
-			return err
-		}
-	}
-
-	// Allow only one sequence to run at a time with the exception of bootstrap
-	// and reset sequences.
-	switch seq { //nolint:exhaustive
-	case runtime.SequenceBootstrap, runtime.SequenceReset:
-		// Do not attempt to lock.
-	default:
-		if opts.Force {
-			break
-		}
-
-		if opts.Takeover {
-			c.ctxMutex.Lock()
-			if c.cancelCtx != nil {
-				c.cancelCtx()
-			}
-
-			c.ctxMutex.Unlock()
-
-			err := retry.Constant(time.Minute*1, retry.WithUnits(time.Millisecond*100)).RetryWithContext(ctx, func(ctx context.Context) error {
-				if c.TryLock() {
-					return retry.ExpectedError(fmt.Errorf("failed to acquire lock"))
-				}
-
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		} else if c.TryLock() {
-			c.Runtime().Events().Publish(&machine.SequenceEvent{
+	ctx, err := c.priorityLock.Lock(ctx, time.Minute, seq, setters...)
+	if err != nil {
+		if errors.Is(err, runtime.ErrLocked) {
+			c.Runtime().Events().Publish(context.Background(), &machine.SequenceEvent{
 				Sequence: seq.String(),
 				Action:   machine.SequenceEvent_NOOP,
 				Error: &common.Error{
@@ -129,22 +92,12 @@ func (c *Controller) Run(ctx context.Context, seq runtime.Sequence, data interfa
 					Message: fmt.Sprintf("sequence not started: %s", runtime.ErrLocked.Error()),
 				},
 			})
-
-			return runtime.ErrLocked
 		}
 
-		defer c.Unlock()
-
-		c.ctxMutex.Lock()
-		ctx, c.cancelCtx = context.WithCancel(ctx)
-		c.ctxMutex.Unlock()
-
-		defer func() {
-			c.ctxMutex.Lock()
-			c.cancelCtx = nil
-			c.ctxMutex.Unlock()
-		}()
+		return err
 	}
+
+	defer c.priorityLock.Unlock()
 
 	phases, err := c.phases(seq, data)
 	if err != nil {
@@ -153,11 +106,17 @@ func (c *Controller) Run(ctx context.Context, seq runtime.Sequence, data interfa
 
 	err = c.run(ctx, seq, phases, data)
 	if err != nil {
-		c.Runtime().Events().Publish(&machine.SequenceEvent{
+		code := common.Code_FATAL
+
+		if errors.Is(err, context.Canceled) {
+			code = common.Code_CANCELED
+		}
+
+		c.Runtime().Events().Publish(ctx, &machine.SequenceEvent{
 			Sequence: seq.String(),
 			Action:   machine.SequenceEvent_NOOP,
 			Error: &common.Error{
-				Code:    common.Code_FATAL,
+				Code:    code,
 				Message: fmt.Sprintf("sequence failed: %s", err.Error()),
 			},
 		})
@@ -198,7 +157,7 @@ func (c *Controller) ListenForEvents(ctx context.Context) error {
 
 		log.Printf("shutdown via SIGTERM received")
 
-		if err := c.Run(ctx, runtime.SequenceShutdown, nil, runtime.WithTakeover()); err != nil {
+		if err := c.Run(ctx, runtime.SequenceShutdown, &machine.ShutdownRequest{Force: true}, runtime.WithTakeover()); err != nil {
 			log.Printf("shutdown failed: %v", err)
 		}
 
@@ -218,7 +177,7 @@ func (c *Controller) ListenForEvents(ctx context.Context) error {
 
 		log.Printf("shutdown via ACPI received")
 
-		if err := c.Run(ctx, runtime.SequenceShutdown, nil, runtime.WithTakeover()); err != nil {
+		if err := c.Run(ctx, runtime.SequenceShutdown, &machine.ShutdownRequest{Force: true}, runtime.WithTakeover()); err != nil {
 			log.Printf("failed to run shutdown sequence: %s", err)
 		}
 
@@ -230,25 +189,13 @@ func (c *Controller) ListenForEvents(ctx context.Context) error {
 	return err
 }
 
-// TryLock attempts to set a lock that prevents multiple sequences from running
-// at once. If currently locked, a value of true will be returned. If not
-// currently locked, a value of false will be returned.
-func (c *Controller) TryLock() bool {
-	return !atomic.CompareAndSwapInt32(&c.semaphore, 0, 1)
-}
-
-// Unlock removes the lock set by `TryLock`.
-func (c *Controller) Unlock() bool {
-	return atomic.CompareAndSwapInt32(&c.semaphore, 1, 0)
-}
-
 func (c *Controller) run(ctx context.Context, seq runtime.Sequence, phases []runtime.Phase, data interface{}) error {
-	c.Runtime().Events().Publish(&machine.SequenceEvent{
+	c.Runtime().Events().Publish(ctx, &machine.SequenceEvent{
 		Sequence: seq.String(),
 		Action:   machine.SequenceEvent_START,
 	})
 
-	defer c.Runtime().Events().Publish(&machine.SequenceEvent{
+	defer c.Runtime().Events().Publish(ctx, &machine.SequenceEvent{
 		Sequence: seq.String(),
 		Action:   machine.SequenceEvent_STOP,
 	})
@@ -304,17 +251,17 @@ func (c *Controller) run(ctx context.Context, seq runtime.Sequence, phases []run
 }
 
 func (c *Controller) runPhase(ctx context.Context, phase runtime.Phase, seq runtime.Sequence, data interface{}) error {
-	c.Runtime().Events().Publish(&machine.PhaseEvent{
+	c.Runtime().Events().Publish(ctx, &machine.PhaseEvent{
 		Phase:  phase.Name,
 		Action: machine.PhaseEvent_START,
 	})
 
-	defer c.Runtime().Events().Publish(&machine.PhaseEvent{
+	defer c.Runtime().Events().Publish(ctx, &machine.PhaseEvent{
 		Phase:  phase.Name,
 		Action: machine.PhaseEvent_START,
 	})
 
-	var eg errgroup.Group
+	eg, ctx := errgroup.WithContext(ctx)
 
 	for number, task := range phase.Tasks {
 		// Make the task number human friendly.
@@ -346,7 +293,7 @@ func (c *Controller) runTask(ctx context.Context, progress string, f runtime.Tas
 
 	start := time.Now()
 
-	c.Runtime().Events().Publish(&machine.TaskEvent{
+	c.Runtime().Events().Publish(ctx, &machine.TaskEvent{
 		Task:   taskName,
 		Action: machine.TaskEvent_START,
 	})
@@ -365,7 +312,7 @@ func (c *Controller) runTask(ctx context.Context, progress string, f runtime.Tas
 		}
 	}()
 
-	defer c.Runtime().Events().Publish(&machine.TaskEvent{
+	defer c.Runtime().Events().Publish(ctx, &machine.TaskEvent{
 		Task:   taskName,
 		Action: machine.TaskEvent_STOP,
 	})
@@ -384,45 +331,43 @@ func (c *Controller) phases(seq runtime.Sequence, data interface{}) ([]runtime.P
 	switch seq {
 	case runtime.SequenceBoot:
 		phases = c.s.Boot(c.r)
-	case runtime.SequenceBootstrap:
-		phases = c.s.Bootstrap(c.r)
 	case runtime.SequenceInitialize:
 		phases = c.s.Initialize(c.r)
 	case runtime.SequenceInstall:
 		phases = c.s.Install(c.r)
 	case runtime.SequenceShutdown:
-		phases = c.s.Shutdown(c.r)
+		in, ok := data.(*machine.ShutdownRequest)
+		if !ok {
+			return nil, runtime.ErrInvalidSequenceData
+		}
+
+		phases = c.s.Shutdown(c.r, in)
 	case runtime.SequenceReboot:
 		phases = c.s.Reboot(c.r)
 	case runtime.SequenceUpgrade:
-		var (
-			in *machine.UpgradeRequest
-			ok bool
-		)
-
-		if in, ok = data.(*machine.UpgradeRequest); !ok {
+		in, ok := data.(*machine.UpgradeRequest)
+		if !ok {
 			return nil, runtime.ErrInvalidSequenceData
 		}
 
 		phases = c.s.Upgrade(c.r, in)
 	case runtime.SequenceStageUpgrade:
-		var (
-			in *machine.UpgradeRequest
-			ok bool
-		)
-
-		if in, ok = data.(*machine.UpgradeRequest); !ok {
+		in, ok := data.(*machine.UpgradeRequest)
+		if !ok {
 			return nil, runtime.ErrInvalidSequenceData
 		}
 
 		phases = c.s.StageUpgrade(c.r, in)
-	case runtime.SequenceReset:
-		var (
-			in runtime.ResetOptions
-			ok bool
-		)
+	case runtime.SequenceMaintenanceUpgrade:
+		in, ok := data.(*machine.UpgradeRequest)
+		if !ok {
+			return nil, runtime.ErrInvalidSequenceData
+		}
 
-		if in, ok = data.(runtime.ResetOptions); !ok {
+		phases = c.s.MaintenanceUpgrade(c.r, in)
+	case runtime.SequenceReset:
+		in, ok := data.(runtime.ResetOptions)
+		if !ok {
 			return nil, runtime.ErrInvalidSequenceData
 		}
 
@@ -452,7 +397,7 @@ func waitForUSBDelay() (err error) {
 	if wait {
 		var b []byte
 
-		b, err = ioutil.ReadFile(file)
+		b, err = os.ReadFile(file)
 		if err != nil {
 			return err
 		}

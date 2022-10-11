@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_k8s
-// +build integration_k8s
 
 package base
 
@@ -52,7 +51,7 @@ func discoverNodesK8s(ctx context.Context, client *client.Client, suite *TalosSu
 		return nil, err
 	}
 
-	result := &infoWrapper{}
+	var masterNodes, workerNodes []string
 
 	for _, node := range nodes.Items {
 		var address string
@@ -69,12 +68,12 @@ func discoverNodesK8s(ctx context.Context, client *client.Client, suite *TalosSu
 			continue
 		}
 
-		if _, ok := node.Labels[constants.LabelNodeRoleMaster]; ok {
-			result.masterNodes = append(result.masterNodes, address)
+		if _, ok := node.Labels[constants.LabelNodeRoleControlPlane]; ok {
+			masterNodes = append(masterNodes, address)
 		} else {
-			result.workerNodes = append(result.workerNodes, address)
+			workerNodes = append(workerNodes, address)
 		}
 	}
 
-	return result, nil
+	return newNodeInfo(masterNodes, workerNodes)
 }

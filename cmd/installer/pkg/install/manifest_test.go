@@ -7,15 +7,14 @@ package install_test
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/loopback"
 	"github.com/stretchr/testify/suite"
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/loopback"
 
 	"github.com/talos-systems/talos/cmd/installer/pkg/install"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -27,7 +26,7 @@ import (
 // Some tests in this package cannot be run under buildkit, as buildkit doesn't propagate partition devices
 // like /dev/loopXpY into the sandbox. To run the tests on your local computer, do the following:
 //
-//	 sudo go test -v --count 1 ./cmd/installer/pkg/install/
+//	 go test -exec sudo -v --count 1 ./cmd/installer/pkg/install/
 
 type manifestSuite struct {
 	suite.Suite
@@ -51,7 +50,7 @@ func (suite *manifestSuite) SetupTest() {
 
 	var err error
 
-	suite.disk, err = ioutil.TempFile("", "talos")
+	suite.disk, err = os.CreateTemp("", "talos")
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(suite.disk.Truncate(diskSize))
@@ -153,12 +152,7 @@ func (suite *manifestSuite) verifyBlockdevice(manifest *install.Manifest, curren
 
 	// verify filesystems by mounting and unmounting
 
-	tempDir, err := ioutil.TempDir("", "talos")
-	suite.Require().NoError(err)
-
-	defer func() {
-		suite.Assert().NoError(os.RemoveAll(tempDir))
-	}()
+	tempDir := suite.T().TempDir()
 
 	mountpoints, err = manifest.SystemMountpoints()
 	suite.Require().NoError(err)
@@ -205,8 +199,8 @@ func (suite *manifestSuite) verifyBlockdevice(manifest *install.Manifest, curren
 
 	if next != "" {
 		suite.Assert().NoError(os.MkdirAll(filepath.Join(tempDir, "boot", next), 0o700))
-		suite.Assert().NoError(ioutil.WriteFile(filepath.Join(tempDir, "boot", next, "kernel"), []byte("LINUX!"), 0o660))
-		suite.Assert().NoError(ioutil.WriteFile(filepath.Join(tempDir, "system", "state", "config.yaml"), []byte("#!yaml"), 0o660))
+		suite.Assert().NoError(os.WriteFile(filepath.Join(tempDir, "boot", next, "kernel"), []byte("LINUX!"), 0o660))
+		suite.Assert().NoError(os.WriteFile(filepath.Join(tempDir, "system", "state", "config.yaml"), []byte("#!yaml"), 0o660))
 
 		buf := []byte(next)
 
@@ -219,7 +213,7 @@ func (suite *manifestSuite) verifyBlockdevice(manifest *install.Manifest, curren
 		suite.Assert().NoError(f.Close())
 	}
 
-	suite.Assert().NoError(ioutil.WriteFile(filepath.Join(tempDir, "var", "content"), []byte("data"), 0o600))
+	suite.Assert().NoError(os.WriteFile(filepath.Join(tempDir, "var", "content"), []byte("data"), 0o600))
 }
 
 func (suite *manifestSuite) TestExecuteManifestClean() {
@@ -326,14 +320,10 @@ func (suite *manifestSuite) TestExecuteManifestPreserve() {
 
 func (suite *manifestSuite) TestTargetInstall() {
 	// Create Temp dirname for mountpoint
-	dir, err := ioutil.TempDir("", "talostest")
-	suite.Require().NoError(err)
-
-	//nolint:errcheck
-	defer os.RemoveAll(dir)
+	dir := suite.T().TempDir()
 
 	// Create a tempfile for local copy
-	src, err := ioutil.TempFile(dir, "example")
+	src, err := os.CreateTemp(dir, "example")
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(src.Close())

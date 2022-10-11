@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -22,7 +21,7 @@ import (
 type VersionSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -50,11 +49,12 @@ func (suite *VersionSuite) TestExpectedVersionMaster() {
 	suite.Require().NoError(err)
 
 	suite.Assert().Equal(suite.Version, v.Messages[0].Version.Tag)
+	suite.Assert().Equal(suite.GoVersion, v.Messages[0].Version.GoVersion)
 }
 
 // TestSameVersionCluster verifies that all the nodes are on the same version.
 func (suite *VersionSuite) TestSameVersionCluster() {
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 	suite.Require().NotEmpty(nodes)
 
 	ctx := client.WithNodes(suite.ctx, nodes...)

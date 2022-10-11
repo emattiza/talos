@@ -5,8 +5,8 @@
 package rpi4
 
 import (
-	_ "embed" //nolint:gci
-	"io/ioutil"
+	_ "embed"
+	"os"
 
 	"github.com/talos-systems/go-procfs/procfs"
 
@@ -35,12 +35,12 @@ func (r *RPi4) Install(disk string) (err error) {
 		return err
 	}
 
-	err = copy.File("/usr/install/arm64/u-boot/rpi_4/u-boot.bin", "/boot/EFI/u-boot.bin")
+	err = copy.File("/usr/install/arm64/u-boot/rpi_generic/u-boot.bin", "/boot/EFI/u-boot.bin")
 	if err != nil {
 		return err
 	}
 
-	return ioutil.WriteFile("/boot/EFI/config.txt", configTxt, 0o600)
+	return os.WriteFile("/boot/EFI/config.txt", configTxt, 0o600)
 }
 
 // KernelArgs implements the runtime.Board.

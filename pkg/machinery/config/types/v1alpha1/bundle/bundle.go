@@ -6,7 +6,6 @@ package bundle
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,8 +19,9 @@ import (
 )
 
 // NewConfigBundle returns a new bundle.
+//
 //nolint:gocyclo,cyclop
-func NewConfigBundle(opts ...Option) (*v1alpha1.ConfigBundle, error) {
+func NewConfigBundle(opts ...Option) (*ConfigBundle, error) {
 	options := DefaultOptions()
 
 	for _, opt := range opts {
@@ -30,7 +30,7 @@ func NewConfigBundle(opts ...Option) (*v1alpha1.ConfigBundle, error) {
 		}
 	}
 
-	bundle := &v1alpha1.ConfigBundle{}
+	bundle := &ConfigBundle{}
 
 	// Configs already exist, we'll pull them in.
 	if options.ExistingConfigs != "" {
@@ -40,8 +40,12 @@ func NewConfigBundle(opts ...Option) (*v1alpha1.ConfigBundle, error) {
 
 		// Pull existing machine configs of each type
 		for _, configType := range []machine.Type{machine.TypeInit, machine.TypeControlPlane, machine.TypeWorker} {
-			data, err := ioutil.ReadFile(filepath.Join(options.ExistingConfigs, strings.ToLower(configType.String())+".yaml"))
+			data, err := os.ReadFile(filepath.Join(options.ExistingConfigs, strings.ToLower(configType.String())+".yaml"))
 			if err != nil {
+				if configType == machine.TypeInit && os.IsNotExist(err) {
+					continue
+				}
+
 				return bundle, err
 			}
 
@@ -144,16 +148,16 @@ func NewConfigBundle(opts ...Option) (*v1alpha1.ConfigBundle, error) {
 	return bundle, nil
 }
 
-func applyJSONPatches(bundle *v1alpha1.ConfigBundle, options Options) error {
-	if err := bundle.ApplyJSONPatch(options.JSONPatch, true, true); err != nil {
+func applyJSONPatches(bundle *ConfigBundle, options Options) error {
+	if err := bundle.ApplyPatches(options.Patches, true, true); err != nil {
 		return fmt.Errorf("error patching configs: %w", err)
 	}
 
-	if err := bundle.ApplyJSONPatch(options.JSONPatchControlPlane, true, false); err != nil {
+	if err := bundle.ApplyPatches(options.PatchesControlPlane, true, false); err != nil {
 		return fmt.Errorf("error patching control plane configs: %w", err)
 	}
 
-	if err := bundle.ApplyJSONPatch(options.JSONPatchWorker, false, true); err != nil {
+	if err := bundle.ApplyPatches(options.PatchesWorker, false, true); err != nil {
 		return fmt.Errorf("error patching worker config: %w", err)
 	}
 

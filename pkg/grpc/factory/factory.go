@@ -5,6 +5,7 @@
 package factory
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -23,8 +24,8 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
+	_ "github.com/talos-systems/talos/pkg/grpc/codec" // register codec
 	grpclog "github.com/talos-systems/talos/pkg/grpc/middleware/log"
-	_ "github.com/talos-systems/talos/pkg/machinery/proto" //nolint:gci // register codec
 )
 
 // Registrator describes the set of methods required in order for a concrete
@@ -35,6 +36,7 @@ type Registrator interface {
 
 // Options is the functional options struct.
 type Options struct {
+	Address            string
 	Port               int
 	SocketPath         string
 	Network            string
@@ -49,6 +51,13 @@ type Options struct {
 
 // Option is the functional option func.
 type Option func(*Options)
+
+// Address sets the listen address of the server.
+func Address(a string) Option {
+	return func(args *Options) {
+		args.Address = a
+	}
+}
 
 // Port sets the listen port of the server.
 func Port(o int) Option {
@@ -150,19 +159,34 @@ func NewDefaultOptions(setters ...Option) *Options {
 
 	// Recovery is installed as the the first middleware in the chain to handle panics (via defer and recover()) in all subsequent middlewares.
 	recoveryOpt := grpc_recovery.WithRecoveryHandler(recoveryHandler(logger))
-	opts.UnaryInterceptors = append([]grpc.UnaryServerInterceptor{grpc_recovery.UnaryServerInterceptor(recoveryOpt)}, opts.UnaryInterceptors...)
-	opts.StreamInterceptors = append([]grpc.StreamServerInterceptor{grpc_recovery.StreamServerInterceptor(recoveryOpt)}, opts.StreamInterceptors...)
+	opts.UnaryInterceptors = append(
+		[]grpc.UnaryServerInterceptor{grpc_recovery.UnaryServerInterceptor(recoveryOpt)},
+		opts.UnaryInterceptors...,
+	)
+	opts.StreamInterceptors = append(
+		[]grpc.StreamServerInterceptor{grpc_recovery.StreamServerInterceptor(recoveryOpt)},
+		opts.StreamInterceptors...,
+	)
 
 	if logger != nil {
 		// Logging is installed as the first middleware (even before recovery middleware) in the chain
 		// so that request in the form it was received and status sent on the wire is logged (error/success).
 		// It also tracks the whole duration of the request, including other middleware overhead.
 		logMiddleware := grpclog.NewMiddleware(logger)
-		opts.UnaryInterceptors = append([]grpc.UnaryServerInterceptor{logMiddleware.UnaryInterceptor()}, opts.UnaryInterceptors...)
-		opts.StreamInterceptors = append([]grpc.StreamServerInterceptor{logMiddleware.StreamInterceptor()}, opts.StreamInterceptors...)
+		opts.UnaryInterceptors = append(
+			[]grpc.UnaryServerInterceptor{logMiddleware.UnaryInterceptor()},
+			opts.UnaryInterceptors...,
+		)
+		opts.StreamInterceptors = append(
+			[]grpc.StreamServerInterceptor{logMiddleware.StreamInterceptor()},
+			opts.StreamInterceptors...,
+		)
 	}
 
-	opts.ServerOptions = append(opts.ServerOptions,
+	opts.ServerOptions = append(
+		opts.ServerOptions,
+		grpc.InitialWindowSize(65535*32),
+		grpc.InitialConnWindowSize(65535*16),
 		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(opts.UnaryInterceptors...)),
 		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(opts.StreamInterceptors...)),
 	)
@@ -211,7 +235,7 @@ func NewListener(setters ...Option) (net.Listener, error) {
 			return nil, fmt.Errorf("error creating containing directory for the file socket; %w", err)
 		}
 	case "tcp":
-		address = ":" + strconv.Itoa(opts.Port)
+		address = net.JoinHostPort(opts.Address, strconv.Itoa(opts.Port))
 	default:
 		return nil, fmt.Errorf("unknown network: %s", opts.Network)
 	}
@@ -233,4 +257,23 @@ func ListenAndServe(r Registrator, setters ...Option) (err error) {
 	}
 
 	return server.Serve(listener)
+}
+
+// ServerGracefulStop the server with a timeout.
+//
+// Core gRPC doesn't support timeouts.
+func ServerGracefulStop(server *grpc.Server, shutdownCtx context.Context) { //nolint:revive
+	stopped := make(chan struct{})
+
+	go func() {
+		server.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-shutdownCtx.Done():
+		server.Stop()
+	case <-stopped:
+		server.Stop()
+	}
 }

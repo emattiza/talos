@@ -13,10 +13,14 @@ import (
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
+
+// ErrEventNotSupported is returned from the event decoder when we encounter an unknown event.
+var ErrEventNotSupported = fmt.Errorf("event is not supported")
 
 // EventsOptionFunc defines the options for the Events API.
 type EventsOptionFunc func(opts *machineapi.EventsRequest)
@@ -44,6 +48,13 @@ func WithTailDuration(dur time.Duration) EventsOptionFunc {
 	}
 }
 
+// WithActorID sets up Watcher to return events with the specified actor ID.
+func WithActorID(actorID string) EventsOptionFunc {
+	return func(opts *machineapi.EventsRequest) {
+		opts.WithActorId = actorID
+	}
+}
+
 // Events implements the proto.OSClient interface.
 func (c *Client) Events(ctx context.Context, opts ...EventsOptionFunc) (stream machineapi.MachineService_EventsClient, err error) {
 	var req machineapi.EventsRequest
@@ -60,6 +71,7 @@ type Event struct {
 	Node    string
 	TypeURL string
 	ID      string
+	ActorID string
 	Payload proto.Message
 }
 
@@ -103,52 +115,159 @@ func (c *Client) EventsWatch(ctx context.Context, watchFunc func(<-chan Event), 
 			return fmt.Errorf("failed to watch events: %w", err)
 		}
 
-		typeURL := event.GetData().GetTypeUrl()
-
-		var msg proto.Message
-
-		for _, eventType := range []proto.Message{
-			&machineapi.SequenceEvent{},
-			&machineapi.PhaseEvent{},
-			&machineapi.TaskEvent{},
-			&machineapi.ServiceStateEvent{},
-			&machineapi.ConfigLoadErrorEvent{},
-			&machineapi.ConfigValidationErrorEvent{},
-			&machineapi.AddressEvent{},
-		} {
-			if typeURL == "talos/runtime/"+string(eventType.ProtoReflect().Descriptor().FullName()) {
-				msg = eventType
-
-				break
-			}
-		}
-
-		if msg == nil {
-			// We haven't implemented the handling of this event yet.
+		ev, err := UnmarshalEvent(event)
+		if err != nil {
 			continue
 		}
 
-		if err = proto.Unmarshal(event.GetData().GetValue(), msg); err != nil {
-			log.Printf("failed to unmarshal message: %v", err) // TODO: this should be fixed to return errors
-
-			continue
-		}
-
-		ev := Event{
-			Node:    defaultNode,
-			TypeURL: typeURL,
-			ID:      event.Id,
-			Payload: msg,
-		}
-
-		if event.Metadata != nil {
-			ev.Node = event.Metadata.Hostname
+		if ev.Node == "" {
+			ev.Node = defaultNode
 		}
 
 		select {
-		case ch <- ev:
+		case ch <- *ev:
 		case <-ctx.Done():
 			return nil
 		}
 	}
+}
+
+// EventResult is the result of an event watch, containing either an Event or an error.
+type EventResult struct {
+	// Event is the event that was received.
+	Event Event
+	// Err is the error that occurred.
+	Error error
+}
+
+// EventsWatchV2 watches events of a single node and wraps the Events by providing a simpler interface.
+// It blocks until the first (empty) event is received, then spawns a goroutine that sends events to the given channel.
+// EventResult objects sent into the channel contain either the errors or the received events.
+//
+//nolint:gocyclo,cyclop
+func (c *Client) EventsWatchV2(ctx context.Context, ch chan<- EventResult, opts ...EventsOptionFunc) error {
+	ctx, cancel := context.WithCancel(ctx)
+
+	stream, err := c.Events(ctx, opts...)
+	if err != nil {
+		cancel()
+
+		return fmt.Errorf("error fetching events: %w", err)
+	}
+
+	if err = stream.CloseSend(); err != nil {
+		cancel()
+
+		return err
+	}
+
+	defaultNode := RemotePeer(stream.Context())
+
+	// receive first (empty) watch event
+	_, err = stream.Recv()
+	if err != nil {
+		cancel()
+
+		return fmt.Errorf("error while watching events: %w", err)
+	}
+
+	go func() {
+		defer cancel()
+
+		err = func() error {
+			for {
+				event, eventErr := stream.Recv()
+				if eventErr != nil {
+					return eventErr
+				}
+
+				if event.GetMetadata().GetError() != "" {
+					var mdErr error
+					if event.GetMetadata().GetStatus() != nil {
+						mdErr = status.FromProto(event.GetMetadata().GetStatus()).Err()
+					} else {
+						mdErr = fmt.Errorf(event.GetMetadata().GetError())
+					}
+
+					return fmt.Errorf("%s: %w", event.GetMetadata().GetHostname(), mdErr)
+				}
+
+				ev, eventErr := UnmarshalEvent(event)
+				if eventErr != nil {
+					return eventErr
+				}
+
+				if ev == nil {
+					continue
+				}
+
+				if ev.Node == "" {
+					ev.Node = defaultNode
+				}
+
+				select {
+				case ch <- EventResult{Event: *ev}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}()
+
+		if err != nil {
+			select {
+			case ch <- EventResult{Error: err}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return nil
+}
+
+// UnmarshalEvent decodes the event coming from the gRPC stream from any to the exact type.
+func UnmarshalEvent(event *machineapi.Event) (*Event, error) {
+	typeURL := event.GetData().GetTypeUrl()
+
+	var msg proto.Message
+
+	for _, eventType := range []proto.Message{
+		&machineapi.SequenceEvent{},
+		&machineapi.PhaseEvent{},
+		&machineapi.TaskEvent{},
+		&machineapi.ServiceStateEvent{},
+		&machineapi.ConfigLoadErrorEvent{},
+		&machineapi.ConfigValidationErrorEvent{},
+		&machineapi.AddressEvent{},
+		&machineapi.MachineStatusEvent{},
+	} {
+		if typeURL == "talos/runtime/"+string(eventType.ProtoReflect().Descriptor().FullName()) {
+			msg = eventType
+
+			break
+		}
+	}
+
+	if msg == nil {
+		// We haven't implemented the handling of this event yet.
+		return nil, ErrEventNotSupported
+	}
+
+	if err := proto.Unmarshal(event.GetData().GetValue(), msg); err != nil {
+		log.Printf("failed to unmarshal message: %v", err)
+
+		return nil, err
+	}
+
+	ev := Event{
+		TypeURL: typeURL,
+		ID:      event.Id,
+		Payload: msg,
+		ActorID: event.ActorId,
+	}
+
+	if event.Metadata != nil {
+		ev.Node = event.Metadata.Hostname
+	}
+
+	return &ev, nil
 }

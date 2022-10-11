@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/gen/value"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,7 +49,7 @@ func NewKubernetes(client *kubernetes.Client) *Kubernetes {
 func AnnotationsFromAffiliate(affiliate *cluster.Affiliate) map[string]string {
 	var kubeSpanAddress string
 
-	if !affiliate.TypedSpec().KubeSpan.Address.IsZero() {
+	if !value.IsZero(affiliate.TypedSpec().KubeSpan.Address) {
 		kubeSpanAddress = affiliate.TypedSpec().KubeSpan.Address.String()
 	}
 
@@ -93,12 +95,11 @@ func AffiliateFromNode(node *v1.Node) *cluster.AffiliateSpec {
 	}
 
 	// Machine type is derived from node roles.
-	_, labelMaster := node.Labels[constants.LabelNodeRoleMaster]
 	_, labelControlPlane := node.Labels[constants.LabelNodeRoleControlPlane]
 
 	affiliate.MachineType = machine.TypeWorker
 
-	if labelMaster || labelControlPlane {
+	if labelControlPlane {
 		affiliate.MachineType = machine.TypeControlPlane
 	}
 
@@ -110,7 +111,7 @@ func AffiliateFromNode(node *v1.Node) *cluster.AffiliateSpec {
 	}
 
 	if ksIP, ok := node.Annotations[constants.KubeSpanIPAnnotation]; ok {
-		affiliate.KubeSpan.Address, _ = netaddr.ParseIP(ksIP) //nolint:errcheck
+		affiliate.KubeSpan.Address, _ = netip.ParseAddr(ksIP) //nolint:errcheck
 	}
 
 	if additionalAddresses, ok := node.Annotations[constants.KubeSpanAssignedPrefixesAnnotation]; ok {
@@ -124,41 +125,23 @@ func AffiliateFromNode(node *v1.Node) *cluster.AffiliateSpec {
 	return affiliate
 }
 
-func ipsToString(in []netaddr.IP) string {
-	items := make([]string, len(in))
-
-	for i := range in {
-		items[i] = in[i].String()
-	}
-
-	return strings.Join(items, ",")
+func ipsToString(in []netip.Addr) string {
+	return strings.Join(slices.Map(in, netip.Addr.String), ",")
 }
 
-func ipPrefixesToString(in []netaddr.IPPrefix) string {
-	items := make([]string, len(in))
-
-	for i := range in {
-		items[i] = in[i].String()
-	}
-
-	return strings.Join(items, ",")
+func ipPrefixesToString(in []netip.Prefix) string {
+	return strings.Join(slices.Map(in, netip.Prefix.String), ",")
 }
 
-func ipPortsToString(in []netaddr.IPPort) string {
-	items := make([]string, len(in))
-
-	for i := range in {
-		items[i] = in[i].String()
-	}
-
-	return strings.Join(items, ",")
+func ipPortsToString(in []netip.AddrPort) string {
+	return strings.Join(slices.Map(in, netip.AddrPort.String), ",")
 }
 
-func parseIPs(in string) []netaddr.IP {
-	var result []netaddr.IP
+func parseIPs(in string) []netip.Addr {
+	var result []netip.Addr
 
 	for _, item := range strings.Split(in, ",") {
-		if ip, err := netaddr.ParseIP(item); err == nil {
+		if ip, err := netip.ParseAddr(item); err == nil {
 			result = append(result, ip)
 		}
 	}
@@ -166,11 +149,11 @@ func parseIPs(in string) []netaddr.IP {
 	return result
 }
 
-func parseIPPrefixes(in string) []netaddr.IPPrefix {
-	var result []netaddr.IPPrefix
+func parseIPPrefixes(in string) []netip.Prefix {
+	var result []netip.Prefix
 
 	for _, item := range strings.Split(in, ",") {
-		if ip, err := netaddr.ParseIPPrefix(item); err == nil {
+		if ip, err := netip.ParsePrefix(item); err == nil {
 			result = append(result, ip)
 		}
 	}
@@ -178,11 +161,11 @@ func parseIPPrefixes(in string) []netaddr.IPPrefix {
 	return result
 }
 
-func parseIPPorts(in string) []netaddr.IPPort {
-	var result []netaddr.IPPort
+func parseIPPorts(in string) []netip.AddrPort {
+	var result []netip.AddrPort
 
 	for _, item := range strings.Split(in, ",") {
-		if ip, err := netaddr.ParseIPPort(item); err == nil {
+		if ip, err := netip.ParseAddrPort(item); err == nil {
 			result = append(result, ip)
 		}
 	}
@@ -264,7 +247,7 @@ func (r *Kubernetes) List(localNodeName string) ([]*cluster.AffiliateSpec, error
 }
 
 // Watch starts watching Node state and notifies on updates via notify channel.
-func (r *Kubernetes) Watch(ctx context.Context, logger *zap.Logger) (<-chan struct{}, error) {
+func (r *Kubernetes) Watch(ctx context.Context, logger *zap.Logger) (<-chan struct{}, func(), error) {
 	informerFactory := informers.NewSharedInformerFactory(r.client.Clientset, 30*time.Second)
 
 	notifyCh := make(chan struct{}, 1)
@@ -277,16 +260,22 @@ func (r *Kubernetes) Watch(ctx context.Context, logger *zap.Logger) (<-chan stru
 	}
 
 	r.nodes = informerFactory.Core().V1().Nodes()
-	r.nodes.Informer().SetWatchErrorHandler(func(r *cache.Reflector, err error) { //nolint:errcheck
+
+	if err := r.nodes.Informer().SetWatchErrorHandler(func(r *cache.Reflector, err error) {
 		logger.Error("kubernetes registry node watch error", zap.Error(err))
-	})
-	r.nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	}); err != nil {
+		return nil, nil, fmt.Errorf("failed to set watch error handler: %w", err)
+	}
+
+	if _, err := r.nodes.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    notify,
 		DeleteFunc: notify,
 		UpdateFunc: func(_, _ interface{}) { notify(nil) },
-	})
+	}); err != nil {
+		return nil, nil, fmt.Errorf("failed to add event handler: %w", err)
+	}
 
 	informerFactory.Start(ctx.Done())
 
-	return notifyCh, nil
+	return notifyCh, informerFactory.Shutdown, nil
 }

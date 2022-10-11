@@ -8,10 +8,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/value"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/machinery/resources/files"
@@ -32,7 +33,7 @@ func (ctrl *StatusController) Inputs() []controller.Input {
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.NodeAddressType,
-			ID:        pointer.ToString(network.NodeAddressCurrentID),
+			ID:        pointer.To(network.NodeAddressCurrentID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -93,7 +94,7 @@ func (ctrl *StatusController) Run(ctx context.Context, r controller.Runtime, log
 		}
 
 		for _, item := range list.Items {
-			if item.(*network.RouteStatus).TypedSpec().Destination.IsZero() {
+			if value.IsZero(item.(*network.RouteStatus).TypedSpec().Destination) {
 				result.ConnectivityReady = true
 
 				break

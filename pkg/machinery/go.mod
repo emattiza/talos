@@ -1,58 +1,60 @@
 module github.com/talos-systems/talos/pkg/machinery
 
-go 1.17
+go 1.19
 
 // forked go-yaml that introduces RawYAML interface, which can be used to populate YAML fields using bytes
 // which are then encoded as a valid YAML blocks with proper indentiation
-replace gopkg.in/yaml.v3 => github.com/unix4ever/yaml v0.0.0-20210315173758-8fb30b8e5a5b
+replace gopkg.in/yaml.v3 => github.com/unix4ever/yaml v0.0.0-20220527175918-f17b0f05cf2c
 
 require (
-	github.com/AlekSi/pointer v1.2.0
-	github.com/containerd/go-cni v1.1.1
-	github.com/cosi-project/runtime v0.0.0-20211216175730-264f8fcd1a4f
+	github.com/containerd/go-cni v1.1.7
+	github.com/cosi-project/runtime v0.2.0-alpha.1.0.20221009084302-e8a8fdcc7548
 	github.com/dustin/go-humanize v1.0.0
 	github.com/evanphx/json-patch v5.6.0+incompatible
 	github.com/ghodss/yaml v1.0.0
 	github.com/hashicorp/go-multierror v1.1.1
-	github.com/jsimonetti/rtnetlink v0.0.0-20211213041634-9dff439f7e79
-	github.com/mdlayher/ethtool v0.0.0-20211214014908-bc8fdcf6e99c
-	github.com/opencontainers/runtime-spec v1.0.3-0.20200929063507-e6143ca7d51d
-	github.com/stretchr/testify v1.7.0
-	github.com/talos-systems/crypto v0.3.5-0.20211220133734-6fa2d93d0382
-	github.com/talos-systems/go-blockdevice v0.2.6-0.20211214184027-6928ee43c303
+	github.com/jsimonetti/rtnetlink v1.2.3
+	github.com/mdlayher/ethtool v0.0.0-20220830195143-0e16326d06d1
+	github.com/opencontainers/runtime-spec v1.0.3-0.20210326190908-1c3f411f0417
+	github.com/siderolabs/crypto v0.4.0
+	github.com/siderolabs/gen v0.3.0
+	github.com/siderolabs/go-blockdevice v0.4.0
+	github.com/siderolabs/go-pointer v1.0.0
+	github.com/siderolabs/protoenc v0.2.0
+	github.com/stretchr/testify v1.8.0
 	github.com/talos-systems/go-debug v0.2.1
-	github.com/talos-systems/net v0.3.1
-	google.golang.org/genproto v0.0.0-20211208223120-3a66f561d7aa
-	google.golang.org/grpc v1.43.0
-	google.golang.org/protobuf v1.27.1
-	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b
-	inet.af/netaddr v0.0.0-20211027220019-c74959edd3b6
+	github.com/talos-systems/net v0.3.2
+	go4.org/netipx v0.0.0-20220925034521-797b0c90d8ab
+	google.golang.org/genproto v0.0.0-20220930163606-c98284e70a91
+	google.golang.org/grpc v1.50.0
+	google.golang.org/protobuf v1.28.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	github.com/BurntSushi/toml v0.4.1 // indirect
-	github.com/containernetworking/cni v1.0.1 // indirect
+	github.com/containernetworking/cni v1.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/gertd/go-pluralize v0.1.7 // indirect
+	github.com/gertd/go-pluralize v0.2.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
-	github.com/google/go-cmp v0.5.6 // indirect
-	github.com/hashicorp/errwrap v1.0.0 // indirect
-	github.com/josharian/native v0.0.0-20200817173448-b6b71def0850 // indirect
-	github.com/mdlayher/genetlink v1.0.0 // indirect
-	github.com/mdlayher/netlink v1.5.0 // indirect
-	github.com/mdlayher/socket v0.1.0 // indirect
+	github.com/google/go-cmp v0.5.9 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.11.3 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/josharian/native v1.0.0 // indirect
+	github.com/mdlayher/genetlink v1.2.0 // indirect
+	github.com/mdlayher/netlink v1.6.2 // indirect
+	github.com/mdlayher/socket v0.2.3 // indirect
+	github.com/onsi/ginkgo/v2 v2.2.0 // indirect
+	github.com/onsi/gomega v1.20.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
-	go4.org/intern v0.0.0-20211027215823-ae77deb06f29 // indirect
-	go4.org/unsafe/assume-no-moving-gc v0.0.0-20211027215541-db492cf91b37 // indirect
-	golang.org/x/mod v0.5.1 // indirect
-	golang.org/x/net v0.0.0-20211209124913-491a49abca63 // indirect
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
-	golang.org/x/sys v0.0.0-20211210111614-af8b64212486 // indirect
-	golang.org/x/text v0.3.6 // indirect
-	golang.org/x/tools v0.1.7 // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
-	gopkg.in/yaml.v2 v2.3.0 // indirect
-	honnef.co/go/tools v0.2.2 // indirect
+	go.uber.org/atomic v1.10.0 // indirect
+	go.uber.org/multierr v1.8.0 // indirect
+	go.uber.org/zap v1.23.0 // indirect
+	golang.org/x/net v0.0.0-20220923203811-8be639271d50 // indirect
+	golang.org/x/sync v0.0.0-20220923202941-7f9b1623fab7 // indirect
+	golang.org/x/sys v0.0.0-20220928140112-f11e5e49a4ec // indirect
+	golang.org/x/text v0.3.7 // indirect
+	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

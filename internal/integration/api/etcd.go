@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -26,7 +25,7 @@ import (
 type EtcdSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -58,7 +57,7 @@ func (suite *EtcdSuite) TestEtcdForfeitLeadership() {
 		suite.T().Skip("without full cluster state etcd test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
+	nodes := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane)
 
 	if len(nodes) < 3 {
 		suite.T().Skip("test only can be run on HA etcd clusters")
@@ -67,7 +66,10 @@ func (suite *EtcdSuite) TestEtcdForfeitLeadership() {
 	var leader string
 
 	for _, node := range nodes {
-		resp, err := suite.Client.EtcdForfeitLeadership(client.WithNodes(suite.ctx, node), &machineapi.EtcdForfeitLeadershipRequest{})
+		resp, err := suite.Client.EtcdForfeitLeadership(
+			client.WithNodes(suite.ctx, node),
+			&machineapi.EtcdForfeitLeadershipRequest{},
+		)
 		suite.Require().NoError(err)
 
 		if resp.Messages[0].GetMember() != "" {
@@ -90,7 +92,7 @@ func (suite *EtcdSuite) TestEtcdLeaveCluster() {
 		suite.T().Skip("without full cluster state reset test is not reliable (can't wait for cluster readiness in between resets)")
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
+	nodes := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane)
 
 	if len(nodes) < 3 {
 		suite.T().Skip("test only can be run on HA etcd clusters")
@@ -130,16 +132,21 @@ func (suite *EtcdSuite) TestEtcdLeaveCluster() {
 			}
 		}
 
-		suite.Assert().Equal("rpc error: code = Unknown desc = lstat /var/lib/etcd: no such file or directory", info.Metadata.Error)
+		suite.Assert().Equal(
+			"rpc error: code = Unknown desc = lstat /var/lib/etcd: no such file or directory",
+			info.Metadata.Error,
+		)
 	}
 
 	// NB: Reboot the node so that it can rejoin the etcd cluster. This allows us
 	// to check the cluster health and catch any issues in rejoining.
-	suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-		_, err = suite.Client.MachineClient.Reboot(nodeCtx, &machineapi.RebootRequest{})
+	suite.AssertRebooted(
+		suite.ctx, node, func(nodeCtx context.Context) error {
+			_, err = suite.Client.MachineClient.Reboot(nodeCtx, &machineapi.RebootRequest{})
 
-		return err
-	}, 10*time.Minute)
+			return err
+		}, 10*time.Minute,
+	)
 }
 
 func init() {

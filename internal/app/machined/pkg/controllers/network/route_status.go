@@ -7,13 +7,13 @@ package network
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/jsimonetti/rtnetlink"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/watch"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
@@ -100,10 +100,10 @@ func (ctrl *RouteStatusController) Run(ctx context.Context, r controller.Runtime
 		for _, route := range routes {
 			route := route
 
-			dstAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Dst)
-			dstPrefix := netaddr.IPPrefixFrom(dstAddr, route.DstLength)
-			srcAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Src)
-			gatewayAddr, _ := netaddr.FromStdIPRaw(route.Attributes.Gateway)
+			dstAddr, _ := netip.AddrFromSlice(route.Attributes.Dst)
+			dstPrefix := netip.PrefixFrom(dstAddr, int(route.DstLength))
+			srcAddr, _ := netip.AddrFromSlice(route.Attributes.Src)
+			gatewayAddr, _ := netip.AddrFromSlice(route.Attributes.Gateway)
 			id := network.RouteID(nethelpers.RoutingTable(route.Table), nethelpers.Family(route.Family), dstPrefix, gatewayAddr, route.Attributes.Priority)
 
 			if err = r.Modify(ctx, network.NewRouteStatus(network.NamespaceName, id), func(r resource.Resource) error {
@@ -121,6 +121,12 @@ func (ctrl *RouteStatusController) Run(ctx context.Context, r controller.Runtime
 				status.Type = nethelpers.RouteType(route.Type)
 				status.Protocol = nethelpers.RouteProtocol(route.Protocol)
 				status.Flags = nethelpers.RouteFlags(route.Flags)
+
+				if route.Attributes.Metrics != nil {
+					status.MTU = route.Attributes.Metrics.MTU
+				} else {
+					status.MTU = 0
+				}
 
 				return nil
 			}); err != nil {

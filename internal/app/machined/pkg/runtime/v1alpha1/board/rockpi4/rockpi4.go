@@ -2,11 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-package rock64
+package rockpi4
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,7 +21,9 @@ import (
 var (
 	bin       = fmt.Sprintf("/usr/install/arm64/u-boot/%s/u-boot-rockchip.bin", constants.BoardRockpi4)
 	off int64 = 512 * 64
-	dtb       = "/dtb/rockchip/rk3399-rock-pi-4c.dtb"
+	// https://github.com/u-boot/u-boot/blob/4de720e98d552dfda9278516bf788c4a73b3e56f/configs/rock-pi-4-rk3399_defconfig#L7=
+	// 4a and 4b uses the same overlay.
+	dtb = "/dtb/rockchip/rk3399-rock-pi-4b.dtb"
 )
 
 // Rockpi4 represents the Radxa rock pi board.
@@ -45,7 +46,7 @@ func (r *Rockpi4) Install(disk string) (err error) {
 
 	defer f.Close() //nolint:errcheck
 
-	uboot, err := ioutil.ReadFile(bin)
+	uboot, err := os.ReadFile(bin)
 	if err != nil {
 		return err
 	}
@@ -84,6 +85,7 @@ func (r *Rockpi4) Install(disk string) (err error) {
 func (r *Rockpi4) KernelArgs() procfs.Parameters {
 	return []*procfs.Parameter{
 		procfs.NewParameter("console").Append("tty0").Append("ttyS2,1500000n8"),
+		procfs.NewParameter("sysctl.kernel.kexec_load_disabled").Append("1"),
 	}
 }
 

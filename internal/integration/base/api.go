@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package base
 
@@ -14,7 +13,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"strings"
 	"sync"
@@ -43,16 +41,19 @@ type APISuite struct {
 	suite.Suite
 	TalosSuite
 
-	Client *client.Client
+	Client      *client.Client
+	Talosconfig *clientconfig.Config
 }
 
 // SetupSuite initializes Talos API client.
 func (apiSuite *APISuite) SetupSuite() {
-	cfg, err := clientconfig.Open(apiSuite.TalosConfig)
+	var err error
+
+	apiSuite.Talosconfig, err = clientconfig.Open(apiSuite.TalosConfig)
 	apiSuite.Require().NoError(err)
 
 	opts := []client.OptionFunc{
-		client.WithConfig(cfg),
+		client.WithConfig(apiSuite.Talosconfig),
 	}
 
 	if apiSuite.Endpoint != "" {
@@ -63,7 +64,7 @@ func (apiSuite *APISuite) SetupSuite() {
 	apiSuite.Require().NoError(err)
 
 	// clear any connection refused errors left after the previous tests
-	nodes := apiSuite.DiscoverNodes(context.TODO()).Nodes()
+	nodes := apiSuite.DiscoverNodeInternalIPs(context.TODO())
 
 	if len(nodes) > 0 {
 		// grpc might trigger backoff on reconnect attempts, so make sure we clear them
@@ -102,23 +103,43 @@ func (apiSuite *APISuite) DiscoverNodes(ctx context.Context) cluster.Info {
 	return apiSuite.discoveredNodes
 }
 
-// RandomDiscoveredNode returns a random node of the specified type (or any type if no types are specified).
-func (apiSuite *APISuite) RandomDiscoveredNode(types ...machine.Type) string {
+// DiscoverNodeInternalIPs provides list of Talos node internal IPs in the cluster.
+func (apiSuite *APISuite) DiscoverNodeInternalIPs(ctx context.Context) []string {
+	nodes := apiSuite.DiscoverNodes(ctx).Nodes()
+
+	return mapNodeInfosToInternalIPs(nodes)
+}
+
+// DiscoverNodeInternalIPsByType provides list of Talos node internal IPs in the cluster for given machine type.
+func (apiSuite *APISuite) DiscoverNodeInternalIPsByType(ctx context.Context, machineType machine.Type) []string {
+	nodesByType := apiSuite.DiscoverNodes(ctx).NodesByType(machineType)
+
+	return mapNodeInfosToInternalIPs(nodesByType)
+}
+
+// RandomDiscoveredNodeInternalIP returns the internal IP a random node of the specified type (or any type if no types are specified).
+//
+//nolint:dupl
+func (apiSuite *APISuite) RandomDiscoveredNodeInternalIP(types ...machine.Type) string {
 	nodeInfo := apiSuite.DiscoverNodes(context.TODO())
 
-	var nodes []string
+	var nodes []cluster.NodeInfo
 
 	if len(types) == 0 {
-		nodes = nodeInfo.Nodes()
+		nodeInfos := nodeInfo.Nodes()
+
+		nodes = nodeInfos
 	} else {
 		for _, t := range types {
-			nodes = append(nodes, nodeInfo.NodesByType(t)...)
+			nodeInfosByType := nodeInfo.NodesByType(t)
+
+			nodes = append(nodes, nodeInfosByType...)
 		}
 	}
 
 	apiSuite.Require().NotEmpty(nodes)
 
-	return nodes[rand.Intn(len(nodes))]
+	return nodes[rand.Intn(len(nodes))].InternalIP.String()
 }
 
 // Capabilities describes current cluster allowed actions.
@@ -177,14 +198,14 @@ func (apiSuite *APISuite) ReadBootID(ctx context.Context) (string, error) {
 
 	defer reader.Close() //nolint:errcheck
 
-	body, err := ioutil.ReadAll(reader)
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return "", err
 	}
 
 	bootID := strings.TrimSpace(string(body))
 
-	_, err = io.Copy(ioutil.Discard, reader)
+	_, err = io.Copy(io.Discard, reader)
 	if err != nil {
 		return "", err
 	}
@@ -198,31 +219,87 @@ func (apiSuite *APISuite) ReadBootID(ctx context.Context) (string, error) {
 	return bootID, reader.Close()
 }
 
+// ReadBootIDWithRetry reads node boot_id.
+//
+// Context provided might have specific node attached for API call.
+func (apiSuite *APISuite) ReadBootIDWithRetry(ctx context.Context, timeout time.Duration) string {
+	var bootID string
+
+	apiSuite.Require().NoError(retry.Constant(timeout, retry.WithUnits(time.Millisecond*1000)).Retry(
+		func() error {
+			var err error
+
+			bootID, err = apiSuite.ReadBootID(ctx)
+			if err != nil {
+				return retry.ExpectedError(err)
+			}
+
+			if bootID == "" {
+				return retry.ExpectedErrorf("boot id is empty")
+			}
+
+			return nil
+		},
+	))
+
+	return bootID
+}
+
 // AssertRebooted verifies that node got rebooted as result of running some API call.
 //
 // Verification happens via reading boot_id of the node.
 func (apiSuite *APISuite) AssertRebooted(ctx context.Context, node string, rebootFunc func(nodeCtx context.Context) error, timeout time.Duration) {
+	apiSuite.AssertRebootedNoChecks(ctx, node, rebootFunc, timeout)
+
+	apiSuite.WaitForBootDone(ctx)
+
+	if apiSuite.Cluster != nil {
+		// without cluster state we can't do deep checks, but basic reboot test still works
+		// NB: using `ctx` here to have client talking to init node by default
+		apiSuite.AssertClusterHealthy(ctx)
+	}
+}
+
+// AssertRebootedNoChecks waits for node to be rebooted without waiting for cluster to become healthy afterwards.
+func (apiSuite *APISuite) AssertRebootedNoChecks(ctx context.Context, node string, rebootFunc func(nodeCtx context.Context) error, timeout time.Duration) {
 	// timeout for single node Reset
 	ctx, ctxCancel := context.WithTimeout(ctx, timeout)
 	defer ctxCancel()
 
 	nodeCtx := client.WithNodes(ctx, node)
 
-	// read boot_id before Reset
-	bootIDBefore, err := apiSuite.ReadBootID(nodeCtx)
+	var (
+		bootIDBefore string
+		err          error
+	)
+
+	err = retry.Constant(time.Minute * 5).Retry(func() error {
+		// read boot_id before reboot
+		bootIDBefore, err = apiSuite.ReadBootID(nodeCtx)
+
+		if err != nil {
+			return retry.ExpectedError(err)
+		}
+
+		return nil
+	})
 
 	apiSuite.Require().NoError(err)
 
 	apiSuite.Assert().NoError(rebootFunc(nodeCtx))
 
-	var bootIDAfter string
+	apiSuite.AssertBootIDChanged(nodeCtx, bootIDBefore, node, timeout)
+}
+
+// AssertBootIDChanged waits until node boot id changes.
+func (apiSuite *APISuite) AssertBootIDChanged(nodeCtx context.Context, bootIDBefore, node string, timeout time.Duration) {
+	apiSuite.Assert().NotEmpty(bootIDBefore)
 
 	apiSuite.Require().NoError(retry.Constant(timeout).Retry(func() error {
-		requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, 5*time.Second)
+		requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, time.Second)
 		defer requestCtxCancel()
 
-		bootIDAfter, err = apiSuite.ReadBootID(requestCtx)
-
+		bootIDAfter, err := apiSuite.ReadBootID(requestCtx)
 		if err != nil {
 			// API might be unresponsive during reboot
 			return retry.ExpectedError(err)
@@ -235,44 +312,54 @@ func (apiSuite *APISuite) AssertRebooted(ctx context.Context, node string, reboo
 
 		return nil
 	}))
-
-	if apiSuite.Cluster != nil {
-		// without cluster state we can't do deep checks, but basic reboot test still works
-		// NB: using `ctx` here to have client talking to init node by default
-		apiSuite.AssertClusterHealthy(ctx)
-	}
 }
 
 // WaitForBootDone waits for boot phase done event.
 func (apiSuite *APISuite) WaitForBootDone(ctx context.Context) {
-	nodes := apiSuite.DiscoverNodes(ctx).Nodes()
+	apiSuite.WaitForSequenceDone(
+		ctx,
+		runtime.SequenceBoot,
+		apiSuite.DiscoverNodeInternalIPs(ctx)...,
+	)
+}
 
-	nodesNotDoneBooting := make(map[string]struct{})
+// WaitForSequenceDone waits for sequence done event.
+func (apiSuite *APISuite) WaitForSequenceDone(ctx context.Context, sequence runtime.Sequence, nodes ...string) {
+	nodesNotDone := make(map[string]struct{})
 
 	for _, node := range nodes {
-		nodesNotDoneBooting[node] = struct{}{}
+		nodesNotDone[node] = struct{}{}
 	}
 
-	ctx, cancel := context.WithTimeout(client.WithNodes(ctx, nodes...), 3*time.Minute)
-	defer cancel()
-
-	apiSuite.Require().NoError(apiSuite.Client.EventsWatch(ctx, func(ch <-chan client.Event) {
+	apiSuite.Require().NoError(retry.Constant(5*time.Minute, retry.WithUnits(time.Second*10)).Retry(func() error {
+		eventsCtx, cancel := context.WithTimeout(client.WithNodes(ctx, nodes...), 5*time.Second)
 		defer cancel()
 
-		for event := range ch {
-			if msg, ok := event.Payload.(*machineapi.SequenceEvent); ok {
-				if msg.GetAction() == machineapi.SequenceEvent_STOP && msg.GetSequence() == runtime.SequenceBoot.String() {
-					delete(nodesNotDoneBooting, event.Node)
+		err := apiSuite.Client.EventsWatch(eventsCtx, func(ch <-chan client.Event) {
+			defer cancel()
 
-					if len(nodesNotDoneBooting) == 0 {
-						return
+			for event := range ch {
+				if msg, ok := event.Payload.(*machineapi.SequenceEvent); ok {
+					if msg.GetAction() == machineapi.SequenceEvent_STOP && msg.GetSequence() == sequence.String() {
+						delete(nodesNotDone, event.Node)
+
+						if len(nodesNotDone) == 0 {
+							return
+						}
 					}
 				}
 			}
+		}, client.WithTailEvents(-1))
+		if err != nil {
+			return retry.ExpectedError(err)
 		}
-	}, client.WithTailEvents(-1)))
 
-	apiSuite.Require().Empty(nodesNotDoneBooting)
+		if len(nodesNotDone) > 0 {
+			return retry.ExpectedErrorf("nodes %#v sequence %s is not completed", nodesNotDone, sequence.String())
+		}
+
+		return nil
+	}))
 }
 
 // ClearConnectionRefused clears cached connection refused errors which might be left after node reboot.
@@ -280,7 +367,10 @@ func (apiSuite *APISuite) ClearConnectionRefused(ctx context.Context, nodes ...s
 	ctx, cancel := context.WithTimeout(ctx, backoff.DefaultConfig.MaxDelay)
 	defer cancel()
 
-	numMasterNodes := len(apiSuite.DiscoverNodes(ctx).NodesByType(machine.TypeControlPlane)) + len(apiSuite.DiscoverNodes(ctx).NodesByType(machine.TypeInit))
+	controlPlaneNodes := apiSuite.DiscoverNodes(ctx).NodesByType(machine.TypeControlPlane)
+	initNodes := apiSuite.DiscoverNodes(ctx).NodesByType(machine.TypeInit)
+
+	numMasterNodes := len(controlPlaneNodes) + len(initNodes)
 	if numMasterNodes == 0 {
 		numMasterNodes = 3
 	}
@@ -391,4 +481,14 @@ func (apiSuite *APISuite) TearDownSuite() {
 	if apiSuite.Client != nil {
 		apiSuite.Assert().NoError(apiSuite.Client.Close())
 	}
+}
+
+func mapNodeInfosToInternalIPs(nodes []cluster.NodeInfo) []string {
+	ips := make([]string, len(nodes))
+
+	for i, node := range nodes {
+		ips[i] = node.InternalIP.String()
+	}
+
+	return ips
 }

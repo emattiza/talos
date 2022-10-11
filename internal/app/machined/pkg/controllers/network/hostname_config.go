@@ -6,17 +6,20 @@ package network
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/martinlindhe/base36"
+	"github.com/siderolabs/go-pointer"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
@@ -37,13 +40,19 @@ func (ctrl *HostnameConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.NodeAddressType,
-			ID:        pointer.ToString(network.NodeAddressDefaultID),
+			ID:        pointer.To(network.NodeAddressDefaultID),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: cluster.NamespaceName,
+			Type:      cluster.IdentityType,
+			ID:        pointer.To(cluster.LocalIdentity),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -61,7 +70,7 @@ func (ctrl *HostnameConfigController) Outputs() []controller.Output {
 
 // Run implements controller.Controller interface.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (ctrl *HostnameConfigController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	for {
 		select {
@@ -97,8 +106,6 @@ func (ctrl *HostnameConfigController) Run(ctx context.Context, r controller.Runt
 			defaultAddr = addrs.(*network.NodeAddress) //nolint:errcheck,forcetypeassert
 		}
 
-		specs = append(specs, ctrl.getDefault(defaultAddr))
-
 		// parse kernel cmdline for the default gateway
 		cmdlineHostname := ctrl.parseCmdline(logger)
 		if cmdlineHostname.Hostname != "" {
@@ -111,6 +118,26 @@ func (ctrl *HostnameConfigController) Run(ctx context.Context, r controller.Runt
 
 			if configHostname.Hostname != "" {
 				specs = append(specs, configHostname)
+			}
+
+			if cfgProvider.Machine().Features().StableHostnameEnabled() {
+				var identity resource.Resource
+
+				identity, err = r.Get(ctx, resource.NewMetadata(cluster.NamespaceName, cluster.IdentityType, cluster.LocalIdentity, resource.VersionUndefined))
+				if err != nil {
+					if !state.IsNotFoundError(err) {
+						return fmt.Errorf("error getting local identity: %w", err)
+					}
+
+					continue
+				}
+
+				nodeID := identity.(*cluster.Identity).TypedSpec().NodeID
+
+				stableHostname := ctrl.getStableDefault(nodeID)
+				specs = append(specs, *stableHostname)
+			} else {
+				specs = append(specs, ctrl.getDefault(defaultAddr))
 			}
 		}
 
@@ -172,12 +199,24 @@ func (ctrl *HostnameConfigController) apply(ctx context.Context, r controller.Ru
 	return ids, nil
 }
 
+func (ctrl *HostnameConfigController) getStableDefault(nodeID string) *network.HostnameSpecSpec {
+	hashBytes := sha256.Sum256([]byte(nodeID))
+	b36 := strings.ToLower(base36.EncodeBytes(hashBytes[:8]))
+
+	hostname := fmt.Sprintf("talos-%s-%s", b36[1:4], b36[4:7])
+
+	return &network.HostnameSpecSpec{
+		Hostname:    hostname,
+		ConfigLayer: network.ConfigDefault,
+	}
+}
+
 func (ctrl *HostnameConfigController) getDefault(defaultAddr *network.NodeAddress) (spec network.HostnameSpecSpec) {
 	if defaultAddr == nil || len(defaultAddr.TypedSpec().Addresses) != 1 {
 		return
 	}
 
-	spec.Hostname = fmt.Sprintf("talos-%s", strings.ReplaceAll(strings.ReplaceAll(defaultAddr.TypedSpec().Addresses[0].IP().String(), ":", ""), ".", "-"))
+	spec.Hostname = fmt.Sprintf("talos-%s", strings.ReplaceAll(strings.ReplaceAll(defaultAddr.TypedSpec().Addresses[0].Addr().String(), ":", ""), ".", "-"))
 	spec.ConfigLayer = network.ConfigDefault
 
 	return spec

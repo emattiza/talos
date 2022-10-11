@@ -5,65 +5,43 @@
 package runtime
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // MountStatusType is type of Mount resource.
 const MountStatusType = resource.Type("MountStatuses.runtime.talos.dev")
 
 // MountStatus resource holds defined sysctl flags status.
-type MountStatus struct {
-	md   resource.Metadata
-	spec MountStatusSpec
-}
+type MountStatus = typed.Resource[MountStatusSpec, MountStatusRD]
 
 // MountStatusSpec describes status of the defined sysctls.
+//
+//gotagsrewrite:gen
 type MountStatusSpec struct {
-	Source         string   `yaml:"source"`
-	Target         string   `yaml:"target"`
-	FilesystemType string   `yaml:"filesystemType"`
-	Options        []string `yaml:"options"`
+	Source         string   `yaml:"source" protobuf:"1"`
+	Target         string   `yaml:"target" protobuf:"2"`
+	FilesystemType string   `yaml:"filesystemType" protobuf:"3"`
+	Options        []string `yaml:"options" protobuf:"4"`
 }
 
 // NewMountStatus initializes a MountStatus resource.
 func NewMountStatus(namespace resource.Namespace, id resource.ID) *MountStatus {
-	r := &MountStatus{
-		md:   resource.NewMetadata(namespace, MountStatusType, id, resource.VersionUndefined),
-		spec: MountStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[MountStatusSpec, MountStatusRD](
+		resource.NewMetadata(namespace, MountStatusType, id, resource.VersionUndefined),
+		MountStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *MountStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *MountStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *MountStatus) String() string {
-	return fmt.Sprintf("runtime.MountStatus.(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *MountStatus) DeepCopy() resource.Resource {
-	return &MountStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// MountStatusRD is auxiliary resource data for MountStatus.
+type MountStatusRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *MountStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (MountStatusRD) ResourceDefinition(resource.Metadata, MountStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             MountStatusType,
 		Aliases:          []resource.Type{"mounts"},
@@ -85,7 +63,11 @@ func (r *MountStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the MountStatusSpec with the proper type.
-func (r *MountStatus) TypedSpec() *MountStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[MountStatusSpec](MountStatusType, &MountStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

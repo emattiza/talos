@@ -19,33 +19,45 @@ import (
 )
 
 type KernelParamDefaultsSuite struct {
-	KernelParamSuite
+	RuntimeSuite
 }
 
 func getParams(mode runtime.Mode) []*kernel.Param {
 	res := []*kernel.Param{
 		{
-			Key:   "net.ipv4.ip_forward",
+			Key:   "proc.sys.net.ipv4.ip_forward",
 			Value: "1",
 		},
 		{
-			Key:   "net.ipv6.conf.default.forwarding",
+			Key:   "proc.sys.net.ipv6.conf.default.forwarding",
 			Value: "1",
 		},
 		{
-			Key:   "kernel.pid_max",
+			Key:   "proc.sys.net.ipv6.conf.default.accept_ra",
+			Value: "2",
+		},
+		{
+			Key:   "proc.sys.kernel.panic",
+			Value: "10",
+		},
+		{
+			Key:   "proc.sys.kernel.pid_max",
 			Value: "262144",
+		},
+		{
+			Key:   "proc.sys.vm.overcommit_memory",
+			Value: "1",
 		},
 	}
 
 	if mode != runtime.ModeContainer {
 		res = append(res, []*kernel.Param{
 			{
-				Key:   "net.bridge.bridge-nf-call-iptables",
+				Key:   "proc.sys.net.bridge.bridge-nf-call-iptables",
 				Value: "1",
 			},
 			{
-				Key:   "net.bridge.bridge-nf-call-ip6tables",
+				Key:   "proc.sys.net.bridge.bridge-nf-call-ip6tables",
 				Value: "1",
 			},
 		}...)

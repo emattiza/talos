@@ -6,7 +6,6 @@ package vm
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -21,6 +20,7 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/insomniacslk/dhcp/dhcpv6/server6"
 	"github.com/insomniacslk/dhcp/iana"
+	"github.com/siderolabs/gen/slices"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/talos-systems/talos/pkg/provision"
@@ -60,14 +60,23 @@ func handlerDHCP4(serverIP net.IP, statePath string) server4.Handler {
 			return
 		}
 
-		resp, err := dhcpv4.NewReplyFromRequest(m,
+		modifiers := []dhcpv4.Modifier{
 			dhcpv4.WithNetmask(match.Netmask),
 			dhcpv4.WithYourIP(match.IP),
-			dhcpv4.WithOption(dhcpv4.OptHostName(match.Hostname)),
 			dhcpv4.WithOption(dhcpv4.OptDNS(match.Nameservers...)),
 			dhcpv4.WithOption(dhcpv4.OptRouter(match.Gateway)),
-			dhcpv4.WithOption(dhcpv4.OptIPAddressLeaseTime(5*time.Minute)),
+			dhcpv4.WithOption(dhcpv4.OptIPAddressLeaseTime(5 * time.Minute)),
 			dhcpv4.WithOption(dhcpv4.OptServerIdentifier(serverIP)),
+		}
+
+		if match.Hostname != "" {
+			modifiers = append(modifiers,
+				dhcpv4.WithOption(dhcpv4.OptHostName(match.Hostname)),
+			)
+		}
+
+		resp, err := dhcpv4.NewReplyFromRequest(m,
+			modifiers...,
 		)
 		if err != nil {
 			log.Printf("failure building response: %s", err)
@@ -153,7 +162,6 @@ func handlerDHCP6(serverHwAddr net.HardwareAddr, statePath string) server6.Handl
 
 		modifiers := []dhcpv6.Modifier{
 			dhcpv6.WithDNS(match.Nameservers...),
-			dhcpv6.WithFQDN(0, match.Hostname),
 			dhcpv6.WithIANA(dhcpv6.OptIAAddress{
 				IPv6Addr:          match.IP,
 				PreferredLifetime: 5 * time.Minute,
@@ -165,6 +173,12 @@ func handlerDHCP6(serverHwAddr net.HardwareAddr, statePath string) server6.Handl
 				Time:          dhcpv6.GetTime(),
 				LinkLayerAddr: serverHwAddr,
 			}),
+		}
+
+		if match.Hostname != "" {
+			modifiers = append(modifiers,
+				dhcpv6.WithFQDN(0, match.Hostname),
+			)
 		}
 
 		var resp *dhcpv6.Message
@@ -260,10 +274,7 @@ func (p *Provisioner) CreateDHCPd(state *State, clusterReq provision.ClusterRequ
 		return err
 	}
 
-	gatewayAddrs := make([]string, len(clusterReq.Network.GatewayAddrs))
-	for j := range gatewayAddrs {
-		gatewayAddrs[j] = clusterReq.Network.GatewayAddrs[j].String()
-	}
+	gatewayAddrs := slices.Map(clusterReq.Network.GatewayAddrs, net.IP.String)
 
 	args := []string{
 		"dhcpd-launch",
@@ -283,7 +294,7 @@ func (p *Provisioner) CreateDHCPd(state *State, clusterReq provision.ClusterRequ
 		return err
 	}
 
-	if err = ioutil.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), os.ModePerm); err != nil {
+	if err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), os.ModePerm); err != nil {
 		return fmt.Errorf("error writing dhcp PID file: %w", err)
 	}
 

@@ -6,6 +6,8 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"os"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
@@ -60,10 +62,6 @@ func (ctrl *KernelParamDefaultsController) Run(ctx context.Context, r controller
 			if err := r.Modify(ctx, item, func(res resource.Resource) error {
 				res.(*runtime.KernelParamDefaultSpec).TypedSpec().Value = value
 
-				if item.Metadata().ID() == "net.ipv6.conf.default.forwarding" {
-					res.(*runtime.KernelParamDefaultSpec).TypedSpec().IgnoreErrors = true
-				}
-
 				return nil
 			}); err != nil {
 				return err
@@ -77,7 +75,7 @@ func (ctrl *KernelParamDefaultsController) Run(ctx context.Context, r controller
 func (ctrl *KernelParamDefaultsController) getKernelParams() []*kernel.Param {
 	res := []*kernel.Param{
 		{
-			Key:   "net.ipv4.ip_forward",
+			Key:   "proc.sys.net.ipv4.ip_forward",
 			Value: "1",
 		},
 	}
@@ -85,24 +83,67 @@ func (ctrl *KernelParamDefaultsController) getKernelParams() []*kernel.Param {
 	if ctrl.V1Alpha1Mode != v1alpha1runtime.ModeContainer {
 		res = append(res, []*kernel.Param{
 			{
-				Key:   "net.bridge.bridge-nf-call-iptables",
+				Key:   "proc.sys.net.bridge.bridge-nf-call-iptables",
 				Value: "1",
 			},
 			{
-				Key:   "net.bridge.bridge-nf-call-ip6tables",
+				Key:   "proc.sys.net.bridge.bridge-nf-call-ip6tables",
 				Value: "1",
 			},
 		}...)
 	}
 
+	// Apply IPv6 defaults only if IPv6 is enabled.
+	// NB: we only prevent the application of these rules if the IPv6 node does not exist.
+	// Other errors should be ignored here so that they bubble up later, where errors can be logged and handled.
+	_, err := os.Stat("/proc/sys/net/ipv6/conf/default/accept_ra")
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		res = append(res, []*kernel.Param{
+			{
+				Key:   "proc.sys.net.ipv6.conf.default.forwarding",
+				Value: "1",
+			},
+			{
+				Key:   "proc.sys.net.ipv6.conf.default.accept_ra",
+				Value: "2",
+			},
+		}...)
+	}
+
 	res = append(res, []*kernel.Param{
+		// ipvs/conntrack tcp keepalive refresh.
 		{
-			Key:   "net.ipv6.conf.default.forwarding",
-			Value: "1",
+			Key:   "proc.sys.net.ipv4.tcp_keepalive_time",
+			Value: "600",
 		},
 		{
-			Key:   "kernel.pid_max",
+			Key:   "proc.sys.net.ipv4.tcp_keepalive_intvl",
+			Value: "60",
+		},
+		{
+			Key:   "proc.sys.kernel.panic",
+			Value: "10",
+		},
+		{
+			Key:   "proc.sys.kernel.pid_max",
 			Value: "262144",
+		},
+		{
+			Key:   "proc.sys.vm.overcommit_memory",
+			Value: "1",
+		},
+	}...)
+
+	// kernel optimization for kubernetes workloads.
+	res = append(res, []*kernel.Param{
+		// configs inotify.
+		{
+			Key:   "proc.sys.fs.inotify.max_user_instances",
+			Value: "8192",
+		},
+		{
+			Key:   "proc.sys.fs.aio-max-nr",
+			Value: "1048576",
 		},
 	}...)
 

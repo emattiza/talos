@@ -34,7 +34,7 @@ type containerdRunner struct {
 	stopped chan struct{}
 
 	client      *containerd.Client
-	ctx         context.Context
+	ctx         context.Context //nolint:containedctx
 	container   containerd.Container
 	stdinCloser *StdinCloser
 }
@@ -124,7 +124,7 @@ func (c *containerdRunner) Close() error {
 
 // Run implements runner.Runner interface
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (c *containerdRunner) Run(eventSink events.Recorder) error {
 	defer close(c.stopped)
 
@@ -137,6 +137,24 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 	// attempt to clean up a task if it already exists
 	task, err = c.container.Task(c.ctx, nil)
 	if err == nil {
+		var s <-chan containerd.ExitStatus
+
+		s, err = task.Wait(c.ctx)
+		if err != nil {
+			return fmt.Errorf("failed to wait for the task %q: %w", c.args.ID, err)
+		}
+
+		err = task.Kill(c.ctx, syscall.SIGKILL, containerd.WithKillAll)
+		if err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("failed to kill the task %q: %w", c.args.ID, err)
+		}
+
+		select {
+		case <-s:
+		case <-c.stop:
+			return nil
+		}
+
 		if _, err = task.Delete(c.ctx); err != nil {
 			return fmt.Errorf("failed to clean up task %q: %w", c.args.ID, err)
 		}
@@ -196,7 +214,13 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 		return nil
 	case <-c.stop:
 		// graceful stop the task
-		eventSink(events.StateStopping, "Sending SIGTERM to task %s (PID %d, container %s)", task.ID(), task.Pid(), c.container.ID())
+		eventSink(
+			events.StateStopping,
+			"Sending SIGTERM to task %s (PID %d, container %s)",
+			task.ID(),
+			task.Pid(),
+			c.container.ID(),
+		)
 
 		if err = task.Kill(c.ctx, syscall.SIGTERM, containerd.WithKillAll); err != nil {
 			return fmt.Errorf("error sending SIGTERM: %w", err)
@@ -209,7 +233,13 @@ func (c *containerdRunner) Run(eventSink events.Recorder) error {
 		return nil
 	case <-time.After(c.opts.GracefulShutdownTimeout):
 		// kill the process
-		eventSink(events.StateStopping, "Sending SIGKILL to task %s (PID %d, container %s)", task.ID(), task.Pid(), c.container.ID())
+		eventSink(
+			events.StateStopping,
+			"Sending SIGKILL to task %s (PID %d, container %s)",
+			task.ID(),
+			task.Pid(),
+			c.container.ID(),
+		)
 
 		if err = task.Kill(c.ctx, syscall.SIGKILL, containerd.WithKillAll); err != nil {
 			return fmt.Errorf("error sending SIGKILL: %w", err)
@@ -233,21 +263,27 @@ func (c *containerdRunner) Stop() error {
 	return nil
 }
 
-func (c *containerdRunner) newContainerOpts(image containerd.Image, specOpts []oci.SpecOpts) []containerd.NewContainerOpts {
+func (c *containerdRunner) newContainerOpts(
+	image containerd.Image,
+	specOpts []oci.SpecOpts,
+) []containerd.NewContainerOpts {
 	containerOpts := []containerd.NewContainerOpts{}
 
 	if image != nil {
-		containerOpts = append(containerOpts,
+		containerOpts = append(
+			containerOpts,
 			containerd.WithImage(image),
 			containerd.WithNewSnapshot(c.args.ID, image),
 		)
 	}
 
-	containerOpts = append(containerOpts,
+	containerOpts = append(
+		containerOpts,
 		containerd.WithNewSpec(specOpts...),
 	)
 
-	containerOpts = append(containerOpts,
+	containerOpts = append(
+		containerOpts,
 		c.opts.ContainerOpts...,
 	)
 
@@ -258,12 +294,14 @@ func (c *containerdRunner) newOCISpecOpts(image oci.Image) []oci.SpecOpts {
 	specOpts := []oci.SpecOpts{}
 
 	if image != nil {
-		specOpts = append(specOpts,
+		specOpts = append(
+			specOpts,
 			oci.WithImageConfig(image),
 		)
 	}
 
-	specOpts = append(specOpts,
+	specOpts = append(
+		specOpts,
 		oci.WithProcessArgs(c.args.ProcessArgs...),
 		oci.WithEnv(c.opts.Env),
 		oci.WithHostHostsFile,
@@ -272,27 +310,32 @@ func (c *containerdRunner) newOCISpecOpts(image oci.Image) []oci.SpecOpts {
 	)
 
 	if c.opts.OOMScoreAdj != 0 {
-		specOpts = append(specOpts,
+		specOpts = append(
+			specOpts,
 			WithOOMScoreAdj(c.opts.OOMScoreAdj),
 		)
 	}
 
 	if c.opts.CgroupPath != "" {
-		specOpts = append(specOpts,
+		specOpts = append(
+			specOpts,
 			oci.WithCgroup(c.opts.CgroupPath),
 		)
 	}
 
-	specOpts = append(specOpts,
+	specOpts = append(
+		specOpts,
 		c.opts.OCISpecOpts...,
 	)
 
 	if c.opts.OverrideSeccompProfile != nil {
-		specOpts = append(specOpts,
+		specOpts = append(
+			specOpts,
 			WithCustomSeccompProfile(c.opts.OverrideSeccompProfile),
 		)
 	} else {
-		specOpts = append(specOpts,
+		specOpts = append(
+			specOpts,
 			seccomp.WithDefaultProfile(), // add seccomp profile last, as it depends on process capabilities
 		)
 	}

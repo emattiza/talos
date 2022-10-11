@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/go-pointer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -156,7 +158,35 @@ func TestValidate(t *testing.T) {
 			},
 			requiresInstall: true,
 		},
-
+		{
+			name: "MachineInstallExtensionsDuplicate",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "worker",
+					MachineInstall: &v1alpha1.InstallConfig{
+						InstallDisk: "/dev/vda",
+						InstallExtensions: []v1alpha1.InstallExtensionConfig{
+							{
+								ExtensionImage: "ghcr.io/siderolabs/gvisor:v0.1.0",
+							},
+							{
+								ExtensionImage: "ghcr.io/siderolabs/gvisor:v0.1.0",
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			requiresInstall: true,
+			expectedError:   "1 error occurred:\n\t* duplicate system extension \"ghcr.io/siderolabs/gvisor:v0.1.0\"\n\n",
+		},
 		{
 			name: "ExternalCloudProviderEnabled",
 			config: &v1alpha1.Config{
@@ -171,7 +201,7 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					ExternalCloudProviderConfig: &v1alpha1.ExternalCloudProviderConfig{
-						ExternalEnabled: true,
+						ExternalEnabled: pointer.To(true),
 						ExternalManifests: []string{
 							"https://www.example.com/manifest1.yaml",
 							"https://www.example.com/manifest2.yaml",
@@ -194,7 +224,7 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					ExternalCloudProviderConfig: &v1alpha1.ExternalCloudProviderConfig{
-						ExternalEnabled: true,
+						ExternalEnabled: pointer.To(true),
 					},
 				},
 			},
@@ -253,7 +283,7 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					ExternalCloudProviderConfig: &v1alpha1.ExternalCloudProviderConfig{
-						ExternalEnabled: true,
+						ExternalEnabled: pointer.To(true),
 						ExternalManifests: []string{
 							"/manifest.yaml",
 						},
@@ -599,7 +629,7 @@ func TestValidate(t *testing.T) {
 							},
 							{
 								DeviceInterface: "eth0",
-								DeviceDHCP:      true,
+								DeviceDHCP:      pointer.To(true),
 							},
 							{
 								DeviceInterface: "eth1",
@@ -627,6 +657,120 @@ func TestValidate(t *testing.T) {
 			expectedWarnings: []string{
 				"\"eth2\": machine.network.interface.cidr is deprecated, please use machine.network.interface.addresses",
 			},
+		},
+		{
+			name: "BridgeDoubleBridge",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{
+								DeviceInterface: "br0",
+								DeviceBridge: &v1alpha1.Bridge{
+									BridgedInterfaces: []string{
+										"eth0",
+										"eth1",
+									},
+								},
+							},
+							{
+								DeviceInterface: "br1",
+								DeviceBridge: &v1alpha1.Bridge{
+									BridgedInterfaces: []string{
+										"eth1",
+										"eth2",
+									},
+								},
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* interface \"eth1\" is declared as part of two bridges: \"br0\" and \"br1\"\n\n",
+		},
+		{
+			name: "InterfaceIsBothBridgeAndBond",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{
+								DeviceInterface: "bridgebond0",
+								DeviceBridge: &v1alpha1.Bridge{
+									BridgedInterfaces: []string{
+										"eth0",
+										"eth1",
+									},
+								},
+								DeviceBond: &v1alpha1.Bond{
+									BondInterfaces: []string{
+										"eth2",
+										"eth3",
+									},
+								},
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* interface has both bridge and bond sections set \"bridgebond0\": config sections are mutually exclusive\n\n",
+		},
+		{
+			name: "InterfacePartOfBridgeAndBond",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{
+								DeviceInterface: "br0",
+								DeviceBridge: &v1alpha1.Bridge{
+									BridgedInterfaces: []string{
+										"eth0",
+										"eth1",
+									},
+								},
+							},
+							{
+								DeviceInterface: "bond0",
+								DeviceBond: &v1alpha1.Bond{
+									BondInterfaces: []string{
+										"eth1",
+										"eth2",
+									},
+								},
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* interface \"eth1\" is declared as part of an interface and a bond: \"br0\" and \"bond0\"\n\n",
 		},
 		{
 			name: "Wireguard",
@@ -709,6 +853,12 @@ func TestValidate(t *testing.T) {
 										RouteGateway: "10.0.0.1",
 										RouteSource:  "10.0.0.3/32",
 									},
+									{
+										RouteNetwork: "169.254.254.254/32",
+									},
+									{
+										RouteSource: "10.0.0.3",
+									},
 								},
 							},
 						},
@@ -722,9 +872,10 @@ func TestValidate(t *testing.T) {
 					},
 				},
 			},
-			expectedError: "3 errors occurred:\n\t* [networking.os.device.route[3].gateway] \"172.0.0.x\": invalid network address\n" +
+			expectedError: "4 errors occurred:\n\t* [networking.os.device.route[3].gateway] \"172.0.0.x\": invalid network address\n" +
 				"\t* [networking.os.device.route[4].network] \"10.0.0.0\": invalid network address\n" +
-				"\t* [networking.os.device.route[5].source] \"10.0.0.3/32\": invalid network address\n\n",
+				"\t* [networking.os.device.route[5].source] \"10.0.0.3/32\": invalid network address\n" +
+				"\t* [networking.os.device.route[7]]: either network or gateway should be set\n\n",
 		},
 		{
 			name: "KubeSpanNoDiscovery",
@@ -733,8 +884,8 @@ func TestValidate(t *testing.T) {
 				MachineConfig: &v1alpha1.MachineConfig{
 					MachineType: "controlplane",
 					MachineNetwork: &v1alpha1.NetworkConfig{
-						NetworkKubeSpan: v1alpha1.NetworkKubeSpan{
-							KubeSpanEnabled: true,
+						NetworkKubeSpan: &v1alpha1.NetworkKubeSpan{
+							KubeSpanEnabled: pointer.To(true),
 						},
 					},
 				},
@@ -765,8 +916,8 @@ func TestValidate(t *testing.T) {
 							endpointURL,
 						},
 					},
-					ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
-						DiscoveryEnabled: true,
+					ClusterDiscoveryConfig: &v1alpha1.ClusterDiscoveryConfig{
+						DiscoveryEnabled: pointer.To(true),
 						DiscoveryRegistries: v1alpha1.DiscoveryRegistriesConfig{
 							RegistryService: v1alpha1.RegistryServiceConfig{
 								RegistryEndpoint: "foo",
@@ -790,8 +941,8 @@ func TestValidate(t *testing.T) {
 							endpointURL,
 						},
 					},
-					ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
-						DiscoveryEnabled: true,
+					ClusterDiscoveryConfig: &v1alpha1.ClusterDiscoveryConfig{
+						DiscoveryEnabled: pointer.To(true),
 					},
 				},
 			},
@@ -811,7 +962,15 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					EtcdConfig: &v1alpha1.EtcdConfig{
-						EtcdSubnet: "10.0.0.0/8",
+						RootCA: &x509.PEMEncodedCertificateAndKey{},
+						EtcdAdvertisedSubnets: []string{
+							"10.0.0.0/8",
+							"!1.1.1.1/32",
+						},
+						EtcdListenSubnets: []string{
+							"10.0.0.0/8",
+							"1.1.1.1/32",
+						},
 					},
 				},
 			},
@@ -831,11 +990,17 @@ func TestValidate(t *testing.T) {
 						},
 					},
 					EtcdConfig: &v1alpha1.EtcdConfig{
-						EtcdSubnet: "10.0.0.0",
+						RootCA: &x509.PEMEncodedCertificateAndKey{},
+						EtcdAdvertisedSubnets: []string{
+							"1234:",
+						},
+						EtcdListenSubnets: []string{
+							"10",
+						},
 					},
 				},
 			},
-			expectedError: "1 error occurred:\n\t* \"10.0.0.0\" is not a valid subnet\n\n",
+			expectedError: "2 errors occurred:\n\t* etcd advertised subnet is not valid: \"1234:\"\n\t* etcd listen subnet is not valid: \"10\"\n\n",
 		},
 		{
 			name: "GoodKubeletSubnet",
@@ -844,10 +1009,11 @@ func TestValidate(t *testing.T) {
 				MachineConfig: &v1alpha1.MachineConfig{
 					MachineType: "worker",
 					MachineKubelet: &v1alpha1.KubeletConfig{
-						KubeletNodeIP: v1alpha1.KubeletNodeIPConfig{
+						KubeletNodeIP: &v1alpha1.KubeletNodeIPConfig{
 							KubeletNodeIPValidSubnets: []string{
 								"10.0.0.0/8",
 								"!10.0.0.3/32",
+								"!fd00::169:254:2:53/128",
 							},
 						},
 					},
@@ -869,9 +1035,10 @@ func TestValidate(t *testing.T) {
 				MachineConfig: &v1alpha1.MachineConfig{
 					MachineType: "worker",
 					MachineKubelet: &v1alpha1.KubeletConfig{
-						KubeletNodeIP: v1alpha1.KubeletNodeIPConfig{
+						KubeletNodeIP: &v1alpha1.KubeletNodeIPConfig{
 							KubeletNodeIPValidSubnets: []string{
-								"10.0.0.0",
+								"10.0.0.0.3",
+								"[fd00::169:254:2:53]:344",
 							},
 						},
 					},
@@ -884,7 +1051,152 @@ func TestValidate(t *testing.T) {
 					},
 				},
 			},
-			expectedError: "1 error occurred:\n\t* kubelet nodeIP subnet is not valid: \"10.0.0.0\"\n\n",
+			expectedError: "2 errors occurred:\n" +
+				"\t* kubelet nodeIP subnet is not valid: \"10.0.0.0.3\"\n" +
+				"\t* kubelet nodeIP subnet is not valid: \"[fd00::169:254:2:53]:344\"\n" +
+				"\n",
+		},
+		{
+			name: "BadKubeletExtraConfig",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "worker",
+					MachineKubelet: &v1alpha1.KubeletConfig{
+						KubeletExtraConfig: v1alpha1.Unstructured{
+							Object: map[string]interface{}{
+								"port": 345,
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* kubelet configuration field \"port\" can't be overridden\n\n",
+		},
+		{
+			name: "DeviceInterfaceInvalid",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* [networking.os.device.interface], [networking.os.device.deviceSelector]: required either config section to be set\n\n",
+		},
+		{
+			name: "DeviceSelectorAndInterfaceSet",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{
+								DeviceInterface: "eth0",
+								DeviceSelector: &v1alpha1.NetworkDeviceSelector{
+									NetworkDeviceBus: "00:01",
+								},
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* [networking.os.device.interface], [networking.os.device.deviceSelector]: config sections are mutually exclusive\n\n",
+		},
+		{
+			name: "DeviceSelectorAndInterfaceSet",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineNetwork: &v1alpha1.NetworkConfig{
+						NetworkInterfaces: []*v1alpha1.Device{
+							{
+								DeviceSelector: &v1alpha1.NetworkDeviceSelector{},
+							},
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* [networking.os.device.deviceSelector]: config section should contain at least one field\n\n",
+		},
+		{
+			name: "TalosAPIAccessRBAC",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "controlplane",
+					MachineFeatures: &v1alpha1.FeaturesConfig{
+						KubernetesTalosAPIAccessConfig: &v1alpha1.KubernetesTalosAPIAccessConfig{
+							AccessEnabled: pointer.To(true),
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* feature API RBAC should be enabled when Kubernetes Talos API Access feature is enabled\n\n",
+		},
+		{
+			name: "TalosAPIAccessWorker",
+			config: &v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{
+					MachineType: "worker",
+					MachineFeatures: &v1alpha1.FeaturesConfig{
+						RBAC: pointer.To(true),
+						KubernetesTalosAPIAccessConfig: &v1alpha1.KubernetesTalosAPIAccessConfig{
+							AccessEnabled: pointer.To(true),
+						},
+					},
+				},
+				ClusterConfig: &v1alpha1.ClusterConfig{
+					ControlPlane: &v1alpha1.ControlPlaneConfig{
+						Endpoint: &v1alpha1.Endpoint{
+							endpointURL,
+						},
+					},
+				},
+			},
+			expectedError: "1 error occurred:\n\t* feature Kubernetes Talos API Access can only be enabled on control plane machines\n\n",
 		},
 	} {
 		test := test
@@ -897,14 +1209,14 @@ func TestValidate(t *testing.T) {
 				opts = append(opts, config.WithStrict())
 			}
 
-			warnings, errrors := test.config.Validate(runtimeMode{test.requiresInstall}, opts...)
+			warnings, errors := test.config.Validate(runtimeMode{test.requiresInstall}, opts...)
 
 			assert.Equal(t, test.expectedWarnings, warnings)
 
 			if test.expectedError == "" {
-				assert.NoError(t, errrors)
+				assert.NoError(t, errors)
 			} else {
-				assert.EqualError(t, errrors, test.expectedError)
+				assert.EqualError(t, errors, test.expectedError)
 			}
 		})
 	}

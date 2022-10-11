@@ -7,8 +7,7 @@ package keys
 import (
 	"fmt"
 
-	"github.com/google/uuid"
-	"github.com/talos-systems/go-smbios/smbios"
+	"github.com/talos-systems/talos/internal/pkg/smbios"
 )
 
 // NodeIDKeyHandler generates the key based on current node information
@@ -27,30 +26,25 @@ func (h *NodeIDKeyHandler) GetKey(options ...KeyOption) ([]byte, error) {
 		return nil, err
 	}
 
-	s, err := smbios.New()
+	s, err := smbios.GetSMBIOSInfo()
 	if err != nil {
 		return nil, err
 	}
 
-	machineUUID, err := s.SystemInformation().UUID()
-	if err != nil {
-		return nil, err
-	}
+	machineUUID := s.SystemInformation.UUID
 
-	if machineUUID == uuid.Nil {
+	if machineUUID == "" {
 		return nil, fmt.Errorf("machine UUID is not populated %s", machineUUID)
 	}
 
-	id := machineUUID.String()
-
 	// primitive entropy check
 	counts := map[rune]int{}
-	for _, s := range id {
+	for _, s := range machineUUID {
 		counts[s]++
-		if counts[s] > len(id)/2 {
+		if counts[s] > len(machineUUID)/2 {
 			return nil, fmt.Errorf("machine UUID %s entropy check failed", machineUUID)
 		}
 	}
 
-	return []byte(id + opts.PartitionLabel), nil
+	return []byte(machineUUID + opts.PartitionLabel), nil
 }

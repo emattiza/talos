@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/kubelet"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 )
 
@@ -30,11 +32,19 @@ var (
 
 	// ErrRequiredSection denotes a section is required.
 	ErrRequiredSection = errors.New("required config section")
+	// ErrRequiredSectionOptions denotes at least one section is required.
+	ErrRequiredSectionOptions = errors.New("required either config section to be set")
 	// ErrInvalidVersion denotes that the config file version is invalid.
 	ErrInvalidVersion = errors.New("invalid config version")
+	// ErrMutuallyExclusive denotes that config sections are mutually exclusive.
+	ErrMutuallyExclusive = errors.New("config sections are mutually exclusive")
+	// ErrEmpty denotes that config section should have at least a single field defined.
+	ErrEmpty = errors.New("config section should contain at least one field")
 
 	// Security.
 
+	// ErrEmptyKeyCert denotes that crypto key/cert combination should not be empty.
+	ErrEmptyKeyCert = errors.New("key/cert combination should not be empty")
 	// ErrInvalidCert denotes that the certificate specified is invalid.
 	ErrInvalidCert = errors.New("certificate is invalid")
 	// ErrInvalidCertType denotes that the certificate type is invalid.
@@ -57,6 +67,7 @@ var (
 type NetworkDeviceCheck func(*Device, map[string]string) ([]string, error)
 
 // Validate implements the config.Provider interface.
+//
 //nolint:gocyclo,cyclop
 func (c *Config) Validate(mode config.RuntimeMode, options ...config.ValidationOption) ([]string, error) {
 	var (
@@ -134,15 +145,38 @@ func (c *Config) Validate(mode config.RuntimeMode, options ...config.ValidationO
 
 	if c.MachineConfig.MachineNetwork != nil {
 		bondedInterfaces := map[string]string{}
+		bridgedInterfaces := map[string]string{}
 
 		for _, device := range c.MachineConfig.MachineNetwork.NetworkInterfaces {
+			if device.Bond() != nil && device.Bridge() != nil {
+				result = multierror.Append(result, fmt.Errorf("interface has both bridge and bond sections set %q: %w", device.Interface(), ErrMutuallyExclusive))
+			}
+
 			if device.Bond() != nil {
 				for _, iface := range device.Bond().Interfaces() {
 					if otherIface, exists := bondedInterfaces[iface]; exists && otherIface != device.Interface() {
 						result = multierror.Append(result, fmt.Errorf("interface %q is declared as part of two bonds: %q and %q", iface, otherIface, device.Interface()))
 					}
 
+					if bridgeIface, exists := bridgedInterfaces[iface]; exists {
+						result = multierror.Append(result, fmt.Errorf("interface %q is declared as part of an interface and a bond: %q and %q", iface, bridgeIface, device.Interface()))
+					}
+
 					bondedInterfaces[iface] = device.Interface()
+				}
+			}
+
+			if device.Bridge() != nil {
+				for _, iface := range device.Bridge().Interfaces() {
+					if otherIface, exists := bridgedInterfaces[iface]; exists && otherIface != device.Interface() {
+						result = multierror.Append(result, fmt.Errorf("interface %q is declared as part of two bridges: %q and %q", iface, otherIface, device.Interface()))
+					}
+
+					if bondIface, exists := bondedInterfaces[iface]; exists {
+						result = multierror.Append(result, fmt.Errorf("interface %q is declared as part of an interface and a bond: %q and %q", iface, bondIface, device.Interface()))
+					}
+
+					bridgedInterfaces[iface] = device.Interface()
 				}
 			}
 		}
@@ -211,6 +245,26 @@ func (c *Config) Validate(mode config.RuntimeMode, options ...config.ValidationO
 		result = multierror.Append(result, err)
 	}
 
+	if c.MachineConfig.MachineInstall != nil {
+		extensions := map[string]struct{}{}
+
+		for _, ext := range c.MachineConfig.MachineInstall.InstallExtensions {
+			if _, exists := extensions[ext.Image()]; exists {
+				result = multierror.Append(result, fmt.Errorf("duplicate system extension %q", ext.Image()))
+			}
+
+			extensions[ext.Image()] = struct{}{}
+		}
+	}
+
+	if c.Machine().Features().KubernetesTalosAPIAccess().Enabled() && !c.Machine().Features().RBACEnabled() {
+		result = multierror.Append(result, fmt.Errorf("feature API RBAC should be enabled when Kubernetes Talos API Access feature is enabled"))
+	}
+
+	if c.Machine().Features().KubernetesTalosAPIAccess().Enabled() && !c.Machine().Type().IsControlPlane() {
+		result = multierror.Append(result, fmt.Errorf("feature Kubernetes Talos API Access can only be enabled on control plane machines"))
+	}
+
 	if opts.Strict {
 		for _, w := range warnings {
 			result = multierror.Append(result, fmt.Errorf("warning: %s", w))
@@ -258,10 +312,8 @@ func (c *ClusterConfig) Validate() error {
 		result = multierror.Append(result, ecp.Validate())
 	}
 
-	if c.EtcdConfig != nil && c.EtcdConfig.EtcdSubnet != "" {
-		if _, _, err := net.ParseCIDR(c.EtcdConfig.EtcdSubnet); err != nil {
-			result = multierror.Append(result, fmt.Errorf("%q is not a valid subnet", c.EtcdConfig.EtcdSubnet))
-		}
+	if c.EtcdConfig != nil {
+		result = multierror.Append(result, c.EtcdConfig.Validate())
 	}
 
 	result = multierror.Append(result, c.ClusterInlineManifests.Validate(), c.ClusterDiscoveryConfig.Validate(c))
@@ -307,7 +359,7 @@ func ValidateCNI(cni config.CNI) ([]string, error) {
 
 // Validate validates external cloud provider configuration.
 func (ecp *ExternalCloudProviderConfig) Validate() error {
-	if !ecp.ExternalEnabled && (len(ecp.ExternalManifests) != 0) {
+	if !ecp.Enabled() && (len(ecp.ExternalManifests) != 0) {
 		return fmt.Errorf("external cloud provider is disabled, but manifests are provided")
 	}
 
@@ -345,10 +397,12 @@ func (manifests ClusterInlineManifests) Validate() error {
 }
 
 // Validate the discovery config.
-func (c ClusterDiscoveryConfig) Validate(clusterCfg *ClusterConfig) error {
+//
+//nolint:gocyclo
+func (c *ClusterDiscoveryConfig) Validate(clusterCfg *ClusterConfig) error {
 	var result *multierror.Error
 
-	if !c.Enabled() {
+	if c == nil || !c.Enabled() {
 		return nil
 	}
 
@@ -383,21 +437,21 @@ func (c ClusterDiscoveryConfig) Validate(clusterCfg *ClusterConfig) error {
 
 // ValidateNetworkDevices runs the specified validation checks specific to the
 // network devices.
-func ValidateNetworkDevices(d *Device, bondedInterfaces map[string]string, checks ...NetworkDeviceCheck) ([]string, error) {
+func ValidateNetworkDevices(d *Device, pairedInterfaces map[string]string, checks ...NetworkDeviceCheck) ([]string, error) {
 	var result *multierror.Error
 
 	if d == nil {
 		return nil, fmt.Errorf("empty device")
 	}
 
-	if d.DeviceIgnore {
+	if d.Ignore() {
 		return nil, result.ErrorOrNil()
 	}
 
 	var warnings []string
 
 	for _, check := range checks {
-		warn, err := check(d, bondedInterfaces)
+		warn, err := check(d, pairedInterfaces)
 		warnings = append(warnings, warn...)
 		result = multierror.Append(result, err)
 	}
@@ -406,15 +460,23 @@ func ValidateNetworkDevices(d *Device, bondedInterfaces map[string]string, check
 }
 
 // CheckDeviceInterface ensures that the interface has been specified.
-func CheckDeviceInterface(d *Device, bondedInterfaces map[string]string) ([]string, error) {
+//
+//nolint:gocyclo
+func CheckDeviceInterface(d *Device, _ map[string]string) ([]string, error) {
 	var result *multierror.Error
 
 	if d == nil {
 		return nil, fmt.Errorf("empty device")
 	}
 
-	if d.DeviceInterface == "" {
-		result = multierror.Append(result, fmt.Errorf("[%s]: %w", "networking.os.device.interface", ErrRequiredSection))
+	if d.DeviceInterface == "" && d.DeviceSelector == nil {
+		result = multierror.Append(result, fmt.Errorf("[%s], [%s]: %w", "networking.os.device.interface", "networking.os.device.deviceSelector", ErrRequiredSectionOptions))
+	} else if d.DeviceInterface != "" && d.DeviceSelector != nil {
+		result = multierror.Append(result, fmt.Errorf("[%s], [%s]: %w", "networking.os.device.interface", "networking.os.device.deviceSelector", ErrMutuallyExclusive))
+	}
+
+	if d.DeviceSelector != nil && reflect.ValueOf(d.DeviceSelector).Elem().IsZero() {
+		result = multierror.Append(result, fmt.Errorf("[%s]: %w", "networking.os.device.deviceSelector", ErrEmpty))
 	}
 
 	if d.DeviceBond != nil {
@@ -632,7 +694,7 @@ func CheckDeviceAddressing(d *Device, bondedInterfaces map[string]string) ([]str
 	var warnings []string
 
 	if _, bonded := bondedInterfaces[d.Interface()]; bonded {
-		if d.DeviceDHCP || d.DeviceCIDR != "" || len(d.DeviceAddresses) > 0 || d.DeviceVIPConfig != nil {
+		if d.DHCP() || d.DeviceCIDR != "" || len(d.DeviceAddresses) > 0 || d.DeviceVIPConfig != nil {
 			result = multierror.Append(result, fmt.Errorf("[%s] %q: %s", "networking.os.device", d.DeviceInterface, "bonded interface shouldn't have any addressing methods configured"))
 		}
 	}
@@ -669,7 +731,9 @@ func CheckDeviceAddressing(d *Device, bondedInterfaces map[string]string) ([]str
 }
 
 // CheckDeviceRoutes ensures that the specified routes are valid.
-func CheckDeviceRoutes(d *Device, bondedInterfaces map[string]string) ([]string, error) {
+//
+//nolint:gocyclo
+func CheckDeviceRoutes(d *Device, _ map[string]string) ([]string, error) {
 	var result *multierror.Error
 
 	if d == nil {
@@ -687,8 +751,14 @@ func CheckDeviceRoutes(d *Device, bondedInterfaces map[string]string) ([]string,
 			}
 		}
 
-		if ip := net.ParseIP(route.Gateway()); ip == nil {
-			result = multierror.Append(result, fmt.Errorf("[%s] %q: %w", "networking.os.device.route["+strconv.Itoa(idx)+"].gateway", route.Gateway(), ErrInvalidAddress))
+		if route.Gateway() != "" {
+			if ip := net.ParseIP(route.Gateway()); ip == nil {
+				result = multierror.Append(result, fmt.Errorf("[%s] %q: %w", "networking.os.device.route["+strconv.Itoa(idx)+"].gateway", route.Gateway(), ErrInvalidAddress))
+			}
+		}
+
+		if route.Gateway() == "" && route.Network() == "" {
+			result = multierror.Append(result, fmt.Errorf("[%s]: %s", "networking.os.device.route["+strconv.Itoa(idx)+"]", "either network or gateway should be set"))
 		}
 
 		if route.Source() != "" {
@@ -705,13 +775,52 @@ func CheckDeviceRoutes(d *Device, bondedInterfaces map[string]string) ([]string,
 func (k *KubeletConfig) Validate() ([]string, error) {
 	var result *multierror.Error
 
-	for _, cidr := range k.KubeletNodeIP.KubeletNodeIPValidSubnets {
-		cidr = strings.TrimPrefix(cidr, "!")
+	if k.KubeletNodeIP != nil {
+		for _, cidr := range k.KubeletNodeIP.KubeletNodeIPValidSubnets {
+			cidr = strings.TrimPrefix(cidr, "!")
 
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			result = multierror.Append(result, fmt.Errorf("kubelet nodeIP subnet is not valid: %q", cidr))
+			if _, err := talosnet.ParseCIDR(cidr); err != nil {
+				result = multierror.Append(result, fmt.Errorf("kubelet nodeIP subnet is not valid: %q", cidr))
+			}
+		}
+	}
+
+	for _, field := range kubelet.ProtectedConfigurationFields {
+		if _, exists := k.KubeletExtraConfig.Object[field]; exists {
+			result = multierror.Append(result, fmt.Errorf("kubelet configuration field %q can't be overridden", field))
 		}
 	}
 
 	return nil, result.ErrorOrNil()
+}
+
+// Validate etcd configuration.
+func (e *EtcdConfig) Validate() error {
+	var result *multierror.Error
+
+	if e.CA() == nil {
+		result = multierror.Append(result, ErrEmptyKeyCert)
+	}
+
+	if e.EtcdSubnet != "" && len(e.EtcdAdvertisedSubnets) > 0 {
+		result = multierror.Append(result, fmt.Errorf("etcd subnet can't be set when advertised subnets are set"))
+	}
+
+	for _, cidr := range e.AdvertisedSubnets() {
+		cidr = strings.TrimPrefix(cidr, "!")
+
+		if _, err := talosnet.ParseCIDR(cidr); err != nil {
+			result = multierror.Append(result, fmt.Errorf("etcd advertised subnet is not valid: %q", cidr))
+		}
+	}
+
+	for _, cidr := range e.ListenSubnets() {
+		cidr = strings.TrimPrefix(cidr, "!")
+
+		if _, err := talosnet.ParseCIDR(cidr); err != nil {
+			result = multierror.Append(result, fmt.Errorf("etcd listen subnet is not valid: %q", cidr))
+		}
+	}
+
+	return result.ErrorOrNil()
 }

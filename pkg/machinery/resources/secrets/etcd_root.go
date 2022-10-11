@@ -5,11 +5,13 @@
 package secrets
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/crypto/x509"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // EtcdRootType is type of EtcdRoot secret resource.
@@ -19,52 +21,28 @@ const EtcdRootType = resource.Type("EtcdRootSecrets.secrets.talos.dev")
 const EtcdRootID = resource.ID("etcd")
 
 // EtcdRoot contains root (not generated) secrets.
-type EtcdRoot struct {
-	md   resource.Metadata
-	spec EtcdRootSpec
-}
+type EtcdRoot = typed.Resource[EtcdRootSpec, EtcdRootRD]
 
 // EtcdRootSpec describes etcd CA secrets.
+//
+//gotagsrewrite:gen
 type EtcdRootSpec struct {
-	EtcdCA *x509.PEMEncodedCertificateAndKey `yaml:"etcdCA"`
+	EtcdCA *x509.PEMEncodedCertificateAndKey `yaml:"etcdCA" protobuf:"1"`
 }
 
 // NewEtcdRoot initializes a EtcdRoot resource.
 func NewEtcdRoot(id resource.ID) *EtcdRoot {
-	r := &EtcdRoot{
-		md:   resource.NewMetadata(NamespaceName, EtcdRootType, id, resource.VersionUndefined),
-		spec: EtcdRootSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[EtcdRootSpec, EtcdRootRD](
+		resource.NewMetadata(NamespaceName, EtcdRootType, id, resource.VersionUndefined),
+		EtcdRootSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *EtcdRoot) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *EtcdRoot) Spec() interface{} {
-	return &r.spec
-}
-
-func (r *EtcdRoot) String() string {
-	return fmt.Sprintf("secrets.EtcdRoot(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *EtcdRoot) DeepCopy() resource.Resource {
-	return &EtcdRoot{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// EtcdRootRD provides auxiliary methods for EtcdRoot.
+type EtcdRootRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *EtcdRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (EtcdRootRD) ResourceDefinition(resource.Metadata, EtcdRootSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             EtcdRootType,
 		Aliases:          []resource.Type{},
@@ -73,7 +51,11 @@ func (r *EtcdRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *EtcdRoot) TypedSpec() *EtcdRootSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[EtcdRootSpec](EtcdRootType, &EtcdRoot{})
+	if err != nil {
+		panic(err)
+	}
 }

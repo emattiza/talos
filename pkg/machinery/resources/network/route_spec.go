@@ -5,64 +5,67 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/gen/value"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // RouteSpecType is type of RouteSpec resource.
 const RouteSpecType = resource.Type("RouteSpecs.net.talos.dev")
 
 // RouteSpec resource holds route specification to be applied to the kernel.
-type RouteSpec struct {
-	md   resource.Metadata
-	spec RouteSpecSpec
-}
+type RouteSpec = typed.Resource[RouteSpecSpec, RouteSpecRD]
 
 // RouteSpecSpec describes the route.
+//
+//gotagsrewrite:gen
 type RouteSpecSpec struct {
-	Family      nethelpers.Family        `yaml:"family"`
-	Destination netaddr.IPPrefix         `yaml:"dst"`
-	Source      netaddr.IP               `yaml:"src"`
-	Gateway     netaddr.IP               `yaml:"gateway"`
-	OutLinkName string                   `yaml:"outLinkName,omitempty"`
-	Table       nethelpers.RoutingTable  `yaml:"table"`
-	Priority    uint32                   `yaml:"priority,omitempty"`
-	Scope       nethelpers.Scope         `yaml:"scope"`
-	Type        nethelpers.RouteType     `yaml:"type"`
-	Flags       nethelpers.RouteFlags    `yaml:"flags"`
-	Protocol    nethelpers.RouteProtocol `yaml:"protocol"`
-	ConfigLayer ConfigLayer              `yaml:"layer"`
+	Family      nethelpers.Family        `yaml:"family" protobuf:"1"`
+	Destination netip.Prefix             `yaml:"dst" protobuf:"2"`
+	Source      netip.Addr               `yaml:"src" protobuf:"3"`
+	Gateway     netip.Addr               `yaml:"gateway" protobuf:"4"`
+	OutLinkName string                   `yaml:"outLinkName,omitempty" protobuf:"5"`
+	Table       nethelpers.RoutingTable  `yaml:"table" protobuf:"6"`
+	Priority    uint32                   `yaml:"priority,omitempty" protobuf:"7"`
+	Scope       nethelpers.Scope         `yaml:"scope" protobuf:"8"`
+	Type        nethelpers.RouteType     `yaml:"type" protobuf:"9"`
+	Flags       nethelpers.RouteFlags    `yaml:"flags" protobuf:"10"`
+	Protocol    nethelpers.RouteProtocol `yaml:"protocol" protobuf:"11"`
+	ConfigLayer ConfigLayer              `yaml:"layer" protobuf:"12"`
+	MTU         uint32                   `yaml:"mtu,omitempty" protobuf:"13"`
 }
 
 var (
-	zero16 = netaddr.MustParseIP("::")
-	zero4  = netaddr.MustParseIP("0.0.0.0")
+	zero16 = netip.MustParseAddr("::")
+	zero4  = netip.MustParseAddr("0.0.0.0")
 )
 
 // Normalize converts 0.0.0.0 to zero value.
 func (route *RouteSpecSpec) Normalize() {
-	if route.Destination.Bits() == 0 && (route.Destination.IP().Compare(zero4) == 0 || route.Destination.IP().Compare(zero16) == 0) {
+	if route.Destination.Bits() == 0 && (route.Destination.Addr().Compare(zero4) == 0 || route.Destination.Addr().Compare(zero16) == 0) {
 		// clear destination to be zero value to support "0.0.0.0/0" routes
-		route.Destination = netaddr.IPPrefix{}
+		route.Destination = netip.Prefix{}
 	}
 
 	if route.Gateway.Compare(zero4) == 0 || route.Gateway.Compare(zero16) == 0 {
-		route.Gateway = netaddr.IP{}
+		route.Gateway = netip.Addr{}
 	}
 
 	if route.Source.Compare(zero4) == 0 || route.Source.Compare(zero16) == 0 {
-		route.Source = netaddr.IP{}
+		route.Source = netip.Addr{}
 	}
 
 	switch {
-	case route.Gateway.IsZero():
+	case value.IsZero(route.Gateway):
 		route.Scope = nethelpers.ScopeLink
-	case route.Destination.IP().IsLoopback():
+	case route.Destination.Addr().IsLoopback():
 		route.Scope = nethelpers.ScopeHost
 	default:
 		route.Scope = nethelpers.ScopeGlobal
@@ -71,40 +74,17 @@ func (route *RouteSpecSpec) Normalize() {
 
 // NewRouteSpec initializes a RouteSpec resource.
 func NewRouteSpec(namespace resource.Namespace, id resource.ID) *RouteSpec {
-	r := &RouteSpec{
-		md:   resource.NewMetadata(namespace, RouteSpecType, id, resource.VersionUndefined),
-		spec: RouteSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[RouteSpecSpec, RouteSpecRD](
+		resource.NewMetadata(namespace, RouteSpecType, id, resource.VersionUndefined),
+		RouteSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *RouteSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// RouteSpecRD provides auxiliary methods for RouteSpec.
+type RouteSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *RouteSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *RouteSpec) String() string {
-	return fmt.Sprintf("network.RouteSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *RouteSpec) DeepCopy() resource.Resource {
-	return &RouteSpec{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *RouteSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (RouteSpecRD) ResourceDefinition(resource.Metadata, RouteSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             RouteSpecType,
 		Aliases:          []resource.Type{},
@@ -113,7 +93,11 @@ func (r *RouteSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *RouteSpec) TypedSpec() *RouteSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[RouteSpecSpec](RouteSpecType, &RouteSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

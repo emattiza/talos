@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/google/go-cmp/cmp"
+	"github.com/siderolabs/gen/slices"
 	"github.com/talos-systems/go-retry/retry"
-	"google.golang.org/grpc/codes"
-	"gopkg.in/yaml.v3"
+	"google.golang.org/grpc/metadata"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -39,7 +40,6 @@ import (
 	v1alpha1config "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	machinetype "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 )
 
@@ -50,7 +50,7 @@ type UpgradeProvider interface {
 }
 
 var deprecations = map[string][]string{
-	// https://kubernetes.io/blog/2021/07/14/upcoming-changes-in-kubernetes-1-22/#api-changes
+	// https://kubernetes.io/docs/reference/using-api/deprecation-guide/
 	"1.21->1.22": {
 		"validatingwebhookconfigurations.v1beta1.admissionregistration.k8s.io",
 		"mutatingwebhookconfigurations.v1beta1.admissionregistration.k8s.io",
@@ -60,12 +60,30 @@ var deprecations = map[string][]string{
 		"ingresses.v1beta1.extensions",
 		"ingresses.v1beta1.networking.k8s.io",
 	},
+	"1.24->1.25": {
+		"cronjobs.v1beta1.batch",
+		"endpointslices.v1beta1.discovery.k8s.io",
+		"events.v1beta1.events.k8s.io",
+		"horizontalpodautoscalers.v2beta1.autoscaling",
+		"poddisruptionbudgets.v1beta1.policy",
+		"podsecuritypolicies.v1beta1.policy",
+		"runtimeclasses.v1beta1.node.k8s.io",
+	},
+	"1.25->1.26": {
+		"flowschemas.v1beta1.flowcontrol.apiserver.k8s.io",
+		"prioritylevelconfigurations.v1beta1.flowcontrol.apiserver.k8s.io",
+		"horizontalpodautoscalers.v2beta2.autoscaling",
+	},
 }
 
 // UpgradeTalosManaged the Kubernetes control plane.
 //
 //nolint:gocyclo,cyclop
 func UpgradeTalosManaged(ctx context.Context, cluster UpgradeProvider, options UpgradeOptions) error {
+	// strip leading `v` from Kubernetes version
+	options.FromVersion = strings.TrimLeft(options.FromVersion, "v")
+	options.ToVersion = strings.TrimLeft(options.ToVersion, "v")
+
 	switch path := options.Path(); path {
 	// nothing for all those
 	case "1.19->1.19":
@@ -77,6 +95,12 @@ func UpgradeTalosManaged(ctx context.Context, cluster UpgradeProvider, options U
 	case "1.22->1.22":
 	case "1.22->1.23":
 	case "1.23->1.23":
+	case "1.23->1.24":
+	case "1.24->1.24":
+	case "1.24->1.25":
+	case "1.25->1.25":
+	case "1.25->1.26":
+	case "1.26->1.26":
 
 	default:
 		return fmt.Errorf("unsupported upgrade path %q (from %q to %q)", path, options.FromVersion, options.ToVersion)
@@ -91,16 +115,16 @@ func UpgradeTalosManaged(ctx context.Context, cluster UpgradeProvider, options U
 		return fmt.Errorf("error building kubernetes client: %w", err)
 	}
 
-	options.masterNodes, err = k8sClient.NodeIPs(ctx, machinetype.TypeControlPlane)
+	options.controlPlaneNodes, err = k8sClient.NodeIPs(ctx, machinetype.TypeControlPlane)
 	if err != nil {
-		return fmt.Errorf("error fetching master nodes: %w", err)
+		return fmt.Errorf("error fetching controlplane nodes: %w", err)
 	}
 
-	if len(options.masterNodes) == 0 {
-		return fmt.Errorf("no master nodes discovered")
+	if len(options.controlPlaneNodes) == 0 {
+		return fmt.Errorf("no controlplane nodes discovered")
 	}
 
-	options.Log("discovered master nodes %q", options.masterNodes)
+	options.Log("discovered controlplane nodes %q", options.controlPlaneNodes)
 
 	if options.UpgradeKubelet {
 		options.workerNodes, err = k8sClient.NodeIPs(ctx, machinetype.TypeWorker)
@@ -140,13 +164,26 @@ func UpgradeTalosManaged(ctx context.Context, cluster UpgradeProvider, options U
 func upgradeStaticPod(ctx context.Context, cluster UpgradeProvider, options UpgradeOptions, service string) error {
 	options.Log("updating %q to version %q", service, options.ToVersion)
 
-	for _, node := range options.masterNodes {
+	for _, node := range options.controlPlaneNodes {
 		if err := upgradeStaticPodOnNode(ctx, cluster, options, service, node); err != nil {
 			return fmt.Errorf("error updating node %q: %w", node, err)
 		}
 	}
 
 	return nil
+}
+
+func controlplaneConfigResourceType(service string) resource.Type {
+	switch service {
+	case kubeAPIServer:
+		return k8s.APIServerConfigType
+	case kubeControllerManager:
+		return k8s.ControllerManagerConfigType
+	case kubeScheduler:
+		return k8s.SchedulerConfigType
+	}
+
+	panic(fmt.Sprintf("unknown service ID %q", service))
 }
 
 //nolint:gocyclo
@@ -159,34 +196,36 @@ func upgradeStaticPodOnNode(ctx context.Context, cluster UpgradeProvider, option
 		return fmt.Errorf("error building Talos API client: %w", err)
 	}
 
-	ctx = client.WithNodes(ctx, node)
+	ctx = client.WithNode(ctx, node)
 
 	options.Log(" > %q: starting update", node)
 
-	watchClient, err := c.Resources.Watch(ctx, config.NamespaceName, config.K8sControlPlaneType, service)
-	if err != nil {
+	watchCh := make(chan state.Event)
+
+	if err = c.COSI.Watch(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, controlplaneConfigResourceType(service), service, resource.VersionUndefined), watchCh); err != nil {
 		return fmt.Errorf("error watching service configuration: %w", err)
 	}
 
-	// first response is resource definition
-	_, err = watchClient.Recv()
-	if err != nil {
-		return fmt.Errorf("error watching config: %w", err)
-	}
+	var (
+		expectedConfigVersion string
+		initialConfig         resource.Resource
+	)
 
-	// second is the initial state
-	watchInitial, err := watchClient.Recv()
-	if err != nil {
-		return fmt.Errorf("error watching config: %w", err)
-	}
+	select {
+	case ev := <-watchCh:
+		if ev.Type != state.Created {
+			return fmt.Errorf("unexpected event type: %d", ev.Type)
+		}
 
-	if watchInitial.EventType != state.Created {
-		return fmt.Errorf("unexpected event type: %d", watchInitial.EventType)
+		expectedConfigVersion = ev.Resource.Metadata().Version().String()
+		initialConfig = ev.Resource
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	skipConfigWait := false
 
-	err = patchNodeConfig(ctx, cluster, node, upgradeStaticPodPatcher(options, service, watchInitial.Resource))
+	err = patchNodeConfig(ctx, cluster, node, upgradeStaticPodPatcher(options, service, initialConfig))
 	if err != nil {
 		if errors.Is(err, errUpdateSkipped) {
 			skipConfigWait = true
@@ -200,25 +239,19 @@ func upgradeStaticPodOnNode(ctx context.Context, cluster UpgradeProvider, option
 	}
 
 	options.Log(" > %q: machine configuration patched", node)
-	options.Log(" > %q: waiting for API server state pod update", node)
-
-	var expectedConfigVersion string
+	options.Log(" > %q: waiting for %s pod update", node, service)
 
 	if !skipConfigWait {
-		var watchUpdated client.WatchResponse
+		select {
+		case ev := <-watchCh:
+			if ev.Type != state.Updated {
+				return fmt.Errorf("unexpected event type: %d", ev.Type)
+			}
 
-		watchUpdated, err = watchClient.Recv()
-		if err != nil {
-			return fmt.Errorf("error watching config: %w", err)
+			expectedConfigVersion = ev.Resource.Metadata().Version().String()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-
-		if watchUpdated.EventType != state.Updated {
-			return fmt.Errorf("unexpected event type: %d", watchInitial.EventType)
-		}
-
-		expectedConfigVersion = watchUpdated.Resource.Metadata().Version().String()
-	} else {
-		expectedConfigVersion = watchInitial.Resource.Metadata().Version().String()
 	}
 
 	if err = retry.Constant(3*time.Minute, retry.WithUnits(10*time.Second)).Retry(func() error {
@@ -241,8 +274,18 @@ func upgradeStaticPodPatcher(options UpgradeOptions, service string, configResou
 			config.ClusterConfig = &v1alpha1config.ClusterConfig{}
 		}
 
-		configData := configResource.(*resource.Any).Value().(map[string]interface{}) //nolint:errcheck,forcetypeassert
-		configImage := configData["image"].(string)                                   //nolint:errcheck,forcetypeassert
+		var configImage string
+
+		switch r := configResource.(type) {
+		case *k8s.APIServerConfig:
+			configImage = r.TypedSpec().Image
+		case *k8s.ControllerManagerConfig:
+			configImage = r.TypedSpec().Image
+		case *k8s.SchedulerConfig:
+			configImage = r.TypedSpec().Image
+		default:
+			return fmt.Errorf("unsupported service config %T", configResource)
+		}
 
 		logUpdate := func(oldImage string) {
 			parts := strings.Split(oldImage, ":")
@@ -333,54 +376,25 @@ func getManifests(ctx context.Context, cluster UpgradeProvider) ([]*unstructured
 		return nil, err
 	}
 
-	defer talosclient.Close() //nolint:errcheck
+	defer cluster.Close() //nolint:errcheck
 
-	listClient, err := talosclient.Resources.List(ctx, k8s.ControlPlaneNamespaceName, k8s.ManifestType)
+	md, _ := metadata.FromOutgoingContext(ctx)
+	if nodes := md["nodes"]; len(nodes) > 0 {
+		ctx = client.WithNode(ctx, nodes[0])
+	}
+
+	items, err := safe.StateList[*k8s.Manifest](ctx, talosclient.COSI, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "", resource.VersionUndefined))
 	if err != nil {
 		return nil, err
 	}
 
+	it := safe.IteratorFromList(items)
+
 	objects := []*unstructured.Unstructured{}
 
-	for {
-		msg, err := listClient.Recv()
-		if err != nil {
-			if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-				return objects, nil
-			}
-
-			return nil, err
-		}
-
-		if msg.Metadata.GetError() != "" {
-			return nil, fmt.Errorf(msg.Metadata.GetError())
-		}
-
-		if msg.Resource == nil {
-			continue
-		}
-
-		// TODO: fix that when we get resource API to work through protobufs
-		out, err := resource.MarshalYAML(msg.Resource)
-		if err != nil {
-			return nil, err
-		}
-
-		data, err := yaml.Marshal(out)
-		if err != nil {
-			return nil, err
-		}
-
-		manifest := struct {
-			Objects []map[string]interface{} `yaml:"spec"`
-		}{}
-
-		if err = yaml.Unmarshal(data, &manifest); err != nil {
-			return nil, err
-		}
-
-		for _, o := range manifest.Objects {
-			obj := &unstructured.Unstructured{Object: o}
+	for it.Next() {
+		for _, o := range it.Value().TypedSpec().Items {
+			obj := &unstructured.Unstructured{Object: o.Object}
 
 			// kubeproxy daemon set is updated as part of a different flow
 			if obj.GetName() == kubeProxy && obj.GetKind() == "DaemonSet" {
@@ -390,9 +404,65 @@ func getManifests(ctx context.Context, cluster UpgradeProvider) ([]*unstructured
 			objects = append(objects, obj)
 		}
 	}
+
+	return objects, nil
 }
 
-//nolint:gocyclo,cyclop
+func updateManifest(
+	ctx context.Context,
+	mapper *restmapper.DeferredDiscoveryRESTMapper,
+	k8sClient dynamic.Interface,
+	obj *unstructured.Unstructured,
+	dryRun bool,
+) (
+	resp *unstructured.Unstructured,
+	diff string,
+	skipped bool,
+	err error,
+) {
+	mapping, err := mapper.RESTMapping(obj.GroupVersionKind().GroupKind(), obj.GroupVersionKind().Version)
+	if err != nil {
+		err = fmt.Errorf("error creating mapping for object %s: %w", obj.GetName(), err)
+
+		return nil, "", false, err
+	}
+
+	var dr dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		// namespaced resources should specify the namespace
+		dr = k8sClient.Resource(mapping.Resource).Namespace(obj.GetNamespace())
+	} else {
+		// for cluster-wide resources
+		dr = k8sClient.Resource(mapping.Resource)
+	}
+
+	exists := true
+
+	diff, err = getResourceDiff(ctx, dr, obj)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, "", false, err
+		}
+
+		exists = false
+		diff = "resource is going to be created"
+	}
+
+	switch {
+	case dryRun:
+		return nil, diff, exists, nil
+	case !exists:
+		resp, err = dr.Create(ctx, obj, metav1.CreateOptions{})
+	case diff != "":
+		resp, err = dr.Update(ctx, obj, metav1.UpdateOptions{})
+	default:
+		skipped = true
+	}
+
+	return resp, diff, skipped, err
+}
+
+//nolint:gocyclo
 func syncManifests(ctx context.Context, objects []*unstructured.Unstructured, cluster UpgradeProvider, options UpgradeOptions) error {
 	config, err := cluster.K8sRestConfig(ctx)
 	if err != nil {
@@ -416,45 +486,32 @@ func syncManifests(ctx context.Context, objects []*unstructured.Unstructured, cl
 
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc))
 
-	var (
-		resp    *unstructured.Unstructured
-		mapping *meta.RESTMapping
-		// list of deployments to wait for to become ready after update
-		deployments []*unstructured.Unstructured
-	)
+	// list of deployments to wait for to become ready after update
+	var deployments []*unstructured.Unstructured
 
 	options.Log("updating manifests")
 
 	for _, obj := range objects {
-		mapping, err = mapper.RESTMapping(obj.GroupVersionKind().GroupKind(), obj.GroupVersionKind().Version)
-		if err != nil {
-			return fmt.Errorf("error creating mapping for object %s: %w", obj.GetName(), err)
-		}
+		options.Log(" > processing manifest %s %s", obj.GetKind(), obj.GetName())
 
-		var dr dynamic.ResourceInterface
-		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
-			// namespaced resources should specify the namespace
-			dr = k8sClient.Resource(mapping.Resource).Namespace(obj.GetNamespace())
-		} else {
-			// for cluster-wide resources
-			dr = k8sClient.Resource(mapping.Resource)
-		}
+		var (
+			resp    *unstructured.Unstructured
+			diff    string
+			skipped bool
+		)
 
-		var diff string
-
-		exists := true
-
-		diff, err = getResourceDiff(ctx, dr, obj)
-		if err != nil {
-			if !apierrors.IsNotFound(err) {
-				return err
+		err = retry.Constant(3*time.Minute, retry.WithUnits(10*time.Second), retry.WithErrorLogging(true)).RetryWithContext(ctx, func(ctx context.Context) error {
+			resp, diff, skipped, err = updateManifest(ctx, mapper, k8sClient, obj, options.DryRun)
+			if kubernetes.IsRetryableError(err) || apierrors.IsConflict(err) {
+				return retry.ExpectedError(err)
 			}
 
-			exists = false
-			diff = "resource is going to be created"
-		}
+			return err
+		})
 
-		options.Log(" > apply manifest %s %s", obj.GetKind(), obj.GetName())
+		if err != nil {
+			return err
+		}
 
 		switch {
 		case options.DryRun:
@@ -463,21 +520,13 @@ func syncManifests(ctx context.Context, objects []*unstructured.Unstructured, cl
 				diffInfo = fmt.Sprintf(", diff:\n%s", diff)
 			}
 
-			options.Log(" > apply skipped in dry run%s", diffInfo)
+			options.Log(" < apply skipped in dry run%s", diffInfo)
 
 			continue
-		case !exists:
-			resp, err = dr.Create(ctx, obj, metav1.CreateOptions{})
-		case diff != "":
-			resp, err = dr.Update(ctx, obj, metav1.UpdateOptions{})
-		default:
-			options.Log(" > apply skipped: nothing to update")
+		case skipped:
+			options.Log(" < apply skipped: nothing to update")
 
 			continue
-		}
-
-		if err != nil {
-			return err
 		}
 
 		if resp.GetKind() == "Deployment" {
@@ -692,11 +741,7 @@ func checkDeprecated(ctx context.Context, cluster UpgradeProvider, options Upgra
 		probeResources := func(namespaces ...v1.Namespace) error {
 			r := k8sClient.Resource(*gvr)
 
-			namespaceNames := make([]string, 0, len(namespaces))
-
-			for _, ns := range namespaces {
-				namespaceNames = append(namespaceNames, ns.Name)
-			}
+			namespaceNames := slices.Map(namespaces, func(ns v1.Namespace) string { return ns.Name })
 
 			if len(namespaceNames) == 0 {
 				namespaceNames = append(namespaceNames, "default")

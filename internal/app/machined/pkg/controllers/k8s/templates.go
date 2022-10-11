@@ -19,12 +19,6 @@ resources:
   - identity: {}
 `)
 
-var kubeSystemAuditPolicyTemplate = []byte(`apiVersion: audit.k8s.io/v1beta1
-kind: Policy
-rules:
-- level: Metadata
-`)
-
 // manifests injected into kube-apiserver
 
 var kubeletBootstrappingToken = []byte(`apiVersion: v1
@@ -97,20 +91,6 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
-  apiGroup: rbac.authorization.k8s.io
-`)
-
-var kubeSystemSARoleBindingTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: system:default-sa
-subjects:
-  - kind: ServiceAccount
-    name: default
-    namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: cluster-admin
   apiGroup: rbac.authorization.k8s.io
 `)
 
@@ -238,8 +218,6 @@ kind: ServiceAccount
 metadata:
   name: coredns
   namespace: kube-system
-  labels:
-    kubernetes.io/cluster-service: "true"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -274,11 +252,6 @@ rules:
     verbs:
       - list
       - watch
-  - apiGroups: [""]
-    resources:
-      - nodes
-    verbs:
-      - get
   - apiGroups: ["discovery.k8s.io"]
     resources:
       - endpointslices
@@ -309,9 +282,6 @@ data:
             fallthrough in-addr.arpa ip6.arpa
         }
         forward . /etc/resolv.conf
-        {{- if not .DNSServiceIPv6 }}
-        rewrite stop type AAAA A
-        {{- end }}
         cache 30
         loop
         reload
@@ -326,7 +296,6 @@ metadata:
   labels:
     k8s-app: kube-dns
     kubernetes.io/name: "CoreDNS"
-    kubernetes.io/cluster-service: "true"
 spec:
   replicas: 2
   strategy:
@@ -341,6 +310,8 @@ spec:
       labels:
         k8s-app: kube-dns
     spec:
+      nodeSelector:
+        kubernetes.io/os: linux
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -362,6 +333,8 @@ spec:
         - key: node-role.kubernetes.io/control-plane
           operator: Exists
           effect: NoSchedule
+        - key: "CriticalAddonsOnly"
+          operator: "Exists"
       containers:
         - name: coredns
           image: {{ .CoreDNSImage }}
@@ -461,6 +434,9 @@ spec:
     - name: dns-tcp
       port: 53
       protocol: TCP
+    - name: metrics
+      port: 9153
+      protocol: TCP
 `)
 
 var flannelTemplate = []byte(`apiVersion: rbac.authorization.k8s.io/v1
@@ -538,7 +514,14 @@ data:
     }
   net-conf.json: |
     {
-      "Network": "{{ index .PodCIDRs 0 }}",
+      {{- range $cidr := .PodCIDRs }}
+        {{- if contains $cidr "." }}
+      "Network": "{{ $cidr }}",
+        {{- else }}
+      "IPv6Network" : "{{ $cidr }}",
+      "EnableIPv6" : true,
+        {{- end }}
+      {{- end }}
       "Backend": {
         "Type": "vxlan",
         "Port": 4789
@@ -696,4 +679,62 @@ spec:
   hostPorts:
   - min: 1
     max: 65536
+`)
+
+// talosAPIService is the service to access Talos API from Kubernetes.
+// Service exposes the Endpoints which are managed by controllers.
+var talosAPIService = []byte(`apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    component: apid
+    provider: talos
+  name: {{ .KubernetesTalosAPIServiceName }}
+  namespace: {{ .KubernetesTalosAPIServiceNamespace }}
+spec:
+  ports:
+  - name: apid
+    port: {{ .ApidPort }}
+    protocol: TCP
+    targetPort: {{ .ApidPort }}
+`)
+
+// talosServiceAccountCRDTemplate is the template of the CRD which
+// allows injecting Talos with credentials into the Kubernetes cluster.
+var talosServiceAccountCRDTemplate = []byte(`apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: {{ .TalosServiceAccount.ResourcePlural }}.{{ .TalosServiceAccount.Group }}
+spec:
+  conversion:
+    strategy: None
+  group: {{ .TalosServiceAccount.Group }}
+  names:
+    kind: {{ .TalosServiceAccount.Kind }}
+    listKind: {{ .TalosServiceAccount.Kind }}List
+    plural: {{ .TalosServiceAccount.ResourcePlural }}
+    singular: {{ .TalosServiceAccount.ResourceSingular }}
+    shortNames:
+      - {{ .TalosServiceAccount.ShortName }}
+  scope: Namespaced
+  versions:
+    - name: {{ .TalosServiceAccount.Version }}
+      schema:
+        openAPIV3Schema:
+          properties:
+            spec:
+              type: object
+              properties:
+                roles:
+                  type: array
+                  items:
+                    type: string
+            status:
+              type: object
+              properties:
+                failureReason:
+                  type: string
+          type: object
+      served: true
+      storage: true
 `)

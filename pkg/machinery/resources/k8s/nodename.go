@@ -5,10 +5,12 @@
 package k8s
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // NodenameType is type of Nodename resource.
@@ -18,53 +20,29 @@ const NodenameType = resource.Type("Nodenames.kubernetes.talos.dev")
 const NodenameID = resource.ID("nodename")
 
 // Nodename resource holds Kubernetes nodename.
-type Nodename struct {
-	md   resource.Metadata
-	spec NodenameSpec
-}
+type Nodename = typed.Resource[NodenameSpec, NodenameRD]
 
 // NodenameSpec describes Kubernetes nodename.
+//
+//gotagsrewrite:gen
 type NodenameSpec struct {
-	Nodename        string `yaml:"nodename"`
-	HostnameVersion string `yaml:"hostnameVersion"`
+	Nodename        string `yaml:"nodename" protobuf:"1"`
+	HostnameVersion string `yaml:"hostnameVersion" protobuf:"2"`
 }
 
 // NewNodename initializes a Nodename resource.
 func NewNodename(namespace resource.Namespace, id resource.ID) *Nodename {
-	r := &Nodename{
-		md:   resource.NewMetadata(namespace, NodenameType, id, resource.VersionUndefined),
-		spec: NodenameSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[NodenameSpec, NodenameRD](
+		resource.NewMetadata(namespace, NodenameType, id, resource.VersionUndefined),
+		NodenameSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Nodename) Metadata() *resource.Metadata {
-	return &r.md
-}
+// NodenameRD provides auxiliary methods for Nodename.
+type NodenameRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Nodename) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Nodename) String() string {
-	return fmt.Sprintf("k8s.Nodename(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Nodename) DeepCopy() resource.Resource {
-	return &Nodename{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Nodename) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (NodenameRD) ResourceDefinition(resource.Metadata, NodenameSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             NodenameType,
 		Aliases:          []resource.Type{},
@@ -78,7 +56,11 @@ func (r *Nodename) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Nodename) TypedSpec() *NodenameSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[NodenameSpec](NodenameType, &Nodename{})
+	if err != nil {
+		panic(err)
+	}
 }

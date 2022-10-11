@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build amd64
-// +build amd64
 
 package vmware
 
@@ -14,8 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-procfs/procfs"
 	"github.com/vmware/govmomi/ovf"
 	"github.com/vmware/vmw-guestinfo/rpcvmx"
@@ -111,8 +110,9 @@ func readConfigFromOvf(extraConfig *rpcvmx.Config, key string) ([]byte, error) {
 }
 
 // Configuration implements the platform.Platform interface.
+//
 //nolint:gocyclo
-func (v *VMware) Configuration(context.Context) ([]byte, error) {
+func (v *VMware) Configuration(context.Context, state.State) ([]byte, error) {
 	var option *string
 	if option = procfs.ProcCmdline().Get(constants.KernelParamConfig).First(); option == nil {
 		return nil, fmt.Errorf("%s not found", constants.KernelParamConfig)
@@ -121,7 +121,7 @@ func (v *VMware) Configuration(context.Context) ([]byte, error) {
 	if *option == constants.ConfigGuestInfo {
 		log.Printf("fetching machine config from VMware extraConfig or OVF env")
 
-		ok, err := vmcheck.IsVirtualWorld()
+		ok, err := vmcheck.IsVirtualWorld(true)
 		if err != nil {
 			return nil, fmt.Errorf("error checking if we are virtual: %w", err)
 		}
@@ -186,19 +186,9 @@ func (v *VMware) Configuration(context.Context) ([]byte, error) {
 	return nil, nil
 }
 
-// Hostname implements the platform.Platform interface.
-func (v *VMware) Hostname(context.Context) (hostname []byte, err error) {
-	return nil, nil
-}
-
 // Mode implements the platform.Platform interface.
 func (v *VMware) Mode() runtime.Mode {
 	return runtime.ModeCloud
-}
-
-// ExternalIPs implements the runtime.Platform interface.
-func (v *VMware) ExternalIPs(context.Context) (addrs []net.IP, err error) {
-	return addrs, err
 }
 
 // KernelArgs implements the runtime.Platform interface.
@@ -207,4 +197,9 @@ func (v *VMware) KernelArgs() procfs.Parameters {
 		procfs.NewParameter("console").Append("tty0").Append("ttyS0"),
 		procfs.NewParameter("earlyprintk").Append("ttyS0,115200"),
 	}
+}
+
+// NetworkConfiguration implements the runtime.Platform interface.
+func (v *VMware) NetworkConfiguration(ctx context.Context, _ state.State, ch chan<- *runtime.PlatformNetworkConfig) error {
+	return nil
 }

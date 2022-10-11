@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
 	"github.com/talos-systems/go-retry/retry"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -227,7 +227,7 @@ func (m *Manifest) checkMounts(device Device) error {
 					}
 				}
 
-				if fields[len(fields)-2] == device.Device {
+				if strings.HasPrefix(fields[len(fields)-2], device.Device) {
 					return fmt.Errorf("found active mount in %q for %q: %s", path, device.Device, scanner.Text())
 				}
 			}

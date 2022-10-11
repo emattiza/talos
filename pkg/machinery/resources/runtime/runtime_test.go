@@ -25,8 +25,11 @@ func TestRegisterResource(t *testing.T) {
 	resourceRegistry := registry.NewResourceRegistry(resources)
 
 	for _, resource := range []resource.Resource{
+		&runtime.ExtensionStatus{},
+		&runtime.KernelModuleSpec{},
 		&runtime.KernelParamSpec{},
 		&runtime.KernelParamStatus{},
+		&runtime.MachineStatus{},
 		&runtime.MountStatus{},
 	} {
 		assert.NoError(t, resourceRegistry.Register(ctx, resource))

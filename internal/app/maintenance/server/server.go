@@ -8,10 +8,16 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
+	cosiv1alpha1 "github.com/cosi-project/runtime/api/v1alpha1"
+	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/cosi-project/runtime/pkg/state/protobuf/server"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/resources"
@@ -22,24 +28,25 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/api/storage"
 	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
 	v1alpha1machine "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
+	"github.com/talos-systems/talos/pkg/version"
 )
 
 // Server implements machine.MachineService, network.NetworkService, and storage.StorageService.
 type Server struct {
 	machine.UnimplementedMachineServiceServer
 
-	runtime runtime.Runtime
-	logger  *log.Logger
-	cfgCh   chan []byte
-	server  *grpc.Server
+	controller runtime.Controller
+	logger     *log.Logger
+	cfgCh      chan<- []byte
+	server     *grpc.Server
 }
 
 // New initializes and returns a `Server`.
-func New(r runtime.Runtime, logger *log.Logger, cfgCh chan []byte) *Server {
+func New(c runtime.Controller, logger *log.Logger, cfgCh chan<- []byte) *Server {
 	return &Server{
-		runtime: r,
-		logger:  logger,
-		cfgCh:   cfgCh,
+		controller: c,
+		logger:     logger,
+		cfgCh:      cfgCh,
 	}
 }
 
@@ -47,15 +54,28 @@ func New(r runtime.Runtime, logger *log.Logger, cfgCh chan []byte) *Server {
 func (s *Server) Register(obj *grpc.Server) {
 	s.server = obj
 
+	// wrap resources with access filter
+	resourceState := s.controller.Runtime().State().V1Alpha2().Resources()
+	resourceState = state.WrapCore(state.Filter(resourceState, resources.AccessPolicy(resourceState)))
+
 	storage.RegisterStorageServiceServer(obj, &storaged.Server{})
 	machine.RegisterMachineServiceServer(obj, s)
-	resource.RegisterResourceServiceServer(obj, &resources.Server{Resources: s.runtime.State().V1Alpha2().Resources()})
+	resource.RegisterResourceServiceServer(obj, &resources.Server{Resources: resourceState}) //nolint:staticcheck
+	cosiv1alpha1.RegisterStateServer(obj, server.NewState(resourceState))
 }
 
 // ApplyConfiguration implements machine.MachineService.
 func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfigurationRequest) (*machine.ApplyConfigurationResponse, error) {
-	if in.OnReboot {
-		return nil, fmt.Errorf("apply configuration on reboot is not supported in maintenance mode")
+	//nolint:exhaustive
+	switch in.Mode {
+	case machine.ApplyConfigurationRequest_TRY:
+		fallthrough
+	case machine.ApplyConfigurationRequest_REBOOT:
+		fallthrough
+	case machine.ApplyConfigurationRequest_AUTO:
+	default:
+		return nil, status.Errorf(codes.Unimplemented, "apply configuration --mode='%s' is not supported in maintenance mode",
+			strings.ReplaceAll(strings.ToLower(in.Mode.String()), "_", "-"))
 	}
 
 	cfgProvider, err := configloader.NewFromBytes(in.GetData())
@@ -63,9 +83,9 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	warnings, err := cfgProvider.Validate(s.runtime.State().Platform().Mode())
+	warnings, err := cfgProvider.Validate(s.controller.Runtime().State().Platform().Mode())
 	if err != nil {
-		return nil, fmt.Errorf("configuration validation failed: %w", err)
+		return nil, status.Errorf(codes.InvalidArgument, "configuration validation failed: %s", err)
 	}
 
 	reply := &machine.ApplyConfigurationResponse{
@@ -74,6 +94,13 @@ func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfig
 				Warnings: warnings,
 			},
 		},
+	}
+
+	if in.DryRun {
+		reply.Messages[0].ModeDetails = `Dry run summary:
+Node is running in maintenance mode and does not have a config yet.`
+
+		return reply, nil
 	}
 
 	s.cfgCh <- in.GetData()
@@ -99,4 +126,78 @@ func (s *Server) GenerateConfiguration(ctx context.Context, in *machine.Generate
 // GenerateClientConfiguration implements the machine.MachineServer interface.
 func (s *Server) GenerateClientConfiguration(ctx context.Context, in *machine.GenerateClientConfigurationRequest) (*machine.GenerateClientConfigurationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "client configuration (talosconfig) can't be generated in the maintenance mode")
+}
+
+// Version implements the machine.MachineServer interface.
+func (s *Server) Version(ctx context.Context, in *emptypb.Empty) (*machine.VersionResponse, error) {
+	if err := assertPeerSideroLink(ctx); err != nil {
+		return nil, err
+	}
+
+	var platform *machine.PlatformInfo
+
+	if s.controller.Runtime().State().Platform() != nil {
+		platform = &machine.PlatformInfo{
+			Name: s.controller.Runtime().State().Platform().Name(),
+			Mode: s.controller.Runtime().State().Platform().Mode().String(),
+		}
+	}
+
+	return &machine.VersionResponse{
+		Messages: []*machine.Version{
+			{
+				Version:  version.NewVersion(),
+				Platform: platform,
+			},
+		},
+	}, nil
+}
+
+// Upgrade initiates an upgrade.
+//
+//nolint:gocyclo,cyclop
+func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply *machine.UpgradeResponse, err error) {
+	if err = assertPeerSideroLink(ctx); err != nil {
+		return nil, err
+	}
+
+	if s.controller.Runtime().State().Machine().Disk() == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "Talos is not installed")
+	}
+
+	actorID := uuid.New().String()
+
+	mode := s.controller.Runtime().State().Platform().Mode()
+
+	if !mode.Supports(runtime.Upgrade) {
+		return nil, status.Errorf(codes.FailedPrecondition, "method is not supported in %s mode", mode.String())
+	}
+
+	// none of the options are supported in maintenance mode
+	if in.GetPreserve() || in.GetStage() || in.GetForce() {
+		return nil, status.Errorf(codes.Unimplemented, "upgrade --preserve, --stage, and --force are not supported in maintenance mode")
+	}
+
+	log.Printf("upgrade request received: %q", in.GetImage())
+
+	runCtx := context.WithValue(context.Background(), runtime.ActorIDCtxKey{}, actorID)
+
+	go func() {
+		if err := s.controller.Run(runCtx, runtime.SequenceMaintenanceUpgrade, in); err != nil {
+			if !runtime.IsRebootError(err) {
+				log.Println("upgrade failed:", err)
+			}
+		}
+	}()
+
+	reply = &machine.UpgradeResponse{
+		Messages: []*machine.Upgrade{
+			{
+				Ack:     "Upgrade request received",
+				ActorId: actorID,
+			},
+		},
+	}
+
+	return reply, nil
 }

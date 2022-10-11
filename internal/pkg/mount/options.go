@@ -4,7 +4,11 @@
 
 package mount
 
-import "github.com/talos-systems/talos/pkg/machinery/config"
+import (
+	"log"
+
+	"github.com/talos-systems/talos/pkg/machinery/config"
+)
 
 const (
 	// ReadOnly is a flag for setting the mount point as readonly.
@@ -17,6 +21,13 @@ const (
 	// Overlay indicates that a the partition for a given mount point should be
 	// mounted using overlayfs.
 	Overlay
+	// SystemOverlay indicates that overlay directory should be created under tmpfs.
+	//
+	// SystemOverlay should be combined with Overlay option.
+	SystemOverlay
+	// ReadonlyOverlay indicates that a the partition for a given mount point should be
+	// mounted using multi-layer readonly overlay from multiple partitions given as sources.
+	ReadonlyOverlay
 	// SkipIfMounted is a flag for skipping mount if the mountpoint is already mounted.
 	SkipIfMounted
 	// SkipIfNoFilesystem is a flag for skipping formatting and mounting if the mountpoint has not filesystem.
@@ -34,6 +45,7 @@ type Options struct {
 	PreMountHooks    []Hook
 	PostUnmountHooks []Hook
 	Encryption       config.Encryption
+	Logger           *log.Logger
 }
 
 // Option is the functional option func.
@@ -81,6 +93,13 @@ func WithPostUnmountHooks(hooks ...Hook) Option {
 func WithEncryptionConfig(cfg config.Encryption) Option {
 	return func(args *Options) {
 		args.Encryption = cfg
+	}
+}
+
+// WithLogger sets the logger.
+func WithLogger(logger *log.Logger) Option {
+	return func(args *Options) {
+		args.Logger = logger
 	}
 }
 

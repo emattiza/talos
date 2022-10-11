@@ -11,6 +11,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +25,6 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 	"golang.org/x/sys/unix"
-	"inet.af/netaddr"
 
 	netctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
@@ -40,7 +40,7 @@ type AddressSpecSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -74,7 +74,7 @@ func (suite *AddressSpecSuite) startRuntime() {
 }
 
 func (suite *AddressSpecSuite) assertLinkAddress(linkName, address string) error {
-	addr := netaddr.MustParseIPPrefix(address)
+	addr := netip.MustParsePrefix(address)
 
 	iface, err := net.InterfaceByName(linkName)
 	suite.Require().NoError(err)
@@ -92,11 +92,11 @@ func (suite *AddressSpecSuite) assertLinkAddress(linkName, address string) error
 			continue
 		}
 
-		if linkAddress.PrefixLength != addr.Bits() {
+		if int(linkAddress.PrefixLength) != addr.Bits() {
 			continue
 		}
 
-		if !linkAddress.Attributes.Address.Equal(addr.IP().IPAddr().IP) {
+		if !linkAddress.Attributes.Address.Equal(addr.Addr().AsSlice()) {
 			continue
 		}
 
@@ -107,7 +107,7 @@ func (suite *AddressSpecSuite) assertLinkAddress(linkName, address string) error
 }
 
 func (suite *AddressSpecSuite) assertNoLinkAddress(linkName, address string) error {
-	addr := netaddr.MustParseIPPrefix(address)
+	addr := netip.MustParsePrefix(address)
 
 	iface, err := net.InterfaceByName(linkName)
 	suite.Require().NoError(err)
@@ -121,7 +121,7 @@ func (suite *AddressSpecSuite) assertNoLinkAddress(linkName, address string) err
 	suite.Require().NoError(err)
 
 	for _, linkAddress := range linkAddresses {
-		if linkAddress.Index == uint32(iface.Index) && linkAddress.PrefixLength == addr.Bits() && linkAddress.Attributes.Address.Equal(addr.IP().IPAddr().IP) {
+		if linkAddress.Index == uint32(iface.Index) && int(linkAddress.PrefixLength) == addr.Bits() && linkAddress.Attributes.Address.Equal(addr.Addr().AsSlice()) {
 			return retry.ExpectedError(fmt.Errorf("address %s is assigned to %q", addr, linkName))
 		}
 	}
@@ -132,7 +132,7 @@ func (suite *AddressSpecSuite) assertNoLinkAddress(linkName, address string) err
 func (suite *AddressSpecSuite) TestLoopback() {
 	loopback := network.NewAddressSpec(network.NamespaceName, "lo/127.0.0.1/8")
 	*loopback.TypedSpec() = network.AddressSpecSpec{
-		Address:     netaddr.MustParseIPPrefix("127.11.0.1/32"),
+		Address:     netip.MustParsePrefix("127.11.0.1/32"),
 		LinkName:    "lo",
 		Family:      nethelpers.FamilyInet4,
 		Scope:       nethelpers.ScopeHost,
@@ -144,10 +144,13 @@ func (suite *AddressSpecSuite) TestLoopback() {
 		suite.Require().NoError(suite.state.Create(suite.ctx, res), "%v", res.Spec())
 	}
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertLinkAddress("lo", "127.11.0.1/32")
-		}))
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertLinkAddress("lo", "127.11.0.1/32")
+			},
+		),
+	)
 
 	// teardown the address
 	for {
@@ -177,7 +180,7 @@ func (suite *AddressSpecSuite) TestDummy() {
 
 	dummy := network.NewAddressSpec(network.NamespaceName, "dummy/10.0.0.1/8")
 	*dummy.TypedSpec() = network.AddressSpecSpec{
-		Address:     netaddr.MustParseIPPrefix("10.0.0.1/8"),
+		Address:     netip.MustParsePrefix("10.0.0.1/8"),
 		LinkName:    dummyInterface,
 		Family:      nethelpers.FamilyInet4,
 		Scope:       nethelpers.ScopeGlobal,
@@ -191,26 +194,33 @@ func (suite *AddressSpecSuite) TestDummy() {
 	}
 
 	// create dummy interface
-	suite.Require().NoError(conn.Link.New(&rtnetlink.LinkMessage{
-		Type: unix.ARPHRD_ETHER,
-		Attributes: &rtnetlink.LinkAttributes{
-			Name: dummyInterface,
-			MTU:  1400,
-			Info: &rtnetlink.LinkInfo{
-				Kind: "dummy",
+	suite.Require().NoError(
+		conn.Link.New(
+			&rtnetlink.LinkMessage{
+				Type: unix.ARPHRD_ETHER,
+				Attributes: &rtnetlink.LinkAttributes{
+					Name: dummyInterface,
+					MTU:  1400,
+					Info: &rtnetlink.LinkInfo{
+						Kind: "dummy",
+					},
+				},
 			},
-		},
-	}))
+		),
+	)
 
 	iface, err := net.InterfaceByName(dummyInterface)
 	suite.Require().NoError(err)
 
 	defer conn.Link.Delete(uint32(iface.Index)) //nolint:errcheck
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertLinkAddress(dummyInterface, "10.0.0.1/8")
-		}))
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertLinkAddress(dummyInterface, "10.0.0.1/8")
+			},
+		),
+	)
 
 	// delete dummy interface, address should be unassigned automatically
 	suite.Require().NoError(conn.Link.Delete(uint32(iface.Index)))
@@ -236,7 +246,12 @@ func (suite *AddressSpecSuite) TearDownTest() {
 	suite.wg.Wait()
 
 	// trigger updates in resources to stop watch loops
-	suite.Assert().NoError(suite.state.Create(context.Background(), network.NewAddressSpec(network.NamespaceName, "bar")))
+	suite.Assert().NoError(
+		suite.state.Create(
+			context.Background(),
+			network.NewAddressSpec(network.NamespaceName, "bar"),
+		),
+	)
 }
 
 func TestAddressSpecSuite(t *testing.T) {

@@ -6,24 +6,16 @@ package gcp
 
 import (
 	"context"
-	"encoding/json"
-	"log"
-	"net"
+	"net/netip"
+	"strings"
 
+	"cloud.google.com/go/compute/metadata"
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-procfs/procfs"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/errors"
-	"github.com/talos-systems/talos/pkg/download"
-)
-
-// Ref: https://cloud.google.com/compute/docs/storing-retrieving-metadata
-// ex, curl -H "Metadata-Flavor: Google" 'http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/?recursive=true'
-const (
-	// GCUserDataEndpoint is the local metadata endpoint inside of DO.
-	GCUserDataEndpoint = "http://metadata.google.internal/computeMetadata/v1/instance/attributes/user-data"
-	// GCExternalIPEndpoint displays all external addresses associated with the instance.
-	GCExternalIPEndpoint = "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/?recursive=true"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // GCP is the concrete type that implements the platform.Platform interface.
@@ -35,18 +27,21 @@ func (g *GCP) Name() string {
 }
 
 // Configuration implements the platform.Platform interface.
-func (g *GCP) Configuration(ctx context.Context) ([]byte, error) {
-	log.Printf("fetching machine config from: %q", GCUserDataEndpoint)
+func (g *GCP) Configuration(ctx context.Context, r state.State) ([]byte, error) {
+	userdata, err := metadata.InstanceAttributeValue("user-data")
+	if err != nil {
+		if _, ok := err.(metadata.NotDefinedError); ok {
+			return nil, errors.ErrNoConfigSource
+		}
 
-	return download.Download(ctx, GCUserDataEndpoint,
-		download.WithHeaders(map[string]string{"Metadata-Flavor": "Google"}),
-		download.WithErrorOnNotFound(errors.ErrNoConfigSource),
-		download.WithErrorOnEmptyResponse(errors.ErrNoConfigSource))
-}
+		return nil, err
+	}
 
-// Hostname implements the platform.Platform interface.
-func (g *GCP) Hostname(context.Context) (hostname []byte, err error) {
-	return nil, nil
+	if strings.TrimSpace(userdata) == "" {
+		return nil, errors.ErrNoConfigSource
+	}
+
+	return []byte(userdata), nil
 }
 
 // Mode implements the platform.Platform interface.
@@ -54,43 +49,55 @@ func (g *GCP) Mode() runtime.Mode {
 	return runtime.ModeCloud
 }
 
-// ExternalIPs implements the runtime.Platform interface.
-func (g *GCP) ExternalIPs(ctx context.Context) (addrs []net.IP, err error) {
-	log.Printf("fetching externalIP from: %q", GCExternalIPEndpoint)
-
-	metadataNetworkConfig, err := download.Download(ctx, GCExternalIPEndpoint,
-		download.WithHeaders(map[string]string{"Metadata-Flavor": "Google"}),
-		download.WithErrorOnNotFound(errors.ErrNoExternalIPs),
-		download.WithErrorOnEmptyResponse(errors.ErrNoExternalIPs))
-	if err != nil {
-		return nil, err
-	}
-
-	type metadata []struct {
-		AccessConfigs []struct {
-			ExternalIP string `json:"externalIp"`
-		} `json:"accessConfigs"`
-	}
-
-	m := metadata{}
-	if err = json.Unmarshal(metadataNetworkConfig, &m); err != nil {
-		return nil, err
-	}
-
-	for _, networkInterface := range m {
-		for _, accessConfig := range networkInterface.AccessConfigs {
-			if addr := net.ParseIP(accessConfig.ExternalIP); addr != nil {
-				addrs = append(addrs, addr)
-			}
-		}
-	}
-
-	return addrs, nil
-}
-
 // KernelArgs implements the runtime.Platform interface.
 func (g *GCP) KernelArgs() procfs.Parameters {
 	return []*procfs.Parameter{
 		procfs.NewParameter("console").Append("ttyS0"),
 	}
+}
+
+// NetworkConfiguration implements the runtime.Platform interface.
+func (g *GCP) NetworkConfiguration(ctx context.Context, st state.State, ch chan<- *runtime.PlatformNetworkConfig) error {
+	networkConfig := &runtime.PlatformNetworkConfig{}
+
+	hostname, err := metadata.Hostname()
+	if err != nil {
+		return err
+	}
+
+	if hostname != "" {
+		hostnameSpec := network.HostnameSpecSpec{
+			ConfigLayer: network.ConfigPlatform,
+		}
+
+		if err = hostnameSpec.ParseFQDN(hostname); err != nil {
+			return err
+		}
+
+		networkConfig.Hostnames = append(networkConfig.Hostnames, hostnameSpec)
+	}
+
+	externalIP, err := metadata.ExternalIP()
+	if err != nil {
+		if _, ok := err.(metadata.NotDefinedError); !ok {
+			return err
+		}
+	}
+
+	if externalIP != "" {
+		ip, err := netip.ParseAddr(externalIP)
+		if err != nil {
+			return err
+		}
+
+		networkConfig.ExternalIPs = append(networkConfig.ExternalIPs, ip)
+	}
+
+	select {
+	case ch <- networkConfig:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
 }

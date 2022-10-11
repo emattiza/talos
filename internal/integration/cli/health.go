@@ -3,17 +3,20 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/talos-systems/talos/internal/integration/base"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
+	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
 )
 
 // HealthSuite verifies health command.
@@ -26,40 +29,17 @@ func (suite *HealthSuite) SuiteName() string {
 	return "cli.HealthSuite"
 }
 
-// TestClientSide does successful health check run from client-side.
+// TestClientSideWithExplicitNodes does successful health check run from client-side, providing the explicit set of nodes.
 //
 //nolint:gocyclo
-func (suite *HealthSuite) TestClientSide() {
-	if suite.Cluster == nil {
-		suite.T().Skip("Cluster is not available, skipping test")
-	}
+func (suite *HealthSuite) TestClientSideWithExplicitNodes() {
+	info := suite.DiscoverNodes(context.TODO())
 
-	args := []string{"--server=false"}
+	var args []string
 
-	bootstrapAPIIsUsed := true
-
-	for _, node := range suite.Cluster.Info().Nodes {
-		if node.Type == machine.TypeInit {
-			bootstrapAPIIsUsed = false
-		}
-	}
-
-	if bootstrapAPIIsUsed {
-		for _, node := range suite.Cluster.Info().Nodes {
-			switch node.Type {
-			case machine.TypeControlPlane:
-				args = append(args, "--control-plane-nodes", node.IPs[0].String())
-			case machine.TypeWorker:
-				args = append(args, "--worker-nodes", node.IPs[0].String())
-			case machine.TypeInit, machine.TypeUnknown:
-				fallthrough
-			default:
-				panic(fmt.Sprintf("unexpected machine type %v", node.Type))
-			}
-		}
-	} else {
-		for _, node := range suite.Cluster.Info().Nodes {
-			switch node.Type {
+	for _, machineType := range []machine.Type{machine.TypeInit, machine.TypeControlPlane, machine.TypeWorker} {
+		for _, node := range info.NodesByType(machineType) {
+			switch machineType {
 			case machine.TypeInit:
 				args = append(args, "--init-node", node.IPs[0].String())
 			case machine.TypeControlPlane:
@@ -67,12 +47,42 @@ func (suite *HealthSuite) TestClientSide() {
 			case machine.TypeWorker:
 				args = append(args, "--worker-nodes", node.IPs[0].String())
 			case machine.TypeUnknown:
-				fallthrough
+				// skip it
 			default:
-				panic(fmt.Sprintf("unexpected machine type %v", node.Type))
+				panic(fmt.Sprintf("unexpected machine type: %v", machineType))
 			}
 		}
 	}
+
+	suite.testClientSide(args...)
+}
+
+// TestClientSideWithDiscovery does a health check run from client-side without explicitly specifying the nodes.
+// It verifies that the check still passes, because the nodes get populated by the discovery service.
+//
+//nolint:gocyclo
+func (suite *HealthSuite) TestClientSideWithDiscovery() {
+	discoveryEnabled, err := suite.isDiscoveryEnabled()
+	suite.Require().NoError(err)
+
+	if !discoveryEnabled {
+		suite.T().Skipf("skipping test: discovery is not enabled on the cluster")
+	}
+
+	suite.testClientSide()
+}
+
+// TestServerSide does successful health check run from server-side.
+func (suite *HealthSuite) TestServerSide() {
+	randomControlPlaneNodeInternalIP := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
+	suite.RunCLI([]string{"health", "--nodes", randomControlPlaneNodeInternalIP},
+		base.StdoutEmpty(),
+		base.StderrShouldMatch(regexp.MustCompile(`waiting for all k8s nodes to report ready`)),
+	)
+}
+
+func (suite *HealthSuite) testClientSide(extraArgs ...string) {
+	args := append([]string{"--server=false"}, extraArgs...)
 
 	if suite.K8sEndpoint != "" {
 		args = append(args, "--k8s-endpoint", strings.Split(suite.K8sEndpoint, ":")[0])
@@ -84,12 +94,20 @@ func (suite *HealthSuite) TestClientSide() {
 	)
 }
 
-// TestServerSide does successful health check run from server-side.
-func (suite *HealthSuite) TestServerSide() {
-	suite.RunCLI([]string{"health", "--nodes", suite.RandomDiscoveredNode(machine.TypeControlPlane)},
-		base.StdoutEmpty(),
-		base.StderrShouldMatch(regexp.MustCompile(`waiting for all k8s nodes to report ready`)),
-	)
+func (suite *HealthSuite) isDiscoveryEnabled() (bool, error) {
+	temp := struct {
+		Spec cluster.ConfigSpec `yaml:"spec"`
+	}{}
+
+	randomControlPlaneNodeInternalIP := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
+	stdout, _ := suite.RunCLI([]string{"--nodes", randomControlPlaneNodeInternalIP, "get", "discoveryconfigs", "-oyaml"})
+
+	err := yaml.Unmarshal([]byte(stdout), &temp)
+	if err != nil {
+		return false, err
+	}
+
+	return temp.Spec.DiscoveryEnabled, nil
 }
 
 func init() {

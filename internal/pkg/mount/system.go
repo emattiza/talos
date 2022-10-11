@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/filesystem"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/filesystem"
 	"golang.org/x/sys/unix"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -60,6 +60,7 @@ func SystemMountPointsForDevice(devpath string, opts ...Option) (mountpoints *Po
 }
 
 // SystemMountPointForLabel returns a mount point for the specified device and label.
+//
 //nolint:gocyclo
 func SystemMountPointForLabel(device *blockdevice.BlockDevice, label string, opts ...Option) (mountpoint *Point, err error) {
 	var target string
@@ -197,6 +198,8 @@ func SystemPartitionMount(r runtime.Runtime, logger *log.Logger, label string, o
 	if encryptionConfig != nil {
 		opts = append(opts, WithEncryptionConfig(encryptionConfig))
 	}
+
+	opts = append(opts, WithLogger(logger))
 
 	mountpoint, err := SystemMountPointForLabel(device.BlockDevice, label, opts...)
 	if err != nil {

@@ -8,12 +8,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/jsimonetti/rtnetlink"
 	"github.com/mdlayher/ethtool"
+	ethtoolioctl "github.com/safchain/ethtool"
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/wgctrl"
@@ -21,6 +23,7 @@ import (
 
 	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/watch"
+	"github.com/talos-systems/talos/internal/pkg/pci"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
@@ -55,6 +58,8 @@ func (ctrl *LinkStatusController) Outputs() []controller.Output {
 }
 
 // Run implements controller.Controller interface.
+//
+//nolint:gocyclo
 func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime, logger *zap.Logger) error {
 	// create watch connections to rtnetlink and ethtool via genetlink
 	// these connections are used only to join multicast groups and receive notifications on changes
@@ -87,12 +92,19 @@ func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime,
 		defer ethClient.Close() //nolint:errcheck
 	}
 
-	wgClient, err := wgctrl.New()
+	ethIoctlClient, err := ethtoolioctl.NewEthtool()
 	if err != nil {
-		return fmt.Errorf("error creating wireguard client: %w", err)
+		logger.Warn("error dialing ethtool ioctl socket", zap.Error(err))
+	} else {
+		defer ethIoctlClient.Close() //nolint:errcheck
 	}
 
-	defer wgClient.Close() //nolint:errcheck
+	wgClient, err := wgctrl.New()
+	if err != nil {
+		logger.Warn("error creating wireguard client", zap.Error(err))
+	} else {
+		defer wgClient.Close() //nolint:errcheck
+	}
 
 	for {
 		select {
@@ -101,7 +113,7 @@ func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime,
 		case <-r.EventCh():
 		}
 
-		if err = ctrl.reconcile(ctx, r, logger, conn, ethClient, wgClient); err != nil {
+		if err = ctrl.reconcile(ctx, r, logger, conn, ethClient, ethIoctlClient, wgClient); err != nil {
 			return err
 		}
 	}
@@ -110,7 +122,15 @@ func (ctrl *LinkStatusController) Run(ctx context.Context, r controller.Runtime,
 // reconcile function runs for every reconciliation loop querying the netlink state and updating resources.
 //
 //nolint:gocyclo,cyclop
-func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Runtime, logger *zap.Logger, conn *rtnetlink.Conn, ethClient *ethtool.Client, wgClient *wgctrl.Client) error {
+func (ctrl *LinkStatusController) reconcile(
+	ctx context.Context,
+	r controller.Runtime,
+	logger *zap.Logger,
+	conn *rtnetlink.Conn,
+	ethClient *ethtool.Client,
+	ethtoolIoctlClient *ethtoolioctl.Ethtool,
+	wgClient *wgctrl.Client,
+) error {
 	// list the existing LinkStatus resources and mark them all to be deleted, as the actual link is discovered via netlink, resource ID is removed from the list
 	list, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.LinkStatusType, "", resource.VersionUndefined))
 	if err != nil {
@@ -133,9 +153,11 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 		link := link
 
 		var (
-			ethState *ethtool.LinkState
-			ethInfo  *ethtool.LinkInfo
-			ethMode  *ethtool.LinkMode
+			ethState      *ethtool.LinkState
+			ethInfo       *ethtool.LinkInfo
+			ethMode       *ethtool.LinkMode
+			driverInfo    ethtoolioctl.DrvInfo
+			permanentAddr net.HardwareAddr
 		)
 
 		if ethClient != nil {
@@ -168,11 +190,23 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 			}
 		}
 
+		if ethtoolIoctlClient != nil {
+			driverInfo, _ = ethtoolIoctlClient.DriverInfo(link.Attributes.Name) //nolint:errcheck
+
+			var permAddr string
+
+			permAddr, err = ethtoolIoctlClient.PermAddr(link.Attributes.Name)
+			if err == nil && permAddr != "" {
+				permanentAddr, _ = net.ParseMAC(permAddr) //nolint:errcheck
+			}
+		}
+
 		if err = r.Modify(ctx, network.NewLinkStatus(network.NamespaceName, link.Attributes.Name), func(r resource.Resource) error {
 			status := r.(*network.LinkStatus).TypedSpec()
 
 			status.Index = link.Index
 			status.HardwareAddr = nethelpers.HardwareAddr(link.Attributes.Address)
+			status.PermanentAddr = nethelpers.HardwareAddr(permanentAddr)
 			status.BroadcastAddr = nethelpers.HardwareAddr(link.Attributes.Broadcast)
 			status.LinkIndex = link.Attributes.Type
 			status.Flags = nethelpers.LinkFlags(link.Flags)
@@ -213,6 +247,47 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 				status.Duplex = nethelpers.Duplex(ethtool.Unknown)
 			}
 
+			var deviceInfo *nethelpers.DeviceInfo
+
+			deviceInfo, err = nethelpers.GetDeviceInfo(link.Attributes.Name)
+			if err != nil {
+				logger.Warn("failure getting device information from /sys/class/net/*", zap.Error(err), zap.String("link", link.Attributes.Name))
+			}
+
+			if deviceInfo != nil {
+				status.BusPath = deviceInfo.BusPath
+				status.Driver = deviceInfo.Driver
+				status.PCIID = deviceInfo.PCIID
+			}
+
+			if status.Driver == "" {
+				status.Driver = driverInfo.Driver
+			}
+
+			if status.BusPath == "" {
+				status.BusPath = driverInfo.BusInfo
+			}
+
+			var pciDev *pci.Device
+
+			pciDev, err = pci.SysfsDeviceInfo(driverInfo.BusInfo)
+			if err != nil {
+				logger.Warn("failure looking up sysfs PCI info", zap.Error(err), zap.String("link", link.Attributes.Name))
+			}
+
+			if pciDev != nil {
+				pciDev.LookupDB()
+
+				status.VendorID = fmt.Sprintf("0x%04x", pciDev.VendorID)
+				status.ProductID = fmt.Sprintf("0x%04x", pciDev.ProductID)
+
+				status.Vendor = pciDev.Vendor
+				status.Product = pciDev.Product
+			}
+
+			status.DriverVersion = driverInfo.Version
+			status.FirmwareVersion = driverInfo.FwVersion
+
 			switch status.Kind {
 			case network.LinkKindVLAN:
 				if err = networkadapter.VLANSpec(&status.VLAN).Decode(link.Attributes.Info.Data); err != nil {
@@ -222,7 +297,15 @@ func (ctrl *LinkStatusController) reconcile(ctx context.Context, r controller.Ru
 				if err = networkadapter.BondMasterSpec(&status.BondMaster).Decode(link.Attributes.Info.Data); err != nil {
 					logger.Warn("failure decoding bond attributes", zap.Error(err), zap.String("link", link.Attributes.Name))
 				}
+			case network.LinkKindBridge:
+				if err = networkadapter.BridgeMasterSpec(&status.BridgeMaster).Decode(link.Attributes.Info.Data); err != nil {
+					logger.Warn("failure decoding bridge attributes", zap.Error(err), zap.String("link", link.Attributes.Name))
+				}
 			case network.LinkKindWireguard:
+				if wgClient == nil {
+					return fmt.Errorf("wireguard client not available, but wireguard interface was discovered: %q", link.Attributes.Name)
+				}
+
 				var wgDev *wgtypes.Device
 
 				wgDev, err = wgClient.Device(link.Attributes.Name)

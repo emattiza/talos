@@ -5,19 +5,18 @@
 package v1alpha1
 
 import (
-	"context"
 	"crypto/tls"
 	stdx509 "crypto/x509"
 	"fmt"
-	"log"
-	"net"
 	"os"
 	"strings"
 	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/talos-systems/crypto/x509"
-	"github.com/talos-systems/go-blockdevice/blockdevice/util/disk"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-blockdevice/blockdevice/util/disk"
+	"github.com/siderolabs/go-pointer"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
@@ -37,12 +36,12 @@ func (c *Config) Version() string {
 
 // Debug implements the config.Provider interface.
 func (c *Config) Debug() bool {
-	return c.ConfigDebug
+	return pointer.SafeDeref(c.ConfigDebug)
 }
 
 // Persist implements the config.Provider interface.
 func (c *Config) Persist() bool {
-	return c.ConfigPersist
+	return pointer.SafeDeref(c.ConfigPersist)
 }
 
 // Machine implements the config.Provider interface.
@@ -54,6 +53,21 @@ func (c *Config) Machine() config.MachineConfig {
 	return c.MachineConfig
 }
 
+// SeccompProfiles implements the config.Provider interface.
+func (m *MachineConfig) SeccompProfiles() []config.SeccompProfile {
+	return slices.Map(m.MachineSeccompProfiles, func(m *MachineSeccompProfile) config.SeccompProfile { return m })
+}
+
+// Name implements the config.Provider interface.
+func (m *MachineSeccompProfile) Name() string {
+	return m.MachineSeccompProfileName
+}
+
+// Value implements the config.Provider interface.
+func (m *MachineSeccompProfile) Value() map[string]interface{} {
+	return m.MachineSeccompProfileValue.Object
+}
+
 // Cluster implements the config.Provider interface.
 func (c *Config) Cluster() config.ClusterConfig {
 	if c.ClusterConfig == nil {
@@ -63,9 +77,9 @@ func (c *Config) Cluster() config.ClusterConfig {
 	return c.ClusterConfig
 }
 
-// String implements the config.Provider interface.
-func (c *Config) String(options ...encoder.Option) (string, error) {
-	b, err := c.Bytes(options...)
+// EncodeString implements the config.Provider interface.
+func (c *Config) EncodeString(options ...encoder.Option) (string, error) {
+	b, err := c.EncodeBytes(options...)
 	if err != nil {
 		return "", err
 	}
@@ -73,82 +87,19 @@ func (c *Config) String(options ...encoder.Option) (string, error) {
 	return string(b), nil
 }
 
-// Bytes implements the config.Provider interface.
-func (c *Config) Bytes(options ...encoder.Option) ([]byte, error) {
+// EncodeBytes implements the config.Provider interface.
+func (c *Config) EncodeBytes(options ...encoder.Option) ([]byte, error) {
 	return encoder.NewEncoder(c, options...).Encode()
 }
 
-// ApplyDynamicConfig implements the config.Provider interface.
-//nolint:gocyclo
-func (c *Config) ApplyDynamicConfig(ctx context.Context, dynamicProvider config.DynamicConfigProvider) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+// Bytes implements the config.Provider interface.
+func (c *Config) Bytes() ([]byte, error) {
+	return c.EncodeBytes()
+}
 
-	if c.MachineConfig == nil {
-		c.MachineConfig = &MachineConfig{}
-	}
-
-	hostname, err := dynamicProvider.Hostname(ctx)
-	if err != nil {
-		return err
-	}
-
-	if hostname != nil {
-		if c.MachineConfig.MachineNetwork == nil {
-			c.MachineConfig.MachineNetwork = &NetworkConfig{}
-		}
-
-		c.MachineConfig.MachineNetwork.NetworkHostname = string(hostname)
-	}
-
-	addrs, err := dynamicProvider.ExternalIPs(ctx)
-	if err != nil {
-		// TODO: use passed logger instead of the global one
-		log.Printf("certificates will be created without external IPs: %v", err)
-	}
-
-	if c.MachineConfig.MachineNetwork != nil {
-		addrs = append(addrs, addressesFromMachineNetworkConfig(c.MachineConfig.MachineNetwork)...)
-	}
-
-	existingSANs := map[string]bool{}
-	for _, addr := range c.MachineConfig.MachineCertSANs {
-		existingSANs[addr] = true
-	}
-
-	sans := make([]string, 0, len(addrs))
-	for i, addr := range addrs {
-		sans = append(sans, addr.String())
-
-		if existingSANs[sans[i]] {
-			continue
-		}
-
-		c.MachineConfig.MachineCertSANs = append(c.MachineConfig.MachineCertSANs, sans[i])
-	}
-
-	if c.ClusterConfig == nil {
-		c.ClusterConfig = &ClusterConfig{}
-	}
-
-	if c.ClusterConfig.APIServerConfig == nil {
-		c.ClusterConfig.APIServerConfig = &APIServerConfig{}
-	}
-
-	existingCertSANs := map[string]bool{}
-	for _, certSAN := range c.ClusterConfig.APIServerConfig.CertSANs {
-		existingCertSANs[certSAN] = true
-	}
-
-	for _, certSAN := range sans {
-		if existingCertSANs[certSAN] {
-			continue
-		}
-
-		c.ClusterConfig.APIServerConfig.CertSANs = append(c.ClusterConfig.APIServerConfig.CertSANs, certSAN)
-	}
-
-	return nil
+// Raw implements the config.Provider interface.
+func (c *Config) Raw() interface{} {
+	return c
 }
 
 // Install implements the config.Provider interface.
@@ -167,13 +118,7 @@ func (m *MachineConfig) Security() config.Security {
 
 // Disks implements the config.Provider interface.
 func (m *MachineConfig) Disks() []config.Disk {
-	disks := make([]config.Disk, len(m.MachineDisks))
-
-	for i := 0; i < len(m.MachineDisks); i++ {
-		disks[i] = m.MachineDisks[i]
-	}
-
-	return disks
+	return slices.Map(m.MachineDisks, func(d *MachineDisk) config.Disk { return d })
 }
 
 // Network implements the config.Provider interface.
@@ -203,6 +148,11 @@ func (m *MachineConfig) Controlplane() config.MachineControlPlane {
 	return m.MachineControlPlane
 }
 
+// Pods implements the config.Provider interface.
+func (m *MachineConfig) Pods() []map[string]interface{} {
+	return slices.Map(m.MachinePods, func(u Unstructured) map[string]interface{} { return u.Object })
+}
+
 // ControllerManager implements the config.Provider interface.
 func (m *MachineControlPlaneConfig) ControllerManager() config.MachineControllerManager {
 	if m.MachineControllerManager == nil {
@@ -223,12 +173,12 @@ func (m *MachineControlPlaneConfig) Scheduler() config.MachineScheduler {
 
 // Disabled implements the config.Provider interface.
 func (m *MachineControllerManagerConfig) Disabled() bool {
-	return m.MachineControllerManagerDisabled
+	return pointer.SafeDeref(m.MachineControllerManagerDisabled)
 }
 
 // Disabled implements the config.Provider interface.
 func (m *MachineSchedulerConfig) Disabled() bool {
-	return m.MachineSchedulerDisabled
+	return pointer.SafeDeref(m.MachineSchedulerDisabled)
 }
 
 // Kubelet implements the config.Provider interface.
@@ -247,13 +197,7 @@ func (m *MachineConfig) Env() config.Env {
 
 // Files implements the config.Provider interface.
 func (m *MachineConfig) Files() ([]config.File, error) {
-	files := make([]config.File, len(m.MachineFiles))
-
-	for i := 0; i < len(m.MachineFiles); i++ {
-		files[i] = m.MachineFiles[i]
-	}
-
-	return files, nil
+	return slices.Map(m.MachineFiles, func(f *MachineFile) config.File { return f }), nil
 }
 
 // Type implements the config.Provider interface.
@@ -275,6 +219,15 @@ func (m *MachineConfig) Sysctls() map[string]string {
 	}
 
 	return m.MachineSysctls
+}
+
+// Sysfs implements the config.Provider interface.
+func (m *MachineConfig) Sysfs() map[string]string {
+	if m.MachineSysfs == nil {
+		return make(map[string]string)
+	}
+
+	return m.MachineSysfs
 }
 
 // CA implements the config.Provider interface.
@@ -333,6 +286,15 @@ func (m *MachineConfig) Logging() config.Logging {
 	return m.MachineLogging
 }
 
+// Kernel implements the config.MachineConfig interface.
+func (m *MachineConfig) Kernel() config.Kernel {
+	if m.MachineKernel == nil {
+		return &KernelConfig{}
+	}
+
+	return m.MachineKernel
+}
+
 // Image implements the config.Provider interface.
 func (k *KubeletConfig) Image() string {
 	image := k.KubeletImage
@@ -364,31 +326,40 @@ func (k *KubeletConfig) ExtraArgs() map[string]string {
 
 // ExtraMounts implements the config.Provider interface.
 func (k *KubeletConfig) ExtraMounts() []specs.Mount {
-	if k.KubeletExtraMounts == nil {
-		return nil
-	}
+	return slices.Map(k.KubeletExtraMounts, func(m ExtraMount) specs.Mount { return m.Mount })
+}
 
-	out := make([]specs.Mount, len(k.KubeletExtraMounts))
+// ExtraConfig implements the config.Provider interface.
+func (k *KubeletConfig) ExtraConfig() map[string]interface{} {
+	return k.KubeletExtraConfig.Object
+}
 
-	for i := range k.KubeletExtraMounts {
-		out[i] = k.KubeletExtraMounts[i].Mount
-	}
-
-	return out
+// DefaultRuntimeSeccompProfileEnabled implements the config.Provider interface.
+func (k *KubeletConfig) DefaultRuntimeSeccompProfileEnabled() bool {
+	return pointer.SafeDeref(k.KubeletDefaultRuntimeSeccompProfileEnabled)
 }
 
 // RegisterWithFQDN implements the config.Provider interface.
 func (k *KubeletConfig) RegisterWithFQDN() bool {
-	return k.KubeletRegisterWithFQDN
+	return pointer.SafeDeref(k.KubeletRegisterWithFQDN)
 }
 
 // NodeIP implements the config.Provider interface.
 func (k *KubeletConfig) NodeIP() config.KubeletNodeIP {
+	if k.KubeletNodeIP == nil {
+		return &KubeletNodeIPConfig{}
+	}
+
 	return k.KubeletNodeIP
 }
 
+// SkipNodeRegistration implements the config.Provider interface.
+func (k *KubeletConfig) SkipNodeRegistration() bool {
+	return pointer.SafeDeref(k.KubeletSkipNodeRegistration)
+}
+
 // ValidSubnets implements the config.Provider interface.
-func (k KubeletNodeIPConfig) ValidSubnets() []string {
+func (k *KubeletNodeIPConfig) ValidSubnets() []string {
 	return k.KubeletNodeIPValidSubnets
 }
 
@@ -464,7 +435,7 @@ func (r *RegistryTLSConfig) CA() []byte {
 
 // InsecureSkipVerify implements the Registries interface.
 func (r *RegistryTLSConfig) InsecureSkipVerify() bool {
-	return r.TLSInsecureSkipVerify
+	return pointer.SafeDeref(r.TLSInsecureSkipVerify)
 }
 
 // GetTLSConfig prepares TLS configuration for connection.
@@ -485,7 +456,7 @@ func (r *RegistryTLSConfig) GetTLSConfig() (*tls.Config, error) {
 		tlsConfig.RootCAs.AppendCertsFromPEM(r.TLSCA)
 	}
 
-	if r.TLSInsecureSkipVerify {
+	if r.InsecureSkipVerify() {
 		tlsConfig.InsecureSkipVerify = true
 	}
 
@@ -497,15 +468,14 @@ func (n *NetworkConfig) Hostname() string {
 	return n.NetworkHostname
 }
 
+// DisableSearchDomain implements the config.Provider interface.
+func (n *NetworkConfig) DisableSearchDomain() bool {
+	return pointer.SafeDeref(n.NetworkDisableSearchDomain)
+}
+
 // Devices implements the config.Provider interface.
 func (n *NetworkConfig) Devices() []config.Device {
-	interfaces := make([]config.Device, len(n.NetworkInterfaces))
-
-	for i := 0; i < len(n.NetworkInterfaces); i++ {
-		interfaces[i] = n.NetworkInterfaces[i]
-	}
-
-	return interfaces
+	return slices.Map(n.NetworkInterfaces, func(d *Device) config.Device { return d })
 }
 
 // getDevice adds or returns existing Device by name.
@@ -534,17 +504,15 @@ func (n *NetworkConfig) Resolvers() []string {
 
 // ExtraHosts implements the config.Provider interface.
 func (n *NetworkConfig) ExtraHosts() []config.ExtraHost {
-	hosts := make([]config.ExtraHost, len(n.ExtraHostEntries))
-
-	for i := 0; i < len(n.ExtraHostEntries); i++ {
-		hosts[i] = n.ExtraHostEntries[i]
-	}
-
-	return hosts
+	return slices.Map(n.ExtraHostEntries, func(e *ExtraHost) config.ExtraHost { return e })
 }
 
 // KubeSpan implements the config.Provider interface.
 func (n *NetworkConfig) KubeSpan() config.KubeSpan {
+	if n.NetworkKubeSpan == nil {
+		return &NetworkKubeSpan{}
+	}
+
 	return n.NetworkKubeSpan
 }
 
@@ -577,13 +545,7 @@ func (d *Device) Addresses() []string {
 
 // Routes implements the MachineNetwork interface.
 func (d *Device) Routes() []config.Route {
-	routes := make([]config.Route, len(d.DeviceRoutes))
-
-	for i := 0; i < len(d.DeviceRoutes); i++ {
-		routes[i] = d.DeviceRoutes[i]
-	}
-
-	return routes
+	return slices.Map(d.DeviceRoutes, func(r *Route) config.Route { return r })
 }
 
 // Bond implements the MachineNetwork interface.
@@ -595,15 +557,18 @@ func (d *Device) Bond() config.Bond {
 	return d.DeviceBond
 }
 
-// Vlans implements the MachineNetwork interface.
-func (d *Device) Vlans() []config.Vlan {
-	vlans := make([]config.Vlan, len(d.DeviceVlans))
-
-	for i := 0; i < len(d.DeviceVlans); i++ {
-		vlans[i] = d.DeviceVlans[i]
+// Bridge implements the MachineNetwork interface.
+func (d *Device) Bridge() config.Bridge {
+	if d.DeviceBridge == nil {
+		return nil
 	}
 
-	return vlans
+	return d.DeviceBridge
+}
+
+// Vlans implements the MachineNetwork interface.
+func (d *Device) Vlans() []config.Vlan {
+	return slices.Map(d.DeviceVlans, func(v *Vlan) config.Vlan { return v })
 }
 
 // MTU implements the MachineNetwork interface.
@@ -613,17 +578,17 @@ func (d *Device) MTU() int {
 
 // DHCP implements the MachineNetwork interface.
 func (d *Device) DHCP() bool {
-	return d.DeviceDHCP
+	return pointer.SafeDeref(d.DeviceDHCP)
 }
 
 // Ignore implements the MachineNetwork interface.
 func (d *Device) Ignore() bool {
-	return d.DeviceIgnore
+	return pointer.SafeDeref(d.DeviceIgnore)
 }
 
 // Dummy implements the MachineNetwork interface.
 func (d *Device) Dummy() bool {
-	return d.DeviceDummy
+	return pointer.SafeDeref(d.DeviceDummy)
 }
 
 // DHCPOptions implements the MachineNetwork interface.
@@ -645,6 +610,15 @@ func (d *Device) VIPConfig() config.VIPConfig {
 	}
 
 	return d.DeviceVIPConfig
+}
+
+// Selector implements the config.Device interface.
+func (d *Device) Selector() config.NetworkDeviceSelector {
+	if d.DeviceSelector == nil {
+		return nil
+	}
+
+	return d.DeviceSelector
 }
 
 // IP implements the config.VIPConfig interface.
@@ -712,6 +686,11 @@ func (d *DHCPOptions) IPv6() bool {
 	return *d.DHCPIPv6
 }
 
+// DUIDv6 implements the DHCPOptions interface.
+func (d *DHCPOptions) DUIDv6() string {
+	return d.DHCPDUIDv6
+}
+
 // PrivateKey implements the MachineNetwork interface.
 func (wc *DeviceWireguardConfig) PrivateKey() string {
 	return wc.WireguardPrivateKey
@@ -729,13 +708,7 @@ func (wc *DeviceWireguardConfig) FirewallMark() int {
 
 // Peers implements the MachineNetwork interface.
 func (wc *DeviceWireguardConfig) Peers() []config.WireguardPeer {
-	peers := make([]config.WireguardPeer, len(wc.WireguardPeers))
-
-	for i := 0; i < len(wc.WireguardPeers); i++ {
-		peers[i] = wc.WireguardPeers[i]
-	}
-
-	return peers
+	return slices.Map(wc.WireguardPeers, func(p *DeviceWireguardPeer) config.WireguardPeer { return p })
 }
 
 // PublicKey implements the MachineNetwork interface.
@@ -758,6 +731,26 @@ func (wd *DeviceWireguardPeer) AllowedIPs() []string {
 	return wd.WireguardAllowedIPs
 }
 
+// Bus implements config.NetworkDeviceSelector interface.
+func (s *NetworkDeviceSelector) Bus() string {
+	return s.NetworkDeviceBus
+}
+
+// HardwareAddress implements config.NetworkDeviceSelector interface.
+func (s *NetworkDeviceSelector) HardwareAddress() string {
+	return s.NetworkDeviceHardwareAddress
+}
+
+// PCIID implements config.NetworkDeviceSelector interface.
+func (s *NetworkDeviceSelector) PCIID() string {
+	return s.NetworkDevicePCIID
+}
+
+// KernelDriver implements config.NetworkDeviceSelector interface.
+func (s *NetworkDeviceSelector) KernelDriver() string {
+	return s.NetworkDeviceKernelDriver
+}
+
 // Network implements the MachineNetwork interface.
 func (r *Route) Network() string {
 	return r.RouteNetwork
@@ -776,6 +769,11 @@ func (r *Route) Source() string {
 // Metric implements the MachineNetwork interface.
 func (r *Route) Metric() uint32 {
 	return r.RouteMetric
+}
+
+// MTU implements the MachineNetwork interface.
+func (r *Route) MTU() uint32 {
+	return r.RouteMTU
 }
 
 // Interfaces implements the MachineNetwork interface.
@@ -925,6 +923,29 @@ func (b *Bond) PeerNotifyDelay() uint32 {
 	return b.BondPeerNotifyDelay
 }
 
+// Enabled implements the config.STP interface.
+func (s *STP) Enabled() bool {
+	if s == nil || s.STPEnabled == nil {
+		return true
+	}
+
+	return *s.STPEnabled
+}
+
+// Interfaces implements the config.Bridge interface.
+func (b *Bridge) Interfaces() []string {
+	return b.BridgedInterfaces
+}
+
+// STP implements the config.Bridge interface.
+func (b *Bridge) STP() config.STP {
+	if b.BridgeSTP == nil {
+		return nil
+	}
+
+	return b.BridgeSTP
+}
+
 // Addresses implements the MachineNetwork interface.
 func (v *Vlan) Addresses() []string {
 	switch {
@@ -953,18 +974,24 @@ func (v *Vlan) VIPConfig() config.VIPConfig {
 
 // Routes implements the MachineNetwork interface.
 func (v *Vlan) Routes() []config.Route {
-	routes := make([]config.Route, len(v.VlanRoutes))
-
-	for i := 0; i < len(v.VlanRoutes); i++ {
-		routes[i] = v.VlanRoutes[i]
-	}
-
-	return routes
+	return slices.Map(v.VlanRoutes, func(r *Route) config.Route { return r })
 }
 
 // DHCP implements the MachineNetwork interface.
 func (v *Vlan) DHCP() bool {
-	return v.VlanDHCP
+	return pointer.SafeDeref(v.VlanDHCP)
+}
+
+// DHCPOptions implements the MachineNetwork interface.
+func (v *Vlan) DHCPOptions() config.DHCPOptions {
+	// Default route metric on systemd is 1024. This sets the same.
+	if v.VlanDHCPOptions == nil {
+		return &DHCPOptions{
+			DHCPRouteMetric: uint32(0),
+		}
+	}
+
+	return v.VlanDHCPOptions
 }
 
 // ID implements the MachineNetwork interface.
@@ -973,18 +1000,23 @@ func (v *Vlan) ID() uint16 {
 }
 
 // Enabled implements KubeSpan interface.
-func (k NetworkKubeSpan) Enabled() bool {
-	return k.KubeSpanEnabled
+func (k *NetworkKubeSpan) Enabled() bool {
+	return pointer.SafeDeref(k.KubeSpanEnabled)
 }
 
 // ForceRouting implements KubeSpan interface.
-func (k NetworkKubeSpan) ForceRouting() bool {
-	return !k.KubeSpanAllowDownPeerBypass
+func (k *NetworkKubeSpan) ForceRouting() bool {
+	return !pointer.SafeDeref(k.KubeSpanAllowDownPeerBypass)
+}
+
+// AdvertiseKubernetesNetworks implements KubeSpan interface.
+func (k *NetworkKubeSpan) AdvertiseKubernetesNetworks() bool {
+	return pointer.SafeDeref(k.KubeSpanAdvertiseKubernetesNetworks)
 }
 
 // Disabled implements the config.Provider interface.
 func (t *TimeConfig) Disabled() bool {
-	return t.TimeDisabled
+	return pointer.SafeDeref(t.TimeDisabled)
 }
 
 // Servers implements the config.Provider interface.
@@ -1000,6 +1032,11 @@ func (t *TimeConfig) BootTimeout() time.Duration {
 // Image implements the config.Provider interface.
 func (i *InstallConfig) Image() string {
 	return i.InstallImage
+}
+
+// Extensions implements the config.Provider interface.
+func (i *InstallConfig) Extensions() []config.Extension {
+	return slices.Map(i.InstallExtensions, func(e InstallExtensionConfig) config.Extension { return e })
 }
 
 // Disk implements the config.Provider interface.
@@ -1022,6 +1059,8 @@ func (i *InstallConfig) Disk() (string, error) {
 }
 
 // DiskMatchers implements the config.Provider interface.
+//
+//nolint:gocyclo
 func (i *InstallConfig) DiskMatchers() []disk.Matcher {
 	if i.InstallDiskSelector != nil {
 		selector := i.InstallDiskSelector
@@ -1059,6 +1098,10 @@ func (i *InstallConfig) DiskMatchers() []disk.Matcher {
 			matchers = append(matchers, disk.WithType(disk.Type(selector.Type)))
 		}
 
+		if selector.BusPath != "" {
+			matchers = append(matchers, disk.WithBusPath(selector.BusPath))
+		}
+
 		return matchers
 	}
 
@@ -1072,22 +1115,27 @@ func (i *InstallConfig) ExtraKernelArgs() []string {
 
 // Zero implements the config.Provider interface.
 func (i *InstallConfig) Zero() bool {
-	return i.InstallWipe
+	return pointer.SafeDeref(i.InstallWipe)
 }
 
 // LegacyBIOSSupport implements the config.Provider interface.
 func (i *InstallConfig) LegacyBIOSSupport() bool {
-	return i.InstallLegacyBIOSSupport
+	return pointer.SafeDeref(i.InstallLegacyBIOSSupport)
 }
 
 // WithBootloader implements the config.Provider interface.
 func (i *InstallConfig) WithBootloader() bool {
-	return i.InstallBootloader
+	return pointer.SafeDeref(i.InstallBootloader)
+}
+
+// Image implements the config.Provider interface.
+func (i InstallExtensionConfig) Image() string {
+	return i.ExtensionImage
 }
 
 // Enabled implements the config.Provider interface.
 func (c *CoreDNS) Enabled() bool {
-	return !c.CoreDNSDisabled
+	return c.CoreDNSDisabled == nil || !*c.CoreDNSDisabled
 }
 
 // Image implements the config.Provider interface.
@@ -1108,6 +1156,11 @@ func (a *AdminKubeconfigConfig) CertLifetime() time.Duration {
 	}
 
 	return a.AdminKubeconfigCertLifetime
+}
+
+// CommonName implements the config.Provider interface.
+func (a *AdminKubeconfigConfig) CommonName() string {
+	return constants.KubernetesAdminCertCommonName
 }
 
 // Endpoints implements the config.Provider interface.
@@ -1142,13 +1195,7 @@ func (d *MachineDisk) Device() string {
 
 // Partitions implements the config.Provider interface.
 func (d *MachineDisk) Partitions() []config.Partition {
-	partitions := make([]config.Partition, len(d.DiskPartitions))
-
-	for i := 0; i < len(d.DiskPartitions); i++ {
-		partitions[i] = d.DiskPartitions[i]
-	}
-
-	return partitions
+	return slices.Map(d.DiskPartitions, func(p *DiskPartition) config.Partition { return p })
 }
 
 // Size implements the config.Provider interface.
@@ -1188,13 +1235,7 @@ func (e *EncryptionConfig) Options() []string {
 
 // Keys implements the config.Provider interface.
 func (e *EncryptionConfig) Keys() []config.EncryptionKey {
-	keys := make([]config.EncryptionKey, len(e.EncryptionKeys))
-
-	for i, key := range e.EncryptionKeys {
-		keys[i] = key
-	}
-
-	return keys
+	return slices.Map(e.EncryptionKeys, func(k *EncryptionKey) config.EncryptionKey { return k })
 }
 
 // Static implements the config.Provider interface.
@@ -1255,9 +1296,11 @@ func (v VolumeMountConfig) MountPath() string {
 	return v.VolumeMountPath
 }
 
+var volumeNameSanitizer = strings.NewReplacer("/", "-", "_", "-", ".", "-")
+
 // Name implements the config.VolumeMount interface.
 func (v VolumeMountConfig) Name() string {
-	return strings.Trim(strings.ReplaceAll(strings.ReplaceAll(v.VolumeMountPath, "/", "-"), "_", "-"), "-")
+	return strings.Trim(volumeNameSanitizer.Replace(v.VolumeMountPath), "-")
 }
 
 // ReadOnly implements the config.VolumeMount interface.
@@ -1268,28 +1311,4 @@ func (v VolumeMountConfig) ReadOnly() bool {
 // Rules implements config.Udev interface.
 func (u *UdevConfig) Rules() []string {
 	return u.UdevRules
-}
-
-func addressesFromMachineNetworkConfig(nc *NetworkConfig) []net.IP {
-	var addresses []net.IP
-
-	for _, networkConfig := range nc.NetworkInterfaces {
-		if networkConfig.VIPConfig() != nil {
-			sharedIP := net.ParseIP(networkConfig.VIPConfig().IP())
-			if sharedIP != nil {
-				addresses = append(addresses, sharedIP)
-			}
-
-			for _, vlan := range networkConfig.Vlans() {
-				if vlan.VIPConfig() != nil {
-					sharedIP := net.ParseIP(vlan.VIPConfig().IP())
-					if sharedIP != nil {
-						addresses = append(addresses, sharedIP)
-					}
-				}
-			}
-		}
-	}
-
-	return addresses
 }

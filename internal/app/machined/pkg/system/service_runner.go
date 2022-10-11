@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/siderolabs/gen/slices"
+
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/health"
@@ -41,7 +43,7 @@ type ServiceRunner struct {
 	stateSubscribers map[StateEvent][]chan<- struct{}
 
 	ctxMu     sync.Mutex
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -69,7 +71,7 @@ func (svcrunner *ServiceRunner) GetState() events.ServiceState {
 }
 
 // UpdateState implements events.Recorder.
-func (svcrunner *ServiceRunner) UpdateState(newstate events.ServiceState, message string, args ...interface{}) {
+func (svcrunner *ServiceRunner) UpdateState(ctx context.Context, newstate events.ServiceState, message string, args ...interface{}) {
 	svcrunner.mu.Lock()
 
 	event := events.ServiceEvent{
@@ -89,7 +91,7 @@ func (svcrunner *ServiceRunner) UpdateState(newstate events.ServiceState, messag
 	svcrunner.mu.Unlock()
 
 	if svcrunner.runtime != nil {
-		svcrunner.runtime.Events().Publish(event.AsProto(svcrunner.id))
+		svcrunner.runtime.Events().Publish(ctx, event.AsProto(svcrunner.id))
 	}
 
 	if isUp {
@@ -105,7 +107,7 @@ func (svcrunner *ServiceRunner) UpdateState(newstate events.ServiceState, messag
 	}
 }
 
-func (svcrunner *ServiceRunner) healthUpdate(change health.StateChange) {
+func (svcrunner *ServiceRunner) healthUpdate(ctx context.Context, change health.StateChange) {
 	svcrunner.mu.Lock()
 
 	// service not running, suppress event
@@ -140,7 +142,7 @@ func (svcrunner *ServiceRunner) healthUpdate(change health.StateChange) {
 	}
 
 	if svcrunner.runtime != nil {
-		svcrunner.runtime.Events().Publish(event.AsProto(svcrunner.id))
+		svcrunner.runtime.Events().Publish(ctx, event.AsProto(svcrunner.id))
 	}
 }
 
@@ -154,7 +156,7 @@ func (svcrunner *ServiceRunner) GetEventHistory(count int) []events.ServiceEvent
 
 func (svcrunner *ServiceRunner) waitFor(ctx context.Context, condition conditions.Condition) error {
 	description := condition.String()
-	svcrunner.UpdateState(events.StateWaiting, "Waiting for %s", description)
+	svcrunner.UpdateState(ctx, events.StateWaiting, "Waiting for %s", description)
 
 	errCh := make(chan error)
 
@@ -174,7 +176,7 @@ func (svcrunner *ServiceRunner) waitFor(ctx context.Context, condition condition
 			newDescription := condition.String()
 			if newDescription != description && newDescription != "" {
 				description = newDescription
-				svcrunner.UpdateState(events.StateWaiting, "Waiting for %s", description)
+				svcrunner.UpdateState(ctx, events.StateWaiting, "Waiting for %s", description)
 			}
 		}
 	}
@@ -183,6 +185,7 @@ func (svcrunner *ServiceRunner) waitFor(ctx context.Context, condition condition
 // Start initializes the service and runs it
 //
 // Start should be run in a goroutine.
+//
 //nolint:gocyclo
 func (svcrunner *ServiceRunner) Start() {
 	defer func() {
@@ -200,11 +203,7 @@ func (svcrunner *ServiceRunner) Start() {
 
 	dependencies := svcrunner.service.DependsOn(svcrunner.runtime)
 	if len(dependencies) > 0 {
-		serviceConditions := make([]conditions.Condition, len(dependencies))
-		for i := range dependencies {
-			serviceConditions[i] = WaitForService(StateEventUp, dependencies[i])
-		}
-
+		serviceConditions := slices.Map(dependencies, func(dep string) conditions.Condition { return WaitForService(StateEventUp, dep) })
 		serviceDependencies := conditions.WaitForAll(serviceConditions...)
 
 		if condition != nil {
@@ -216,48 +215,48 @@ func (svcrunner *ServiceRunner) Start() {
 
 	if condition != nil {
 		if err := svcrunner.waitFor(ctx, condition); err != nil {
-			svcrunner.UpdateState(events.StateFailed, "Condition failed: %v", err)
+			svcrunner.UpdateState(ctx, events.StateFailed, "Condition failed: %v", err)
 
 			return
 		}
 	}
 
-	svcrunner.UpdateState(events.StatePreparing, "Running pre state")
+	svcrunner.UpdateState(ctx, events.StatePreparing, "Running pre state")
 
 	if err := svcrunner.service.PreFunc(ctx, svcrunner.runtime); err != nil {
-		svcrunner.UpdateState(events.StateFailed, "Failed to run pre stage: %v", err)
+		svcrunner.UpdateState(ctx, events.StateFailed, "Failed to run pre stage: %v", err)
 
 		return
 	}
 
-	svcrunner.UpdateState(events.StatePreparing, "Creating service runner")
+	svcrunner.UpdateState(ctx, events.StatePreparing, "Creating service runner")
 
 	runnr, err := svcrunner.service.Runner(svcrunner.runtime)
 	if err != nil {
-		svcrunner.UpdateState(events.StateFailed, "Failed to create runner: %v", err)
+		svcrunner.UpdateState(ctx, events.StateFailed, "Failed to create runner: %v", err)
 
 		return
 	}
 
+	defer func() {
+		// PostFunc passes in the state so that we can take actions that depend on the outcome of the run
+		state := svcrunner.GetState()
+
+		if err := svcrunner.service.PostFunc(svcrunner.runtime, state); err != nil {
+			svcrunner.UpdateState(ctx, events.StateFailed, "Failed to run post stage: %v", err)
+		}
+	}()
+
 	if runnr == nil {
-		svcrunner.UpdateState(events.StateSkipped, "Service skipped")
+		svcrunner.UpdateState(ctx, events.StateSkipped, "Service skipped")
 
 		return
 	}
 
 	if err := svcrunner.run(ctx, runnr); err != nil {
-		svcrunner.UpdateState(events.StateFailed, "Failed running service: %v", err)
+		svcrunner.UpdateState(ctx, events.StateFailed, "Failed running service: %v", err)
 	} else {
-		svcrunner.UpdateState(events.StateFinished, "Service finished successfully")
-	}
-
-	// PostFunc passes in the state so that we can take actions that depend on the outcome of the run
-	state := svcrunner.GetState()
-
-	if err := svcrunner.service.PostFunc(svcrunner.runtime, state); err != nil {
-		svcrunner.UpdateState(events.StateFailed, "Failed to run post stage: %v", err)
-
-		return
+		svcrunner.UpdateState(ctx, events.StateFinished, "Service finished successfully")
 	}
 }
 
@@ -278,7 +277,9 @@ func (svcrunner *ServiceRunner) run(ctx context.Context, runnr runner.Runner) er
 	errCh := make(chan error)
 
 	go func() {
-		errCh <- runnr.Run(svcrunner.UpdateState)
+		errCh <- runnr.Run(func(s events.ServiceState, msg string, args ...interface{}) {
+			svcrunner.UpdateState(ctx, s, msg, args...)
+		})
 	}()
 
 	if healthSvc, ok := svcrunner.service.(HealthcheckedService); ok {
@@ -291,7 +292,12 @@ func (svcrunner *ServiceRunner) run(ctx context.Context, runnr runner.Runner) er
 			defer healthWg.Done()
 
 			//nolint:errcheck
-			health.Run(ctx, healthSvc.HealthSettings(svcrunner.runtime), &svcrunner.healthState, healthSvc.HealthFunc(svcrunner.runtime))
+			health.Run(
+				ctx,
+				healthSvc.HealthSettings(svcrunner.runtime),
+				&svcrunner.healthState,
+				healthSvc.HealthFunc(svcrunner.runtime),
+			)
 		}()
 
 		notifyCh := make(chan health.StateChange, 2)
@@ -309,7 +315,7 @@ func (svcrunner *ServiceRunner) run(ctx context.Context, runnr runner.Runner) er
 				case <-ctx.Done():
 					return
 				case change := <-notifyCh:
-					svcrunner.healthUpdate(change)
+					svcrunner.healthUpdate(ctx, change)
 				}
 			}
 		}()

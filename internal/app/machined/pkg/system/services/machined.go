@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	v1alpha1server "github.com/talos-systems/talos/internal/app/machined/internal/server/v1alpha1"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
@@ -53,6 +54,7 @@ var rules = map[string]role.Set{
 	"/machine.MachineService/Memory":                      role.MakeSet(role.Admin, role.Reader),
 	"/machine.MachineService/Mounts":                      role.MakeSet(role.Admin, role.Reader),
 	"/machine.MachineService/NetworkDeviceStats":          role.MakeSet(role.Admin, role.Reader),
+	"/machine.MachineService/PacketCapture":               role.MakeSet(role.Admin),
 	"/machine.MachineService/Processes":                   role.MakeSet(role.Admin, role.Reader),
 	"/machine.MachineService/Read":                        role.MakeSet(role.Admin),
 	"/machine.MachineService/Reboot":                      role.MakeSet(role.Admin),
@@ -73,6 +75,12 @@ var rules = map[string]role.Set{
 	"/resource.ResourceService/Get":   role.MakeSet(role.Admin, role.Reader),
 	"/resource.ResourceService/List":  role.MakeSet(role.Admin, role.Reader),
 	"/resource.ResourceService/Watch": role.MakeSet(role.Admin, role.Reader),
+	"/cosi.resource.State/Create":     role.MakeSet(role.Admin),
+	"/cosi.resource.State/Destroy":    role.MakeSet(role.Admin),
+	"/cosi.resource.State/Get":        role.MakeSet(role.Admin, role.Reader),
+	"/cosi.resource.State/List":       role.MakeSet(role.Admin, role.Reader),
+	"/cosi.resource.State/Update":     role.MakeSet(role.Admin),
+	"/cosi.resource.State/Watch":      role.MakeSet(role.Admin, role.Reader),
 
 	"/storage.StorageService/Disks": role.MakeSet(role.Admin, role.Reader),
 
@@ -101,6 +109,10 @@ func (s *machinedService) Main(ctx context.Context, r runtime.Runtime, logWriter
 	server := factory.NewServer(
 		&v1alpha1server.Server{
 			Controller: s.c,
+			// breaking the import loop cycle between services/ package and v1alpha1_server.go
+			EtcdBootstrapper: BootstrapEtcd,
+
+			ShutdownCtx: ctx,
 		},
 		factory.WithLog("machined ", logWriter),
 
@@ -131,14 +143,17 @@ func (s *machinedService) Main(ctx context.Context, r runtime.Runtime, logWriter
 		return err
 	}
 
-	defer server.Stop()
-
 	go func() {
 		//nolint:errcheck
 		server.Serve(listener)
 	}()
 
 	<-ctx.Done()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	factory.ServerGracefulStop(server, shutdownCtx)
 
 	return nil
 }

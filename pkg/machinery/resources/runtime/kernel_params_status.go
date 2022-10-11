@@ -5,64 +5,42 @@
 package runtime
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // KernelParamStatusType is type of KernelParam resource.
 const KernelParamStatusType = resource.Type("KernelParamStatuses.runtime.talos.dev")
 
 // KernelParamStatus resource holds defined sysctl flags status.
-type KernelParamStatus struct {
-	md   resource.Metadata
-	spec KernelParamStatusSpec
-}
+type KernelParamStatus = typed.Resource[KernelParamStatusSpec, KernelParamStatusRD]
 
 // KernelParamStatusSpec describes status of the defined sysctls.
+//
+//gotagsrewrite:gen
 type KernelParamStatusSpec struct {
-	Current     string `yaml:"current"`
-	Default     string `yaml:"default"`
-	Unsupported bool   `yaml:"unsupported"`
+	Current     string `yaml:"current" protobuf:"1"`
+	Default     string `yaml:"default" protobuf:"2"`
+	Unsupported bool   `yaml:"unsupported" protobuf:"3"`
 }
 
 // NewKernelParamStatus initializes a KernelParamStatus resource.
 func NewKernelParamStatus(namespace resource.Namespace, id resource.ID) *KernelParamStatus {
-	r := &KernelParamStatus{
-		md:   resource.NewMetadata(namespace, KernelParamStatusType, id, resource.VersionUndefined),
-		spec: KernelParamStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[KernelParamStatusSpec, KernelParamStatusRD](
+		resource.NewMetadata(namespace, KernelParamStatusType, id, resource.VersionUndefined),
+		KernelParamStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *KernelParamStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *KernelParamStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *KernelParamStatus) String() string {
-	return fmt.Sprintf("runtime.KernelParamStatus.(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *KernelParamStatus) DeepCopy() resource.Resource {
-	return &KernelParamStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// KernelParamStatusRD is auxiliary resource data for KernelParamStatus.
+type KernelParamStatusRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *KernelParamStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (KernelParamStatusRD) ResourceDefinition(resource.Metadata, KernelParamStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             KernelParamStatusType,
 		Aliases:          []resource.Type{"sysctls", "kernelparameters", "kernelparams"},
@@ -84,7 +62,11 @@ func (r *KernelParamStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the KernelParamStatusSpec with the proper type.
-func (r *KernelParamStatus) TypedSpec() *KernelParamStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[KernelParamStatusSpec](KernelParamStatusType, &KernelParamStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -1,7 +1,8 @@
 REGISTRY ?= ghcr.io
-USERNAME ?= talos-systems
+USERNAME ?= siderolabs
 SHA ?= $(shell git describe --match=none --always --abbrev=8 --dirty)
 TAG ?= $(shell git describe --tag --always --dirty --match v[0-9]\*)
+ABBREV_TAG ?= $(shell git describe --tag --always --match v[0-9]\* --abbrev=0 )
 TAG_SUFFIX ?=
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct)
 IMAGE_REGISTRY ?= $(REGISTRY)
@@ -12,44 +13,40 @@ DOCKER_LOGIN_ENABLED ?= true
 NAME = Talos
 
 ARTIFACTS := _out
-TOOLS ?= ghcr.io/talos-systems/tools:v0.10.0-alpha.0
-PKGS ?= v0.10.0-alpha.0
-EXTRAS ?= v0.8.0-alpha.0
-GO_VERSION ?= 1.17
-GOFUMPT_VERSION ?= v0.1.1
-GOLANGCILINT_VERSION ?= v1.43.0
-STRINGER_VERSION ?= v0.1.5
+TOOLS ?= ghcr.io/siderolabs/tools:v1.3.0-alpha.0-17-ga264809
+PKGS ?= v1.3.0-alpha.0-28-gb6d0d96
+EXTRAS ?= v1.3.0-alpha.0
+GO_VERSION ?= 1.19
+GOIMPORTS_VERSION ?= v0.1.11
+GOFUMPT_VERSION ?= v0.3.0
+GOLANGCILINT_VERSION ?= v1.48.0
+STRINGER_VERSION ?= v0.1.12
+ENUMER_VERSION ?= v1.1.2
 DEEPCOPY_GEN_VERSION ?= v0.21.3
 VTPROTOBUF_VERSION ?= v0.2.0
-IMPORTVET ?= ghcr.io/talos-systems/importvet:c9424fe
+DEEPCOPY_VERSION ?= v0.5.5
+IMPORTVET ?= ghcr.io/siderolabs/importvet:1549a5c
 OPERATING_SYSTEM := $(shell uname -s | tr "[:upper:]" "[:lower:]")
 TALOSCTL_DEFAULT_TARGET := talosctl-$(OPERATING_SYSTEM)
 INTEGRATION_TEST_DEFAULT_TARGET := integration-test-$(OPERATING_SYSTEM)
 INTEGRATION_TEST_PROVISION_DEFAULT_TARGET := integration-test-provision-$(OPERATING_SYSTEM)
-KUBECTL_URL ?= https://storage.googleapis.com/kubernetes-release/release/v1.23.1/bin/$(OPERATING_SYSTEM)/amd64/kubectl
-CLUSTERCTL_VERSION ?= 1.0.2
+KUBECTL_URL ?= https://storage.googleapis.com/kubernetes-release/release/v1.26.0-alpha.1/bin/$(OPERATING_SYSTEM)/amd64/kubectl
+KUBESTR_URL ?= https://github.com/kastenhq/kubestr/releases/download/v0.4.34/kubestr_0.4.34_Linux_amd64.tar.gz
+HELM_URL ?= https://get.helm.sh/helm-v3.9.2-linux-amd64.tar.gz
+CLUSTERCTL_VERSION ?= 1.1.3
 CLUSTERCTL_URL ?= https://github.com/kubernetes-sigs/cluster-api/releases/download/v$(CLUSTERCTL_VERSION)/clusterctl-$(OPERATING_SYSTEM)-amd64
 TESTPKGS ?= github.com/talos-systems/talos/...
-RELEASES ?= v0.13.4 v0.14.0-alpha.2
+RELEASES ?= v1.1.2 v1.2.0-beta.1
 SHORT_INTEGRATION_TEST ?=
 CUSTOM_CNI_URL ?=
 INSTALLER_ARCH ?= all
-
-VERSION_PKG = github.com/talos-systems/talos/pkg/version
-IMAGES_PKGS = github.com/talos-systems/talos/pkg/images
-MGMT_HELPERS_PKG = github.com/talos-systems/talos/cmd/talosctl/pkg/mgmt/helpers
+IMAGER_ARGS ?=
+IMAGER_SYSTEM_EXTENSIONS ?=
 
 CGO_ENABLED ?= 0
 GO_BUILDFLAGS ?=
-GO_LDFLAGS ?= \
-	-X $(VERSION_PKG).Name=$(NAME) \
-	-X $(VERSION_PKG).SHA=$(SHA) \
-	-X $(VERSION_PKG).Tag=$(TAG) \
-	-X $(VERSION_PKG).PkgsVersion=$(PKGS) \
-	-X $(VERSION_PKG).ExtrasVersion=$(EXTRAS) \
-	-X $(IMAGES_PKGS).Username=$(USERNAME) \
-	-X $(IMAGES_PKGS).Registry=$(REGISTRY) \
-	-X $(MGMT_HELPERS_PKG).ArtifactsPath=$(ARTIFACTS)
+GO_LDFLAGS ?=
+GOAMD64 ?= v2
 
 WITH_RACE ?= false
 WITH_DEBUG ?= false
@@ -81,9 +78,13 @@ COMMON_ARGS += --build-arg=TOOLS=$(TOOLS)
 COMMON_ARGS += --build-arg=PKGS=$(PKGS)
 COMMON_ARGS += --build-arg=EXTRAS=$(EXTRAS)
 COMMON_ARGS += --build-arg=GOFUMPT_VERSION=$(GOFUMPT_VERSION)
+COMMON_ARGS += --build-arg=GOIMPORTS_VERSION=$(GOIMPORTS_VERSION)
 COMMON_ARGS += --build-arg=STRINGER_VERSION=$(STRINGER_VERSION)
+COMMON_ARGS += --build-arg=ENUMER_VERSION=$(ENUMER_VERSION)
 COMMON_ARGS += --build-arg=DEEPCOPY_GEN_VERSION=$(DEEPCOPY_GEN_VERSION)
 COMMON_ARGS += --build-arg=VTPROTOBUF_VERSION=$(VTPROTOBUF_VERSION)
+COMMON_ARGS += --build-arg=GOLANGCILINT_VERSION=$(GOLANGCILINT_VERSION)
+COMMON_ARGS += --build-arg=DEEPCOPY_VERSION=$(DEEPCOPY_VERSION)
 COMMON_ARGS += --build-arg=TAG=$(TAG)
 COMMON_ARGS += --build-arg=SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH)
 COMMON_ARGS += --build-arg=ARTIFACTS=$(ARTIFACTS)
@@ -93,8 +94,14 @@ COMMON_ARGS += --build-arg=INSTALLER_ARCH=$(INSTALLER_ARCH)
 COMMON_ARGS += --build-arg=CGO_ENABLED=$(CGO_ENABLED)
 COMMON_ARGS += --build-arg=GO_BUILDFLAGS="$(GO_BUILDFLAGS)"
 COMMON_ARGS += --build-arg=GO_LDFLAGS="$(GO_LDFLAGS)"
+COMMON_ARGS += --build-arg=GOAMD64="$(GOAMD64)"
 COMMON_ARGS += --build-arg=http_proxy=$(http_proxy)
 COMMON_ARGS += --build-arg=https_proxy=$(https_proxy)
+COMMON_ARGS += --build-arg=NAME=$(NAME)
+COMMON_ARGS += --build-arg=SHA=$(SHA)
+COMMON_ARGS += --build-arg=USERNAME=$(USERNAME)
+COMMON_ARGS += --build-arg=REGISTRY=$(REGISTRY)
+COMMON_ARGS += --build-arg=ABBREV_TAG=$(ABBREV_TAG)
 
 CI_ARGS ?=
 
@@ -111,6 +118,7 @@ To build this project, you must have the following installed:
 - make
 - docker (19.03 or higher)
 - buildx (https://github.com/docker/buildx)
+- crane (https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md)
 
 ## Creating a Builder Instance
 
@@ -130,7 +138,7 @@ for applications using `img` tool.
 
 All artifacts will be output to ./$(ARTIFACTS). Images will be tagged with the
 registry "$(IMAGE_REGISTRY)", username "$(USERNAME)", and a dynamic tag (e.g. $(REGISTRY_AND_USERNAME)/image:$(IMAGE_TAG)).
-The registry and username can be overriden by exporting REGISTRY, and USERNAME
+The registry and username can be overridden by exporting REGISTRY, and USERNAME
 respectively.
 
 ## Race Detector
@@ -169,7 +177,7 @@ docker-%: ## Builds the specified target defined in the Dockerfile using the doc
 registry-%: ## Builds the specified target defined in the Dockerfile using the image/registry output type. The build result will be pushed to the registry if PUSH=true.
 	@$(MAKE) target-$* TARGET_ARGS="--output type=image,name=$(REGISTRY_AND_USERNAME)/$*:$(IMAGE_TAG) $(TARGET_ARGS)"
 
-hack-test-%: ## Runs the specied script in ./hack/test with well known environment variables.
+hack-test-%: ## Runs the specified script in ./hack/test with well known environment variables.
 	@./hack/test/$*.sh
 
 # Generators
@@ -183,6 +191,14 @@ docs: ## Generates the documentation for machine config, and talosctl.
 	@rm -rf docs/configuration/*
 	@rm -rf docs/talosctl/*
 	@$(MAKE) local-$@ DEST=./ PLATFORM=linux/amd64
+
+.PHONY: docs-preview
+docs-preview: ## Starts a local preview of the documentation using Hugo in docker
+	@docker run --rm --interactive --tty \
+	--volume $(PWD):/src --workdir /src/website \
+	--publish 1313:1313 \
+	klakegg/hugo:0.95.0-ext-alpine \
+	server
 
 # Local Artifacts
 
@@ -219,25 +235,33 @@ talosctl: $(TALOSCTL_DEFAULT_TARGET) ## Builds the talosctl binary for the local
 
 image-%: ## Builds the specified image. Valid options are aws, azure, digital-ocean, gcp, and vmware (e.g. image-aws)
 	@docker pull $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG)
-	@for platform in $(subst $(,),$(space),$(PLATFORM)); do \
-		arch=`basename "$${platform}"` ; \
-		docker run --rm -v /dev:/dev --privileged $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) image --platform $* --arch $$arch --tar-to-stdout | tar xz -C $(ARTIFACTS) ; \
+	@ . ./hack/imager.sh && \
+	for platform in $(subst $(,),$(space),$(PLATFORM)); do \
+		arch=$$(basename "$${platform}") && \
+		tmpdir=$$(prepare_extension_images "$${platform}" $(IMAGER_SYSTEM_EXTENSIONS)) && \
+		docker run --rm -v /dev:/dev -v "$${tmpdir}:/system/extensions" --privileged $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) image --platform $* --arch $$arch --tar-to-stdout $(IMAGER_ARGS) | tar xz -C $(ARTIFACTS) ; \
+		rm -rf "$${tmpdir}"; \
 	done
 
-images: image-aws image-azure image-digital-ocean image-gcp image-hcloud image-metal image-nocloud image-openstack image-scaleway image-upcloud image-vmware image-vultr ## Builds all known images (AWS, Azure, DigitalOcean, GCP, HCloud, Metal, NoCloud, Openstack, Scaleway, UpCloud, Vultr and VMware).
+images-essential: image-aws image-gcp image-metal ## Builds only essential images used in the CI (AWS, GCP, and Metal).
 
-sbc-%: ## Builds the specified SBC image. Valid options are rpi_4, rock64, bananapi_m64, libretech_all_h3_cc_h5, rockpi_4 and pine64 (e.g. sbc-rpi_4)
+images: image-aws image-azure image-digital-ocean image-gcp image-hcloud image-metal image-nocloud image-openstack image-oracle image-scaleway image-upcloud image-vmware image-vultr ## Builds all known images (AWS, Azure, DigitalOcean, GCP, HCloud, Metal, NoCloud, Openstack, Oracle, Scaleway, UpCloud, Vultr and VMware).
+
+sbc-%: ## Builds the specified SBC image. Valid options are rpi_4, rpi_generic, rock64, bananapi_m64, libretech_all_h3_cc_h5, rockpi_4, rockpi_4c, pine64, jetson_nano and nanopi_r4s (e.g. sbc-rpi_4)
 	@docker pull $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG)
-	@docker run --rm -v /dev:/dev --privileged $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) image --platform metal --arch arm64 --board $* --tar-to-stdout | tar xz -C $(ARTIFACTS)
+	@ . ./hack/imager.sh && \
+	    tmpdir=$$(prepare_extension_images linux/arm64 $(IMAGER_SYSTEM_EXTENSIONS)) && \
+		docker run --rm -v /dev:/dev -v "$${tmpdir}:/system/extensions" --privileged $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) image --platform metal --arch arm64 --board $* --tar-to-stdout $(IMAGER_ARGS) | tar xz -C $(ARTIFACTS) ; \
+		rm -rf "$${tmpdir}"
 
-sbcs: sbc-rpi_4 sbc-rock64 sbc-bananapi_m64 sbc-libretech_all_h3_cc_h5 sbc-rockpi_4 sbc-pine64 ## Builds all known SBC images (Raspberry Pi 4 Model B, Rock64, Banana Pi M64, Radxa ROCK Pi 4, pine64, and Libre Computer Board ALL-H3-CC).
+sbcs: sbc-rpi_4 sbc-rpi_generic sbc-rock64 sbc-bananapi_m64 sbc-libretech_all_h3_cc_h5 sbc-rockpi_4 sbc-rockpi_4c sbc-pine64 sbc-jetson_nano sbc-nanopi_r4s ## Builds all known SBC images (Raspberry Pi 4 Model B, Rock64, Banana Pi M64, Radxa ROCK Pi 4, Radxa ROCK Pi 4c, Pine64, Libre Computer Board ALL-H3-CC, Jetson Nano and Nano Pi R4S).
 
 .PHONY: iso
 iso: ## Builds the ISO and outputs it to the artifact directory.
 	@docker pull $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG)
 	@for platform in $(subst $(,),$(space),$(PLATFORM)); do \
 		arch=`basename "$${platform}"` ; \
-		docker run --rm -e SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) -i $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) iso --arch $$arch --tar-to-stdout | tar xz -C $(ARTIFACTS)  ; \
+		docker run --rm -e SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) -i $(REGISTRY_AND_USERNAME)/imager:$(IMAGE_TAG) iso --arch $$arch --tar-to-stdout $(IMAGER_ARGS) | tar xz -C $(ARTIFACTS)  ; \
 	done
 
 .PHONY: talosctl-cni-bundle
@@ -264,7 +288,7 @@ api-descriptors: ## Generates API descriptors used to detect breaking API change
 	@$(MAKE) local-api-descriptors DEST=./ PLATFORM=linux/amd64
 
 fmt-go: ## Formats the source code.
-	@docker run --rm -it -v $(PWD):/src -w /src golang:$(GO_VERSION) bash -c "go install mvdan.cc/gofumpt/gofumports@$(GOFUMPT_VERSION) && gofumports -w -local github.com/talos-systems/talos ."
+	@docker run --rm -it -v $(PWD):/src -w /src golang:$(GO_VERSION) bash -c "go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) && goimports -w -local github.com/talos-systems/talos . && go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION) && gofumpt -w ."
 
 fmt-protobuf: ## Formats protobuf files.
 	@$(MAKE) local-fmt-protobuf DEST=./ PLATFORM=linux/amd64
@@ -275,11 +299,14 @@ fmt: ## Formats the source code and protobuf files.
 lint-%: ## Runs the specified linter. Valid options are go, protobuf, and markdown (e.g. lint-go).
 	@$(MAKE) target-lint-$* PLATFORM=linux/amd64
 
-lint: ## Runs linters on go, protobuf, and markdown file types.
-	@$(MAKE) lint-go lint-protobuf lint-markdown
+lint: ## Runs linters on go, vulncheck, protobuf, and markdown file types.
+	@$(MAKE) lint-go lint-vulncheck lint-protobuf lint-markdown
 
 check-dirty: ## Verifies that source tree is not dirty
 	@if test -n "`git status --porcelain`"; then echo "Source tree is dirty"; git status; exit 1 ; fi
+
+go-mod-outdated: ## Runs the go-mod-oudated to show outdated dependencies.
+	@$(MAKE) target-go-mod-outdated PLATFORM=linux/amd64
 
 # Tests
 
@@ -302,12 +329,22 @@ $(ARTIFACTS)/kubectl:
 	@curl -L -o $(ARTIFACTS)/kubectl "$(KUBECTL_URL)"
 	@chmod +x $(ARTIFACTS)/kubectl
 
+$(ARTIFACTS)/kubestr:
+	@mkdir -p $(ARTIFACTS)
+	@curl -L "$(KUBESTR_URL)" | tar xzf - -C $(ARTIFACTS) kubestr
+	@chmod +x $(ARTIFACTS)/kubestr
+
+$(ARTIFACTS)/helm:
+	@mkdir -p $(ARTIFACTS)
+	@curl -L "$(HELM_URL)" | tar xzf - -C $(ARTIFACTS) --strip-components=1 linux-amd64/helm
+	@chmod +x $(ARTIFACTS)/helm
+
 $(ARTIFACTS)/clusterctl:
 	@mkdir -p $(ARTIFACTS)
 	@curl -L -o $(ARTIFACTS)/clusterctl "$(CLUSTERCTL_URL)"
 	@chmod +x $(ARTIFACTS)/clusterctl
 
-e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(ARTIFACTS)/kubectl $(ARTIFACTS)/clusterctl ## Runs the E2E test for the specified platform (e.g. e2e-docker).
+e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(ARTIFACTS)/kubectl $(ARTIFACTS)/clusterctl $(ARTIFACTS)/kubestr $(ARTIFACTS)/helm ## Runs the E2E test for the specified platform (e.g. e2e-docker).
 	@$(MAKE) hack-test-$@ \
 		PLATFORM=$* \
 		TAG=$(TAG) \
@@ -321,6 +358,8 @@ e2e-%: $(ARTIFACTS)/$(INTEGRATION_TEST_DEFAULT_TARGET)-amd64 $(ARTIFACTS)/kubect
 		SHORT_INTEGRATION_TEST=$(SHORT_INTEGRATION_TEST) \
 		CUSTOM_CNI_URL=$(CUSTOM_CNI_URL) \
 		KUBECTL=$(PWD)/$(ARTIFACTS)/kubectl \
+		KUBESTR=$(PWD)/$(ARTIFACTS)/kubestr \
+		HELM=$(PWD)/$(ARTIFACTS)/helm \
 		CLUSTERCTL=$(PWD)/$(ARTIFACTS)/clusterctl
 
 provision-tests-prepare: release-artifacts $(ARTIFACTS)/$(INTEGRATION_TEST_PROVISION_DEFAULT_TARGET)-amd64
@@ -352,10 +391,10 @@ $(ARTIFACTS)/$(TALOS_RELEASE)/%:
 	@mkdir -p $(ARTIFACTS)/$(TALOS_RELEASE)/
 	@case "$*" in \
 		vmlinuz) \
-			curl -L -o "$(ARTIFACTS)/$(TALOS_RELEASE)/$*" "https://github.com/talos-systems/talos/releases/download/$(TALOS_RELEASE)/vmlinuz-amd64" \
+			curl -L -o "$(ARTIFACTS)/$(TALOS_RELEASE)/$*" "https://github.com/siderolabs/talos/releases/download/$(TALOS_RELEASE)/vmlinuz-amd64" \
 			;; \
 		initramfs.xz) \
-			curl -L -o "$(ARTIFACTS)/$(TALOS_RELEASE)/$*" "https://github.com/talos-systems/talos/releases/download/$(TALOS_RELEASE)/initramfs-amd64.xz" \
+			curl -L -o "$(ARTIFACTS)/$(TALOS_RELEASE)/$*" "https://github.com/siderolabs/talos/releases/download/$(TALOS_RELEASE)/initramfs-amd64.xz" \
 			;; \
 	esac
 
@@ -369,7 +408,7 @@ release-artifacts:
 
 .PHONY: conformance
 conformance: ## Performs policy checks against the commit and source code.
-	docker run --rm -it -v $(PWD):/src -w /src ghcr.io/talos-systems/conform:v0.1.0-alpha.22 enforce
+	docker run --rm -it -v $(PWD):/src -w /src ghcr.io/siderolabs/conform:v0.1.0-alpha.22 enforce
 
 .PHONY: release-notes
 release-notes:

@@ -8,19 +8,20 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/AlekSi/pointer"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/go-pointer"
 
 	v1alpha1 "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
+//nolint:gocyclo
 func workerUd(in *Input) (*v1alpha1.Config, error) {
 	config := &v1alpha1.Config{
 		ConfigVersion: "v1alpha1",
-		ConfigDebug:   in.Debug,
-		ConfigPersist: in.Persist,
+		ConfigDebug:   pointer.To(in.Debug),
+		ConfigPersist: pointer.To(in.Persist),
 	}
 
 	networkConfig := &v1alpha1.NetworkConfig{}
@@ -43,7 +44,8 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 		MachineInstall: &v1alpha1.InstallConfig{
 			InstallDisk:            in.InstallDisk,
 			InstallImage:           in.InstallImage,
-			InstallBootloader:      true,
+			InstallBootloader:      pointer.To(true),
+			InstallWipe:            pointer.To(false),
 			InstallExtraKernelArgs: in.InstallExtraKernelArgs,
 		},
 		MachineRegistries: v1alpha1.RegistriesConfig{
@@ -57,7 +59,19 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 	}
 
 	if in.VersionContract.SupportsRBACFeature() {
-		machine.MachineFeatures.RBAC = pointer.ToBool(true)
+		machine.MachineFeatures.RBAC = pointer.To(true)
+	}
+
+	if in.VersionContract.StableHostnameEnabled() {
+		machine.MachineFeatures.StableHostname = pointer.To(true)
+	}
+
+	if in.VersionContract.ApidExtKeyUsageCheckEnabled() {
+		machine.MachineFeatures.ApidCheckExtKeyUsage = pointer.To(true)
+	}
+
+	if in.VersionContract.KubeletDefaultRuntimeSeccompProfileEnabled() {
+		machine.MachineKubelet.KubeletDefaultRuntimeSeccompProfileEnabled = pointer.To(true)
 	}
 
 	controlPlaneURL, err := url.Parse(in.ControlPlaneEndpoint)
@@ -79,9 +93,31 @@ func workerUd(in *Input) (*v1alpha1.Config, error) {
 			ServiceSubnet: in.ServiceNet,
 			CNI:           in.CNIConfig,
 		},
-		ClusterDiscoveryConfig: v1alpha1.ClusterDiscoveryConfig{
-			DiscoveryEnabled: in.DiscoveryEnabled,
-		},
+	}
+
+	if in.DiscoveryEnabled {
+		cluster.ClusterDiscoveryConfig = &v1alpha1.ClusterDiscoveryConfig{
+			DiscoveryEnabled: pointer.To(in.DiscoveryEnabled),
+		}
+
+		if in.VersionContract.KubernetesDiscoveryBackendDisabled() {
+			cluster.ClusterDiscoveryConfig.DiscoveryRegistries.RegistryKubernetes.RegistryDisabled = pointer.To(true)
+		}
+	}
+
+	if machine.MachineRegistries.RegistryMirrors == nil {
+		machine.MachineRegistries.RegistryMirrors = map[string]*v1alpha1.RegistryMirrorConfig{}
+	}
+
+	if in.VersionContract.KubernetesAlternateImageRegistries() {
+		if _, ok := machine.MachineRegistries.RegistryMirrors["k8s.gcr.io"]; !ok {
+			machine.MachineRegistries.RegistryMirrors["k8s.gcr.io"] = &v1alpha1.RegistryMirrorConfig{
+				MirrorEndpoints: []string{
+					"https://registry.k8s.io",
+					"https://k8s.gcr.io",
+				},
+			}
+		}
 	}
 
 	config.MachineConfig = machine

@@ -7,6 +7,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,7 +15,7 @@ import (
 	"github.com/talos-systems/talos/cmd/talosctl/cmd/mgmt"
 	"github.com/talos-systems/talos/cmd/talosctl/cmd/talos"
 	"github.com/talos-systems/talos/pkg/cli"
-	clientconfig "github.com/talos-systems/talos/pkg/machinery/client/config"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
 // rootCmd represents the base command when called without any subcommands.
@@ -30,17 +31,22 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() error {
-	defaultTalosConfig, err := clientconfig.GetDefaultPath()
-	if err != nil {
-		return err
-	}
-
-	rootCmd.PersistentFlags().StringVar(&talos.Talosconfig, "talosconfig", defaultTalosConfig, "The path to the Talos configuration file")
-	rootCmd.PersistentFlags().StringVar(&talos.Cmdcontext, "context", "", "Context to be used in command")
-	rootCmd.PersistentFlags().StringSliceVarP(&talos.Nodes, "nodes", "n", []string{}, "target the specified nodes")
-	rootCmd.PersistentFlags().StringSliceVarP(&talos.Endpoints, "endpoints", "e", []string{}, "override default endpoints in Talos configuration")
+	rootCmd.PersistentFlags().StringVar(
+		&talos.GlobalArgs.Talosconfig,
+		"talosconfig",
+		"",
+		fmt.Sprintf("The path to the Talos configuration file. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
+			constants.TalosConfigEnvVar,
+			filepath.Join("$HOME", constants.TalosDir, constants.TalosconfigFilename),
+			filepath.Join(constants.ServiceAccountMountPath, constants.TalosconfigFilename),
+		),
+	)
+	rootCmd.PersistentFlags().StringVar(&talos.GlobalArgs.CmdContext, "context", "", "Context to be used in command")
+	rootCmd.PersistentFlags().StringSliceVarP(&talos.GlobalArgs.Nodes, "nodes", "n", []string{}, "target the specified nodes")
+	rootCmd.PersistentFlags().StringSliceVarP(&talos.GlobalArgs.Endpoints, "endpoints", "e", []string{}, "override default endpoints in Talos configuration")
 	cli.Should(rootCmd.RegisterFlagCompletionFunc("context", talos.CompleteConfigContext))
 	cli.Should(rootCmd.RegisterFlagCompletionFunc("nodes", talos.CompleteNodes))
+	rootCmd.PersistentFlags().StringVar(&talos.GlobalArgs.Cluster, "cluster", "", "Cluster to connect to if a proxy endpoint is used.")
 
 	cmd, err := rootCmd.ExecuteC()
 	if err != nil {

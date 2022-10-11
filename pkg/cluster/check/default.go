@@ -22,6 +22,20 @@ func DefaultClusterChecks() []ClusterCheck {
 			}, 5*time.Minute, 5*time.Second)
 		},
 
+		// wait for etcd members to be consistent across nodes
+		func(cluster ClusterInfo) conditions.Condition {
+			return conditions.PollingCondition("etcd members to be consistent across nodes", func(ctx context.Context) error {
+				return EtcdConsistentAssertion(ctx, cluster)
+			}, 5*time.Minute, 5*time.Second)
+		},
+
+		// wait for etcd members to be the control plane nodes
+		func(cluster ClusterInfo) conditions.Condition {
+			return conditions.PollingCondition("etcd members to be control plane nodes", func(ctx context.Context) error {
+				return EtcdControlPlaneNodesAssertion(ctx, cluster)
+			}, 5*time.Minute, 5*time.Second)
+		},
+
 		// wait for apid to be ready on all the nodes
 		func(cluster ClusterInfo) conditions.Condition {
 			return conditions.PollingCondition("apid to be ready", func(ctx context.Context) error {

@@ -5,8 +5,14 @@
 package kernel
 
 import (
-	"path"
 	"strings"
+)
+
+const (
+	// Sysfs defines prefix for sysfs kernel params.
+	Sysfs = "sys"
+	// Sysctl defines prefix for sysctl kernel params.
+	Sysctl = "proc.sys"
 )
 
 // DefaultArgs returns the Talos default kernel commandline options.
@@ -18,7 +24,6 @@ var DefaultArgs = []string{
 	// AWS recommends setting the nvme_core.io_timeout to the highest value possible.
 	// See https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nvme-ebs-volumes.html.
 	"nvme_core.io_timeout=4294967295",
-	"random.trust_cpu=on",
 	// Disable rate limited printk
 	"printk.devkmsg=on",
 	"ima_template=ima-ng",
@@ -32,7 +37,7 @@ type Param struct {
 	Value string
 }
 
-// Path returns the path to the systctl file under /proc/sys.
+// Path returns the path to the systctl file under /proc/sys or /sys.
 func (prop *Param) Path() string {
-	return path.Join("/proc/sys", strings.ReplaceAll(prop.Key, ".", "/"))
+	return "/" + strings.ReplaceAll(prop.Key, ".", "/")
 }

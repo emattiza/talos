@@ -6,132 +6,44 @@ package aws
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
-	"time"
+	"net/netip"
+	"strings"
 
-	"github.com/fullsailor/pkcs7"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-procfs/procfs"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/errors"
-	"github.com/talos-systems/talos/pkg/download"
-)
-
-const (
-	// AWSExternalIPEndpoint displays all external addresses associated with the instance.
-	AWSExternalIPEndpoint = "http://169.254.169.254/latest/meta-data/public-ipv4"
-	// AWSHostnameEndpoint is the local EC2 endpoint for the hostname.
-	AWSHostnameEndpoint = "http://169.254.169.254/latest/meta-data/hostname"
-	// AWSPKCS7Endpoint is the local EC2 endpoint for the PKCS7 signature.
-	AWSPKCS7Endpoint = "http://169.254.169.254/latest/dynamic/instance-identity/pkcs7"
-	// AWSPublicCertificate is the AWS public certificate for the regions
-	// provided by an AWS account.
-	AWSPublicCertificate = `-----BEGIN CERTIFICATE-----
-MIIC7TCCAq0CCQCWukjZ5V4aZzAJBgcqhkjOOAQDMFwxCzAJBgNVBAYTAlVTMRkw
-FwYDVQQIExBXYXNoaW5ndG9uIFN0YXRlMRAwDgYDVQQHEwdTZWF0dGxlMSAwHgYD
-VQQKExdBbWF6b24gV2ViIFNlcnZpY2VzIExMQzAeFw0xMjAxMDUxMjU2MTJaFw0z
-ODAxMDUxMjU2MTJaMFwxCzAJBgNVBAYTAlVTMRkwFwYDVQQIExBXYXNoaW5ndG9u
-IFN0YXRlMRAwDgYDVQQHEwdTZWF0dGxlMSAwHgYDVQQKExdBbWF6b24gV2ViIFNl
-cnZpY2VzIExMQzCCAbcwggEsBgcqhkjOOAQBMIIBHwKBgQCjkvcS2bb1VQ4yt/5e
-ih5OO6kK/n1Lzllr7D8ZwtQP8fOEpp5E2ng+D6Ud1Z1gYipr58Kj3nssSNpI6bX3
-VyIQzK7wLclnd/YozqNNmgIyZecN7EglK9ITHJLP+x8FtUpt3QbyYXJdmVMegN6P
-hviYt5JH/nYl4hh3Pa1HJdskgQIVALVJ3ER11+Ko4tP6nwvHwh6+ERYRAoGBAI1j
-k+tkqMVHuAFcvAGKocTgsjJem6/5qomzJuKDmbJNu9Qxw3rAotXau8Qe+MBcJl/U
-hhy1KHVpCGl9fueQ2s6IL0CaO/buycU1CiYQk40KNHCcHfNiZbdlx1E9rpUp7bnF
-lRa2v1ntMX3caRVDdbtPEWmdxSCYsYFDk4mZrOLBA4GEAAKBgEbmeve5f8LIE/Gf
-MNmP9CM5eovQOGx5ho8WqD+aTebs+k2tn92BBPqeZqpWRa5P/+jrdKml1qx4llHW
-MXrs3IgIb6+hUIB+S8dz8/mmO0bpr76RoZVCXYab2CZedFut7qc3WUH9+EUAH5mw
-vSeDCOUMYQR7R9LINYwouHIziqQYMAkGByqGSM44BAMDLwAwLAIUWXBlk40xTwSw
-7HX32MxXYruse9ACFBNGmdX2ZBrVNGrN9N2f6ROk0k9K
------END CERTIFICATE-----`
-	// AWSUserDataEndpoint is the local EC2 endpoint for the config.
-	AWSUserDataEndpoint = "http://169.254.169.254/latest/user-data"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 // AWS is the concrete type that implements the runtime.Platform interface.
-type AWS struct{}
+type AWS struct {
+	metadataClient *ec2metadata.EC2Metadata
+}
 
-// IsEC2 uses the EC2 PKCS7 signature to verify the instance by validating it
-// against the appropriate AWS public certificate. See
-// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-identity-documents.html
-func IsEC2() (b bool) {
-	ctx, ctxCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer ctxCancel()
+// NewAWS initializes AWS platform building the IMDS client.
+func NewAWS() (*AWS, error) {
+	a := &AWS{}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, AWSPKCS7Endpoint, nil)
+	sess, err := session.NewSession(&aws.Config{})
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return
-	}
-	//nolint:errcheck
-	defer resp.Body.Close()
+	sess.Config.Credentials = ec2rolecreds.NewCredentials(sess)
 
-	if resp.StatusCode != http.StatusOK {
-		fmt.Printf("failed to download PKCS7 signature: %d\n", resp.StatusCode)
+	a.metadataClient = ec2metadata.New(sess)
 
-		return
-	}
-
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println(err)
-
-		return
-	}
-
-	data = append([]byte("-----BEGIN PKCS7-----\n"), data...)
-	data = append(data, []byte("\n-----END PKCS7-----\n")...)
-
-	pemBlock, _ := pem.Decode(data)
-	if pemBlock == nil {
-		log.Println("failed to decode PEM block")
-
-		return
-	}
-
-	p7, err := pkcs7.Parse(pemBlock.Bytes)
-	if err != nil {
-		log.Printf("failed to parse PKCS7 signature: %v\n", err)
-
-		return
-	}
-
-	pemBlock, _ = pem.Decode([]byte(AWSPublicCertificate))
-	if pemBlock == nil {
-		log.Println("failed to decode PEM block")
-
-		return
-	}
-
-	certificate, err := x509.ParseCertificate(pemBlock.Bytes)
-	if err != nil {
-		log.Printf("failed to parse X509 certificate: %v\n", err)
-
-		return
-	}
-
-	p7.Certificates = []*x509.Certificate{certificate}
-
-	err = p7.Verify()
-	if err != nil {
-		log.Printf("failed to verify PKCS7 signature: %v", err)
-
-		return
-	}
-
-	b = true
-
-	return b
+	return a, nil
 }
 
 // Name implements the runtime.Platform interface.
@@ -140,12 +52,25 @@ func (a *AWS) Name() string {
 }
 
 // Configuration implements the runtime.Platform interface.
-func (a *AWS) Configuration(ctx context.Context) ([]byte, error) {
-	log.Printf("fetching machine config from: %q", AWSUserDataEndpoint)
+func (a *AWS) Configuration(ctx context.Context, r state.State) ([]byte, error) {
+	log.Printf("fetching machine config from AWS")
 
-	return download.Download(ctx, AWSUserDataEndpoint,
-		download.WithErrorOnNotFound(errors.ErrNoConfigSource),
-		download.WithErrorOnEmptyResponse(errors.ErrNoConfigSource))
+	userdata, err := a.metadataClient.GetUserDataWithContext(ctx)
+	if err != nil {
+		if awsErr, ok := err.(awserr.RequestFailure); ok {
+			if awsErr.StatusCode() == http.StatusNotFound {
+				return nil, errors.ErrNoConfigSource
+			}
+		}
+
+		return nil, fmt.Errorf("failed to fetch EC2 userdata: %w", err)
+	}
+
+	if strings.TrimSpace(userdata) == "" {
+		return nil, errors.ErrNoConfigSource
+	}
+
+	return []byte(userdata), nil
 }
 
 // Mode implements the runtime.Platform interface.
@@ -153,69 +78,70 @@ func (a *AWS) Mode() runtime.Mode {
 	return runtime.ModeCloud
 }
 
-// Hostname implements the runtime.Platform interface.
-func (a *AWS) Hostname(ctx context.Context) (hostname []byte, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, AWSHostnameEndpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	//nolint:errcheck
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return hostname, fmt.Errorf("failed to fetch hostname from metadata service: %d", resp.StatusCode)
-	}
-
-	return ioutil.ReadAll(resp.Body)
-}
-
-// ExternalIPs implements the runtime.Platform interface.
-func (a *AWS) ExternalIPs(ctx context.Context) (addrs []net.IP, err error) {
-	var (
-		body []byte
-		req  *http.Request
-		resp *http.Response
-	)
-
-	if req, err = http.NewRequestWithContext(ctx, "GET", AWSExternalIPEndpoint, nil); err != nil {
-		return
-	}
-
-	client := &http.Client{}
-	if resp, err = client.Do(req); err != nil {
-		return
-	}
-
-	//nolint:errcheck
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return addrs, fmt.Errorf("failed to retrieve external addresses for instance: %d", resp.StatusCode)
-	}
-
-	if body, err = ioutil.ReadAll(resp.Body); err != nil {
-		return
-	}
-
-	if addr := net.ParseIP(string(body)); addr != nil {
-		addrs = append(addrs, addr)
-	}
-
-	return addrs, err
-}
-
 // KernelArgs implements the runtime.Platform interface.
 func (a *AWS) KernelArgs() procfs.Parameters {
 	return []*procfs.Parameter{
 		procfs.NewParameter("console").Append("tty1").Append("ttyS0"),
 	}
+}
+
+// NetworkConfiguration implements the runtime.Platform interface.
+//
+//nolint:gocyclo
+func (a *AWS) NetworkConfiguration(ctx context.Context, _ state.State, ch chan<- *runtime.PlatformNetworkConfig) error {
+	getMetadataKey := func(key string) (string, error) {
+		v, err := a.metadataClient.GetMetadataWithContext(ctx, key)
+		if err != nil {
+			if awsErr, ok := err.(awserr.RequestFailure); ok {
+				if awsErr.StatusCode() == http.StatusNotFound {
+					return "", nil
+				}
+			}
+
+			return "", fmt.Errorf("failed to fetch %q from IMDS: %w", key, err)
+		}
+
+		return v, nil
+	}
+
+	networkConfig := &runtime.PlatformNetworkConfig{}
+
+	hostname, err := getMetadataKey("hostname")
+	if err != nil {
+		return err
+	}
+
+	if hostname != "" {
+		hostnameSpec := network.HostnameSpecSpec{
+			ConfigLayer: network.ConfigPlatform,
+		}
+
+		if err = hostnameSpec.ParseFQDN(hostname); err != nil {
+			return err
+		}
+
+		networkConfig.Hostnames = append(networkConfig.Hostnames, hostnameSpec)
+	}
+
+	externalIP, err := getMetadataKey("public-ipv4")
+	if err != nil {
+		return err
+	}
+
+	if externalIP != "" {
+		ip, err := netip.ParseAddr(externalIP)
+		if err != nil {
+			return err
+		}
+
+		networkConfig.ExternalIPs = append(networkConfig.ExternalIPs, ip)
+	}
+
+	select {
+	case ch <- networkConfig:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
 }

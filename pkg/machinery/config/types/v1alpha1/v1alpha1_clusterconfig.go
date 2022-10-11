@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
 	talosnet "github.com/talos-systems/net"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -158,13 +160,7 @@ func (c *ClusterConfig) ExtraManifestHeaderMap() map[string]string {
 
 // InlineManifests implements the config.ClusterConfig interface.
 func (c *ClusterConfig) InlineManifests() []config.InlineManifest {
-	manifests := make([]config.InlineManifest, len(c.ClusterInlineManifests))
-
-	for i := range manifests {
-		manifests[i] = c.ClusterInlineManifests[i]
-	}
-
-	return manifests
+	return slices.Map(c.ClusterInlineManifests, func(m ClusterInlineManifest) config.InlineManifest { return m })
 }
 
 // AdminKubeconfig implements the config.ClusterConfig interface.
@@ -176,9 +172,13 @@ func (c *ClusterConfig) AdminKubeconfig() config.AdminKubeconfig {
 	return c.AdminKubeconfigConfig
 }
 
-// ScheduleOnMasters implements the config.ClusterConfig interface.
-func (c *ClusterConfig) ScheduleOnMasters() bool {
-	return c.AllowSchedulingOnMasters
+// ScheduleOnControlPlanes implements the config.ClusterConfig interface.
+func (c *ClusterConfig) ScheduleOnControlPlanes() bool {
+	if c.AllowSchedulingOnControlPlanes != nil {
+		return pointer.SafeDeref(c.AllowSchedulingOnControlPlanes)
+	}
+
+	return pointer.SafeDeref(c.AllowSchedulingOnMasters)
 }
 
 // ID returns the unique identifier for the cluster.
@@ -261,6 +261,10 @@ func (c *ClusterConfig) DNSServiceIPs() ([]net.IP, error) {
 
 // Discovery implements the config.Cluster interface.
 func (c *ClusterConfig) Discovery() config.Discovery {
+	if c.ClusterDiscoveryConfig == nil {
+		return &ClusterDiscoveryConfig{}
+	}
+
 	return c.ClusterDiscoveryConfig
 }
 

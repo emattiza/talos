@@ -5,65 +5,42 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // ResolverStatusType is type of ResolverStatus resource.
 const ResolverStatusType = resource.Type("ResolverStatuses.net.talos.dev")
 
 // ResolverStatus resource holds DNS resolver info.
-type ResolverStatus struct {
-	md   resource.Metadata
-	spec ResolverStatusSpec
-}
+type ResolverStatus = typed.Resource[ResolverStatusSpec, ResolverStatusRD]
 
 // ResolverStatusSpec describes DNS resolvers.
+//
+//gotagsrewrite:gen
 type ResolverStatusSpec struct {
-	DNSServers []netaddr.IP `yaml:"dnsServers"`
+	DNSServers []netip.Addr `yaml:"dnsServers" protobuf:"1"`
 }
 
 // NewResolverStatus initializes a ResolverStatus resource.
 func NewResolverStatus(namespace resource.Namespace, id resource.ID) *ResolverStatus {
-	r := &ResolverStatus{
-		md:   resource.NewMetadata(namespace, ResolverStatusType, id, resource.VersionUndefined),
-		spec: ResolverStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[ResolverStatusSpec, ResolverStatusRD](
+		resource.NewMetadata(namespace, ResolverStatusType, id, resource.VersionUndefined),
+		ResolverStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *ResolverStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// ResolverStatusRD provides auxiliary methods for ResolverStatus.
+type ResolverStatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *ResolverStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *ResolverStatus) String() string {
-	return fmt.Sprintf("network.ResolverStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *ResolverStatus) DeepCopy() resource.Resource {
-	return &ResolverStatus{
-		md: r.md,
-		spec: ResolverStatusSpec{
-			DNSServers: append([]netaddr.IP(nil), r.spec.DNSServers...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *ResolverStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (ResolverStatusRD) ResourceDefinition(resource.Metadata, ResolverStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             ResolverStatusType,
 		Aliases:          []resource.Type{"resolvers"},
@@ -77,7 +54,11 @@ func (r *ResolverStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *ResolverStatus) TypedSpec() *ResolverStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[ResolverStatusSpec](ResolverStatusType, &ResolverStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -5,11 +5,14 @@
 package kubespan
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // IdentityType is type of Identity resource.
@@ -19,60 +22,36 @@ const IdentityType = resource.Type("KubeSpanIdentities.kubespan.talos.dev")
 const LocalIdentity = resource.ID("local")
 
 // Identity resource holds node identity (as a member of the cluster).
-type Identity struct {
-	md   resource.Metadata
-	spec IdentitySpec
-}
+type Identity = typed.Resource[IdentitySpec, IdentityRD]
 
 // IdentitySpec describes KubeSpan keys and address.
 //
 // Note: IdentitySpec is persisted on disk in the STATE partition,
 // so YAML serialization should be kept backwards compatible.
+//
+//gotagsrewrite:gen
 type IdentitySpec struct {
 	// Address of the node on the Wireguard network.
-	Address netaddr.IPPrefix `yaml:"address"`
-	Subnet  netaddr.IPPrefix `yaml:"subnet"`
+	Address netip.Prefix `yaml:"address" protobuf:"1"`
+	Subnet  netip.Prefix `yaml:"subnet" protobuf:"2"`
 	// Public and private Wireguard keys.
-	PrivateKey string `yaml:"privateKey"`
-	PublicKey  string `yaml:"publicKey"`
+	PrivateKey string `yaml:"privateKey" protobuf:"3"`
+	PublicKey  string `yaml:"publicKey" protobuf:"4"`
 }
 
 // NewIdentity initializes a Identity resource.
 func NewIdentity(namespace resource.Namespace, id resource.ID) *Identity {
-	r := &Identity{
-		md:   resource.NewMetadata(namespace, IdentityType, id, resource.VersionUndefined),
-		spec: IdentitySpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[IdentitySpec, IdentityRD](
+		resource.NewMetadata(namespace, IdentityType, id, resource.VersionUndefined),
+		IdentitySpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Identity) Metadata() *resource.Metadata {
-	return &r.md
-}
+// IdentityRD provides auxiliary methods for Identity.
+type IdentityRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Identity) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Identity) String() string {
-	return fmt.Sprintf("kubespan.Identity(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Identity) DeepCopy() resource.Resource {
-	return &Identity{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Identity) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (IdentityRD) ResourceDefinition(resource.Metadata, IdentitySpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             IdentityType,
 		Aliases:          []resource.Type{},
@@ -91,7 +70,11 @@ func (r *Identity) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Identity) TypedSpec() *IdentitySpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[IdentitySpec](IdentityType, &Identity{})
+	if err != nil {
+		panic(err)
+	}
 }

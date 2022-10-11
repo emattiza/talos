@@ -16,12 +16,13 @@ import (
 	"sync"
 	"text/tabwriter"
 
+	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/fatih/color"
 	"github.com/gosuri/uiprogress"
 	"github.com/hashicorp/go-multierror"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
-	"gopkg.in/yaml.v3"
 
 	"github.com/talos-systems/talos/pkg/cluster"
 	"github.com/talos-systems/talos/pkg/machinery/client"
@@ -59,7 +60,7 @@ var supportCmd = &cobra.Command{
 `,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(Nodes) == 0 {
+		if len(GlobalArgs.Nodes) == 0 {
 			return fmt.Errorf("please provide at least a single node to gather the debug information from")
 		}
 
@@ -89,7 +90,7 @@ var supportCmd = &cobra.Command{
 			return nil
 		})
 
-		err = collectData(archive, progress)
+		collectErr := collectData(archive, progress)
 
 		close(progress)
 
@@ -97,21 +98,29 @@ var supportCmd = &cobra.Command{
 			return e
 		}
 
-		if err != nil {
-			if err = printErrors(err); err != nil {
+		if collectErr != nil {
+			if err = printErrors(collectErr); err != nil {
 				return err
 			}
 		}
 
 		fmt.Printf("Support bundle is written to %s\n", supportCmdFlags.output)
 
-		return archive.Archive.Close()
+		if err = archive.Archive.Close(); err != nil {
+			return err
+		}
+
+		if collectErr != nil {
+			os.Exit(1)
+		}
+
+		return nil
 	},
 }
 
 func collectData(archive *cluster.BundleArchive, progress chan cluster.BundleProgress) error {
 	return WithClient(func(ctx context.Context, c *client.Client) error {
-		sources := append([]string{}, Nodes...)
+		sources := append([]string{}, GlobalArgs.Nodes...)
 		sources = append(sources, "cluster")
 
 		var (
@@ -170,20 +179,15 @@ func getDiscoveryConfig() (*clusterresource.Config, error) {
 	var config *clusterresource.Config
 
 	if e := WithClient(func(ctx context.Context, c *client.Client) error {
-		list, err := c.Resources.Get(ctx, clusterresource.NamespaceName, clusterresource.IdentityType, clusterresource.LocalIdentity)
-		if err != nil {
-			return err
-		}
+		var err error
 
-		resp := list[0]
-		b, err := yaml.Marshal(resp.Resource.Spec())
-		if err != nil {
-			return err
-		}
+		config, err = safe.StateGet[*clusterresource.Config](
+			ctx,
+			c.COSI,
+			resource.NewMetadata(clusterresource.NamespaceName, clusterresource.IdentityType, clusterresource.LocalIdentity, resource.VersionUndefined),
+		)
 
-		config = clusterresource.NewConfig(resp.Resource.Metadata().Namespace(), resp.Resource.Metadata().ID())
-
-		return yaml.Unmarshal(b, config.TypedSpec())
+		return err
 	}); e != nil {
 		return nil, e
 	}

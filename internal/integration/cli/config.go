@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -69,7 +68,7 @@ func (suite *TalosconfigSuite) TestMerge() {
 
 // TestNew checks `talosctl config new`.
 func (suite *TalosconfigSuite) TestNew() {
-	stdout := suite.RunCLI([]string{"version", "--json", "--nodes", suite.RandomDiscoveredNode()})
+	stdout, _ := suite.RunCLI([]string{"version", "--json", "--nodes", suite.RandomDiscoveredNodeInternalIP()})
 
 	var v machineapi.Version
 	err := protojson.Unmarshal([]byte(stdout), &v)
@@ -79,7 +78,7 @@ func (suite *TalosconfigSuite) TestNew() {
 
 	tempDir := suite.T().TempDir()
 
-	node := suite.RandomDiscoveredNode(machine.TypeControlPlane)
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	readerConfig := filepath.Join(tempDir, "talosconfig")
 	suite.RunCLI([]string{"--nodes", node, "config", "new", "--roles", "os:reader", readerConfig},
@@ -120,13 +119,15 @@ func (suite *TalosconfigSuite) TestNew() {
 			readerOpts: []base.RunOption{
 				base.StdoutEmpty(),
 				base.StderrShouldMatch(regexp.MustCompile(`\Qrpc error: code = PermissionDenied desc = not authorized`)),
+				base.ShouldFail(),
 			},
 		},
 		{
 			args:      []string{"get", "mc"},
 			adminOpts: []base.RunOption{base.StdoutShouldMatch(regexp.MustCompile(`MachineConfig`))},
 			readerOpts: []base.RunOption{
-				base.StdoutEmpty(),
+				base.ShouldFail(),
+				base.StdoutShouldMatch(regexp.MustCompile(`\QNODE   NAMESPACE   TYPE   ID   VERSION`)),
 				base.StderrShouldMatch(regexp.MustCompile(`\Qrpc error: code = PermissionDenied desc = not authorized`)),
 			},
 		},
@@ -134,7 +135,8 @@ func (suite *TalosconfigSuite) TestNew() {
 			args:      []string{"get", "osrootsecret"},
 			adminOpts: []base.RunOption{base.StdoutShouldMatch(regexp.MustCompile(`OSRootSecret`))},
 			readerOpts: []base.RunOption{
-				base.StdoutEmpty(),
+				base.ShouldFail(),
+				base.StdoutShouldMatch(regexp.MustCompile(`\QNODE   NAMESPACE   TYPE   ID   VERSION`)),
 				base.StderrShouldMatch(regexp.MustCompile(`\Qrpc error: code = PermissionDenied desc = not authorized`)),
 			},
 		},
@@ -142,7 +144,7 @@ func (suite *TalosconfigSuite) TestNew() {
 			args:      []string{"kubeconfig", "--force", tempDir},
 			adminOpts: []base.RunOption{base.StdoutEmpty()},
 			readerOpts: []base.RunOption{
-				base.ShouldFail(), // why this one fails, but not others?
+				base.ShouldFail(),
 				base.StdoutEmpty(),
 				base.StderrShouldMatch(regexp.MustCompile(`\Qrpc error: code = PermissionDenied desc = not authorized`)),
 			},
@@ -178,7 +180,7 @@ func (suite *TalosconfigSuite) TestNew() {
 		readerOpts []base.RunOption
 	}{
 		{
-			args: []string{"reboot"},
+			args: []string{"reboot", "--wait=false"},
 			readerOpts: []base.RunOption{
 				base.ShouldFail(),
 				base.StdoutEmpty(),
@@ -186,7 +188,7 @@ func (suite *TalosconfigSuite) TestNew() {
 			},
 		},
 		{
-			args: []string{"reset"},
+			args: []string{"reset", "--wait=false"},
 			readerOpts: []base.RunOption{
 				base.ShouldFail(),
 				base.StdoutEmpty(),

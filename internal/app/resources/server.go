@@ -13,14 +13,13 @@ import (
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/slices"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/talos-systems/talos/pkg/grpc/middleware/authz"
 	resourceapi "github.com/talos-systems/talos/pkg/machinery/api/resource"
-	"github.com/talos-systems/talos/pkg/machinery/role"
 )
 
 // Server implements ResourceService API.
@@ -89,7 +88,7 @@ func (s *Server) resolveResourceKind(ctx context.Context, kind *resourceKind) (*
 			continue
 		}
 
-		spec := rd.Spec().(meta.ResourceDefinitionSpec) //nolint:errcheck,forcetypeassert
+		spec := rd.TypedSpec()
 
 		for _, alias := range spec.AllAliases {
 			if strings.EqualFold(alias, kind.Type) {
@@ -102,53 +101,20 @@ func (s *Server) resolveResourceKind(ctx context.Context, kind *resourceKind) (*
 
 	switch {
 	case len(matched) == 1:
-		kind.Type = matched[0].Spec().(meta.ResourceDefinitionSpec).Type
+		kind.Type = matched[0].TypedSpec().Type
 
 		if kind.Namespace == "" {
-			kind.Namespace = matched[0].Spec().(meta.ResourceDefinitionSpec).DefaultNamespace
+			kind.Namespace = matched[0].TypedSpec().DefaultNamespace
 		}
 
 		return matched[0], nil
 	case len(matched) > 1:
-		matchedTypes := make([]string, len(matched))
-
-		for i := range matched {
-			matchedTypes[i] = matched[i].Metadata().ID()
-		}
+		matchedTypes := slices.Map(matched, func(rd *meta.ResourceDefinition) string { return rd.Metadata().ID() })
 
 		return nil, status.Errorf(codes.InvalidArgument, fmt.Sprintf("resource type %q is ambiguous: %v", kind.Type, matchedTypes))
 	default:
 		return nil, status.Error(codes.NotFound, fmt.Sprintf("resource %q is not registered", kind.Type))
 	}
-}
-
-func (s *Server) checkReadAccess(ctx context.Context, kind *resourceKind, rd *meta.ResourceDefinition) error {
-	roles := authz.GetRoles(ctx)
-	spec := rd.Spec().(meta.ResourceDefinitionSpec) //nolint:errcheck,forcetypeassert
-
-	switch spec.Sensitivity {
-	case meta.Sensitive:
-		if !roles.Includes(role.Admin) {
-			return authz.ErrNotAuthorized
-		}
-	case meta.NonSensitive:
-		// nothing
-	default:
-		return fmt.Errorf("unexpected sensitivity %q", spec.Sensitivity)
-	}
-
-	registeredNamespaces, err := s.Resources.List(ctx, resource.NewMetadata(meta.NamespaceName, meta.NamespaceType, "", resource.VersionUndefined))
-	if err != nil {
-		return err
-	}
-
-	for _, ns := range registeredNamespaces.Items {
-		if ns.Metadata().ID() == kind.Namespace {
-			return nil
-		}
-	}
-
-	return status.Error(codes.NotFound, fmt.Sprintf("namespace %q is not registered", kind.Namespace))
 }
 
 // Get implements resource.ResourceServiceServer interface.
@@ -160,10 +126,6 @@ func (s *Server) Get(ctx context.Context, in *resourceapi.GetRequest) (*resource
 
 	rd, err := s.resolveResourceKind(ctx, kind)
 	if err != nil {
-		return nil, err
-	}
-
-	if err = s.checkReadAccess(ctx, kind, rd); err != nil {
 		return nil, err
 	}
 
@@ -205,10 +167,6 @@ func (s *Server) List(in *resourceapi.ListRequest, srv resourceapi.ResourceServi
 
 	rd, err := s.resolveResourceKind(srv.Context(), kind)
 	if err != nil {
-		return err
-	}
-
-	if err = s.checkReadAccess(srv.Context(), kind, rd); err != nil {
 		return err
 	}
 
@@ -255,10 +213,6 @@ func (s *Server) Watch(in *resourceapi.WatchRequest, srv resourceapi.ResourceSer
 
 	rd, err := s.resolveResourceKind(srv.Context(), kind)
 	if err != nil {
-		return err
-	}
-
-	if err = s.checkReadAccess(srv.Context(), kind, rd); err != nil {
 		return err
 	}
 

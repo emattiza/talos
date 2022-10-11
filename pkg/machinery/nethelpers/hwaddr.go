@@ -4,14 +4,35 @@
 
 package nethelpers
 
-import "net"
+import (
+	"bytes"
+	"encoding/hex"
+	"net"
+)
 
 // HardwareAddr wraps net.HardwareAddr for YAML marshaling.
 type HardwareAddr net.HardwareAddr
 
-// MarshalYAML implements yaml.Marshaler interface.
-func (addr HardwareAddr) MarshalYAML() (interface{}, error) {
-	return net.HardwareAddr(addr).String(), nil
+// MarshalText implements text.Marshaler interface.
+func (addr HardwareAddr) MarshalText() ([]byte, error) {
+	return []byte(net.HardwareAddr(addr).String()), nil
+}
+
+// UnmarshalText implements text.Unmarshaler interface.
+func (addr *HardwareAddr) UnmarshalText(b []byte) error {
+	rawHex := bytes.ReplaceAll(b, []byte(":"), []byte(""))
+	dstLen := hex.DecodedLen(len(rawHex))
+
+	dst := make([]byte, dstLen)
+
+	n, err := hex.Decode(dst, rawHex)
+	if err != nil {
+		return err
+	}
+
+	*addr = HardwareAddr(dst[:n])
+
+	return nil
 }
 
 func (addr HardwareAddr) String() string {

@@ -6,11 +6,12 @@ package installer
 
 import (
 	"context"
-	"io"
 	"net"
 
+	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"google.golang.org/grpc"
-	"gopkg.in/yaml.v3"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/api/storage"
@@ -25,12 +26,16 @@ type Connection struct {
 	bootstrapEndpoint string
 	nodeClient        *client.Client
 	bootstrapClient   *client.Client
-	nodeCtx           context.Context
-	bootstrapCtx      context.Context
+	nodeCtx           context.Context //nolint:containedctx
+	bootstrapCtx      context.Context //nolint:containedctx
+	dryRun            bool
 }
 
 // NewConnection creates new installer connection.
-func NewConnection(ctx context.Context, nodeClient *client.Client, endpoint string, options ...Option) (*Connection, error) {
+func NewConnection(ctx context.Context, nodeClient *client.Client, endpoint string, options ...Option) (
+	*Connection,
+	error,
+) {
 	c := &Connection{
 		nodeEndpoint: endpoint,
 		nodeClient:   nodeClient,
@@ -48,7 +53,10 @@ func NewConnection(ctx context.Context, nodeClient *client.Client, endpoint stri
 }
 
 // GenerateConfiguration calls GenerateConfiguration on the target/bootstrap node.
-func (c *Connection) GenerateConfiguration(req *machine.GenerateConfigurationRequest, callOptions ...grpc.CallOption) (*machine.GenerateConfigurationResponse, error) {
+func (c *Connection) GenerateConfiguration(
+	req *machine.GenerateConfigurationRequest,
+	callOptions ...grpc.CallOption,
+) (*machine.GenerateConfigurationResponse, error) {
 	if c.bootstrapClient != nil {
 		return c.bootstrapClient.GenerateConfiguration(c.bootstrapCtx, req, callOptions...)
 	}
@@ -57,7 +65,10 @@ func (c *Connection) GenerateConfiguration(req *machine.GenerateConfigurationReq
 }
 
 // ApplyConfiguration calls ApplyConfiguration on the target node using appropriate node context.
-func (c *Connection) ApplyConfiguration(req *machine.ApplyConfigurationRequest, callOptions ...grpc.CallOption) (*machine.ApplyConfigurationResponse, error) {
+func (c *Connection) ApplyConfiguration(
+	req *machine.ApplyConfigurationRequest,
+	callOptions ...grpc.CallOption,
+) (*machine.ApplyConfigurationResponse, error) {
 	return c.nodeClient.ApplyConfiguration(c.nodeCtx, req, callOptions...)
 }
 
@@ -78,66 +89,44 @@ type Link struct {
 // Links gets a list of network interfaces.
 //
 //nolint:gocyclo
-func (c *Connection) Links(callOptions ...grpc.CallOption) ([]Link, error) {
-	client, err := c.nodeClient.Resources.List(c.nodeCtx, network.NamespaceName, network.LinkStatusType, callOptions...)
+func (c *Connection) Links() ([]Link, error) {
+	ctx := c.nodeCtx
+
+	md, _ := metadata.FromOutgoingContext(c.nodeCtx)
+	if nodes := md["nodes"]; len(nodes) > 0 {
+		ctx = client.WithNode(ctx, nodes[0])
+	}
+
+	items, err := safe.StateList[*network.LinkStatus](
+		ctx,
+		c.nodeClient.COSI,
+		resource.NewMetadata(network.NamespaceName, network.LinkStatusType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return nil, err
 	}
 
+	it := safe.IteratorFromList(items)
+
 	var links []Link
 
-	for {
-		msg, err := client.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-
-			return nil, err
-		}
-
-		if msg.Resource == nil {
-			continue
-		}
-
+	for it.Next() {
 		var link Link
 
-		// this is a hack until we get proper encoding for resources in the API (protobuf!)
-		// plus our resources are Linux-specific and don't build on OS X (we need to solve this as well!)
+		link.Name = it.Value().Metadata().ID()
+		link.Physical = it.Value().TypedSpec().Physical()
+		link.MTU = int(it.Value().TypedSpec().MTU)
 
-		link.Name = msg.Resource.Metadata().ID()
-
-		b, err := yaml.Marshal(msg.Resource.Spec())
-		if err != nil {
-			return nil, err
-		}
-
-		var raw map[string]interface{}
-
-		if err = yaml.Unmarshal(b, &raw); err != nil {
-			return nil, err
-		}
-
-		kind := raw["kind"].(string) //nolint:errcheck,forcetypeassert
-
-		linkType := raw["type"].(string) //nolint:errcheck,forcetypeassert
-
-		link.Physical = kind == "" && linkType == "ether"
-		link.MTU = raw["mtu"].(int) //nolint:errcheck,forcetypeassert
-
-		switch raw["operationalState"].(string) {
-		case nethelpers.OperStateUnknown.String():
+		switch it.Value().TypedSpec().OperationalState { //nolint:exhaustive
+		case nethelpers.OperStateUnknown:
 			link.Up = true
-		case nethelpers.OperStateUp.String():
+		case nethelpers.OperStateUp:
 			link.Up = true
 		default:
 			link.Up = false
 		}
 
-		mac, err := net.ParseMAC(raw["hardwareAddr"].(string))
-		if err == nil {
-			link.HardwareAddr = mac
-		}
+		link.HardwareAddr = net.HardwareAddr(it.Value().TypedSpec().HardwareAddr)
 
 		links = append(links, link)
 	}
@@ -159,6 +148,15 @@ func WithBootstrapNode(ctx context.Context, bootstrapClient *client.Client, boot
 		c.bootstrapEndpoint = bootstrapNode
 		c.bootstrapClient = bootstrapClient
 		c.bootstrapCtx = ctx
+
+		return nil
+	}
+}
+
+// WithDryRun enables dry run mode in the installer.
+func WithDryRun(dryRun bool) Option {
+	return func(c *Connection) error {
+		c.dryRun = dryRun
 
 		return nil
 	}

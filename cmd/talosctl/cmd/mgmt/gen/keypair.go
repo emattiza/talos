@@ -6,11 +6,11 @@ package gen
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 
+	"github.com/siderolabs/crypto/x509"
 	"github.com/spf13/cobra"
-	"github.com/talos-systems/crypto/x509"
 
 	"github.com/talos-systems/talos/pkg/cli"
 )
@@ -43,10 +43,10 @@ var genKeypairCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("error generating CA: %s", err)
 		}
-		if err := ioutil.WriteFile(genKeypairCmdFlags.organization+".crt", ca.CrtPEM, 0o600); err != nil {
+		if err := os.WriteFile(genKeypairCmdFlags.organization+".crt", ca.CrtPEM, 0o600); err != nil {
 			return fmt.Errorf("error writing certificate: %s", err)
 		}
-		if err := ioutil.WriteFile(genKeypairCmdFlags.organization+".key", ca.KeyPEM, 0o600); err != nil {
+		if err := os.WriteFile(genKeypairCmdFlags.organization+".key", ca.KeyPEM, 0o600); err != nil {
 			return fmt.Errorf("error writing key: %s", err)
 		}
 

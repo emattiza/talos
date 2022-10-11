@@ -5,27 +5,28 @@
 package network
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // StatusType is type of Status resource.
 const StatusType = resource.Type("NetworkStatuses.net.talos.dev")
 
 // Status resource holds status of networking setup.
-type Status struct {
-	md   resource.Metadata
-	spec StatusSpec
-}
+type Status = typed.Resource[StatusSpec, StatusRD]
 
 // StatusSpec describes network state.
+//
+//gotagsrewrite:gen
 type StatusSpec struct {
-	AddressReady      bool `yaml:"addressReady"`
-	ConnectivityReady bool `yaml:"connectivityReady"`
-	HostnameReady     bool `yaml:"hostnameReady"`
-	EtcFilesReady     bool `yaml:"etcFilesReady"`
+	AddressReady      bool `yaml:"addressReady" protobuf:"1"`
+	ConnectivityReady bool `yaml:"connectivityReady" protobuf:"2"`
+	HostnameReady     bool `yaml:"hostnameReady" protobuf:"3"`
+	EtcFilesReady     bool `yaml:"etcFilesReady" protobuf:"4"`
 }
 
 // StatusID is the resource ID of the singleton instance.
@@ -33,40 +34,17 @@ const StatusID resource.ID = "status"
 
 // NewStatus initializes a Status resource.
 func NewStatus(namespace resource.Namespace, id resource.ID) *Status {
-	r := &Status{
-		md:   resource.NewMetadata(namespace, StatusType, id, resource.VersionUndefined),
-		spec: StatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[StatusSpec, StatusRD](
+		resource.NewMetadata(namespace, StatusType, id, resource.VersionUndefined),
+		StatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Status) Metadata() *resource.Metadata {
-	return &r.md
-}
+// StatusRD provides auxiliary methods for Status.
+type StatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Status) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Status) String() string {
-	return fmt.Sprintf("network.Status(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Status) DeepCopy() resource.Resource {
-	return &Status{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Status) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (StatusRD) ResourceDefinition(resource.Metadata, StatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             StatusType,
 		Aliases:          []resource.Type{"netstatus", "netstatuses"},
@@ -75,7 +53,11 @@ func (r *Status) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Status) TypedSpec() *StatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[StatusSpec](StatusType, &Status{})
+	if err != nil {
+		panic(err)
+	}
 }

@@ -2,20 +2,26 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+// Package generate provides Talos machine configuration generation and client config generation.
+//
+// Please see the example for more information on using this package.
 package generate
 
 import (
 	"bufio"
 	"crypto/rand"
+	stdx509 "crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 	tnet "github.com/talos-systems/net"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -51,9 +57,11 @@ type Input struct {
 
 	// ControlplaneEndpoint is the canonical address of the kubernetes control
 	// plane.  It can be a DNS name, the IP address of a load balancer, or
-	// (default) the IP address of the first master node.  It is NOT
+	// (default) the IP address of the first controlplane node.  It is NOT
 	// multi-valued.  It may optionally specify the port.
 	ControlPlaneEndpoint string
+
+	LocalAPIServerPort int
 
 	AdditionalSubjectAltNames []string
 	AdditionalMachineCertSANs []string
@@ -83,10 +91,10 @@ type Input struct {
 	SystemDiskEncryptionConfig *v1alpha1.SystemDiskEncryptionConfig
 	Sysctls                    map[string]string
 
-	Debug                    bool
-	Persist                  bool
-	AllowSchedulingOnMasters bool
-	DiscoveryEnabled         bool
+	Debug                          bool
+	Persist                        bool
+	AllowSchedulingOnControlPlanes bool
+	DiscoveryEnabled               bool
 }
 
 // GetAPIServerEndpoint returns the formatted host:port of the API server endpoint.
@@ -98,10 +106,10 @@ func (i *Input) GetAPIServerEndpoint(port string) string {
 	return net.JoinHostPort(i.ControlPlaneEndpoint, port)
 }
 
-// GetControlPlaneEndpoint returns the formatted host:port of the canonical controlplane address, defaulting to the first master IP.
+// GetControlPlaneEndpoint returns the formatted host:port of the canonical controlplane address, defaulting to the first controlplane IP.
 func (i *Input) GetControlPlaneEndpoint() string {
 	if i == nil || i.ControlPlaneEndpoint == "" {
-		panic("cannot GetControlPlaneEndpoint without any Master IPs")
+		panic("cannot GetControlPlaneEndpoint without any controlplane IPs")
 	}
 
 	return i.ControlPlaneEndpoint
@@ -113,10 +121,7 @@ func (i *Input) GetAPIServerSANs() []string {
 
 	endpointURL, err := url.Parse(i.ControlPlaneEndpoint)
 	if err == nil {
-		host, _, err := net.SplitHostPort(endpointURL.Host)
-		if err == nil {
-			list = append(list, host)
-		}
+		list = append(list, endpointURL.Hostname())
 	}
 
 	list = append(list, i.AdditionalSubjectAltNames...)
@@ -126,38 +131,38 @@ func (i *Input) GetAPIServerSANs() []string {
 
 // Certs holds the base64 encoded keys and certificates.
 type Certs struct {
-	Admin             *x509.PEMEncodedCertificateAndKey
-	Etcd              *x509.PEMEncodedCertificateAndKey
-	K8s               *x509.PEMEncodedCertificateAndKey
-	K8sAggregator     *x509.PEMEncodedCertificateAndKey
-	K8sServiceAccount *x509.PEMEncodedKey
-	OS                *x509.PEMEncodedCertificateAndKey
+	Admin             *x509.PEMEncodedCertificateAndKey `json:"Admin,omitempty" yaml:",omitempty"`
+	Etcd              *x509.PEMEncodedCertificateAndKey `json:"Etcd"`
+	K8s               *x509.PEMEncodedCertificateAndKey `json:"K8s"`
+	K8sAggregator     *x509.PEMEncodedCertificateAndKey `json:"K8sAggregator"`
+	K8sServiceAccount *x509.PEMEncodedKey               `json:"K8sServiceAccount"`
+	OS                *x509.PEMEncodedCertificateAndKey `json:"OS"`
 }
 
 // Cluster holds Talos cluster-wide secrets.
 type Cluster struct {
-	ID     string
-	Secret string
+	ID     string `json:"Id"`
+	Secret string `json:"Secret"`
 }
 
 // Secrets holds the sensitive kubeadm data.
 type Secrets struct {
-	BootstrapToken         string
-	AESCBCEncryptionSecret string
+	BootstrapToken         string `json:"BootstrapToken"`
+	AESCBCEncryptionSecret string `json:"AESCBCEncryptionSecret"`
 }
 
 // TrustdInfo holds the trustd credentials.
 type TrustdInfo struct {
-	Token string
+	Token string `json:"Token"`
 }
 
 // SecretsBundle holds trustd, kubeadm and certs information.
 type SecretsBundle struct {
-	Clock      Clock `yaml:"-" json:"-"`
-	Cluster    *Cluster
-	Secrets    *Secrets
-	TrustdInfo *TrustdInfo
-	Certs      *Certs
+	Clock      Clock       `yaml:"-" json:"-"`
+	Cluster    *Cluster    `json:"Cluster"`
+	Secrets    *Secrets    `json:"Secrets"`
+	TrustdInfo *TrustdInfo `json:"TrustdInfo"`
+	Certs      *Certs      `json:"Certs"`
 }
 
 // Clock system clock.
@@ -189,9 +194,7 @@ func (c *SystemClock) SetFixedTimestamp(t time.Time) {
 	c.Time = t
 }
 
-// NewSecretsBundle creates secrets bundle generating all secrets.
-//
-//nolint:gocyclo
+// NewSecretsBundle creates secrets bundle generating all secrets or reading from the input options if provided.
 func NewSecretsBundle(clock Clock, opts ...GenOption) (*SecretsBundle, error) {
 	options := DefaultGenOptions()
 
@@ -201,115 +204,261 @@ func NewSecretsBundle(clock Clock, opts ...GenOption) (*SecretsBundle, error) {
 		}
 	}
 
+	// if secrets bundle is provided via gen options, just return it
+	if options.Secrets != nil {
+		return options.Secrets, nil
+	}
+
+	bundle := SecretsBundle{
+		Clock: clock,
+	}
+
+	err := populateSecretsBundle(options.VersionContract, &bundle)
+	if err != nil {
+		return nil, err
+	}
+
+	return &bundle, nil
+}
+
+// NewSecretsBundleFromKubernetesPKI creates secrets bundle by reading the contents
+// of a Kubernetes PKI directory (typically `/etc/kubernetes/pki`) and using the provided bootstrapToken as input.
+//
+//nolint:gocyclo
+func NewSecretsBundleFromKubernetesPKI(pkiDir, bootstrapToken string, versionContract *config.VersionContract) (*SecretsBundle, error) {
+	dirStat, err := os.Stat(pkiDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if !dirStat.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", pkiDir)
+	}
+
 	var (
-		etcd           *x509.CertificateAuthority
-		kubernetesCA   *x509.CertificateAuthority
-		aggregatorCA   *x509.CertificateAuthority
-		serviceAccount *x509.ECDSAKey
-		talosCA        *x509.CertificateAuthority
-		trustdInfo     *TrustdInfo
-		kubeadmTokens  *Secrets
-		err            error
+		ca           *x509.PEMEncodedCertificateAndKey
+		etcdCA       *x509.PEMEncodedCertificateAndKey
+		aggregatorCA *x509.PEMEncodedCertificateAndKey
+		sa           *x509.PEMEncodedKey
 	)
 
-	etcd, err = NewEtcdCA(clock.Now(), options.VersionContract)
+	ca, err = x509.NewCertificateAndKeyFromFiles(filepath.Join(pkiDir, "ca.crt"), filepath.Join(pkiDir, "ca.key"))
 	if err != nil {
 		return nil, err
 	}
 
-	kubernetesCA, err = NewKubernetesCA(clock.Now(), options.VersionContract)
+	err = validatePEMEncodedCertificateAndKey(ca)
 	if err != nil {
 		return nil, err
 	}
 
-	if options.VersionContract.SupportsAggregatorCA() {
-		aggregatorCA, err = NewAggregatorCA(clock.Now(), options.VersionContract)
+	etcdDir := filepath.Join(pkiDir, "etcd")
+
+	etcdCA, err = x509.NewCertificateAndKeyFromFiles(filepath.Join(etcdDir, "ca.crt"), filepath.Join(etcdDir, "ca.key"))
+	if err != nil {
+		return nil, err
+	}
+
+	err = validatePEMEncodedCertificateAndKey(etcdCA)
+	if err != nil {
+		return nil, err
+	}
+
+	aggregatorCACrtPath := filepath.Join(pkiDir, "front-proxy-ca.crt")
+	_, err = os.Stat(aggregatorCACrtPath)
+
+	aggregatorCAFound := err == nil
+	if aggregatorCAFound && !versionContract.SupportsAggregatorCA() {
+		return nil, fmt.Errorf("aggregator CA found in pki dir but is not supported by the requested version")
+	}
+
+	if versionContract.SupportsAggregatorCA() {
+		aggregatorCA, err = x509.NewCertificateAndKeyFromFiles(aggregatorCACrtPath, filepath.Join(pkiDir, "front-proxy-ca.key"))
+		if err != nil {
+			return nil, err
+		}
+
+		err = validatePEMEncodedCertificateAndKey(aggregatorCA)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	if options.VersionContract.SupportsServiceAccount() {
-		serviceAccount, err = x509.NewECDSAKey()
+	saKeyPath := filepath.Join(pkiDir, "sa.key")
+	_, err = os.Stat(saKeyPath)
+
+	saKeyFound := err == nil
+	if saKeyFound && !versionContract.SupportsServiceAccount() {
+		return nil, fmt.Errorf("service account key found in pki dir but is not supported by the requested version")
+	}
+
+	if versionContract.SupportsServiceAccount() {
+		var saBytes []byte
+
+		saBytes, err = os.ReadFile(filepath.Join(pkiDir, "sa.key"))
+		if err != nil {
+			return nil, err
+		}
+
+		sa = &x509.PEMEncodedKey{
+			Key: saBytes,
+		}
+
+		_, err = sa.GetKey()
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	talosCA, err = NewTalosCA(clock.Now())
-	if err != nil {
-		return nil, err
-	}
-
-	kubeadmTokens = &Secrets{}
-
-	// Gen trustd token strings
-	kubeadmTokens.BootstrapToken, err = genToken(6, 16)
-	if err != nil {
-		return nil, err
-	}
-
-	kubeadmTokens.AESCBCEncryptionSecret, err = cis.CreateEncryptionToken()
-	if err != nil {
-		return nil, err
-	}
-
-	trustdInfo = &TrustdInfo{}
-
-	// Gen trustd token strings
-	trustdInfo.Token, err = genToken(6, 16)
-	if err != nil {
-		return nil, err
-	}
-
-	clusterID, err := randBytes(constants.DefaultClusterIDSize)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate cluster ID: %w", err)
-	}
-
-	clusterSecret, err := randBytes(constants.DefaultClusterSecretSize)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate cluster secret: %w", err)
-	}
-
-	result := &SecretsBundle{
-		Cluster: &Cluster{
-			ID:     base64.URLEncoding.EncodeToString(clusterID),
-			Secret: base64.StdEncoding.EncodeToString(clusterSecret),
+	bundle := SecretsBundle{
+		Secrets: &Secrets{
+			BootstrapToken: bootstrapToken,
 		},
-		Clock:      clock,
-		Secrets:    kubeadmTokens,
-		TrustdInfo: trustdInfo,
 		Certs: &Certs{
-			Etcd: &x509.PEMEncodedCertificateAndKey{
-				Crt: etcd.CrtPEM,
-				Key: etcd.KeyPEM,
-			},
-			K8s: &x509.PEMEncodedCertificateAndKey{
-				Crt: kubernetesCA.CrtPEM,
-				Key: kubernetesCA.KeyPEM,
-			},
-			OS: &x509.PEMEncodedCertificateAndKey{
-				Crt: talosCA.CrtPEM,
-				Key: talosCA.KeyPEM,
-			},
+			Etcd:              etcdCA,
+			K8s:               ca,
+			K8sAggregator:     aggregatorCA,
+			K8sServiceAccount: sa,
 		},
 	}
 
-	if aggregatorCA != nil {
-		result.Certs.K8sAggregator = &x509.PEMEncodedCertificateAndKey{
+	err = populateSecretsBundle(versionContract, &bundle)
+	if err != nil {
+		return nil, err
+	}
+
+	return &bundle, nil
+}
+
+// populateSecretsBundle fills all the missing fields in the secrets bundle.
+//
+//nolint:gocyclo,cyclop
+func populateSecretsBundle(versionContract *config.VersionContract, bundle *SecretsBundle) error {
+	if bundle.Clock == nil {
+		bundle.Clock = NewClock()
+	}
+
+	if bundle.Certs == nil {
+		bundle.Certs = &Certs{}
+	}
+
+	if bundle.Certs.Etcd == nil {
+		etcd, err := NewEtcdCA(bundle.Clock.Now(), versionContract)
+		if err != nil {
+			return err
+		}
+
+		bundle.Certs.Etcd = &x509.PEMEncodedCertificateAndKey{
+			Crt: etcd.CrtPEM,
+			Key: etcd.KeyPEM,
+		}
+	}
+
+	if bundle.Certs.K8s == nil {
+		kubernetesCA, err := NewKubernetesCA(bundle.Clock.Now(), versionContract)
+		if err != nil {
+			return err
+		}
+
+		bundle.Certs.K8s = &x509.PEMEncodedCertificateAndKey{
+			Crt: kubernetesCA.CrtPEM,
+			Key: kubernetesCA.KeyPEM,
+		}
+	}
+
+	if versionContract.SupportsAggregatorCA() && bundle.Certs.K8sAggregator == nil {
+		aggregatorCA, err := NewAggregatorCA(bundle.Clock.Now(), versionContract)
+		if err != nil {
+			return err
+		}
+
+		bundle.Certs.K8sAggregator = &x509.PEMEncodedCertificateAndKey{
 			Crt: aggregatorCA.CrtPEM,
 			Key: aggregatorCA.KeyPEM,
 		}
 	}
 
-	if serviceAccount != nil {
-		result.Certs.K8sServiceAccount = &x509.PEMEncodedKey{
+	if versionContract.SupportsServiceAccount() && bundle.Certs.K8sServiceAccount == nil {
+		serviceAccount, err := x509.NewECDSAKey()
+		if err != nil {
+			return err
+		}
+
+		bundle.Certs.K8sServiceAccount = &x509.PEMEncodedKey{
 			Key: serviceAccount.KeyPEM,
 		}
 	}
 
-	return result, nil
+	if bundle.Certs.OS == nil {
+		talosCA, err := NewTalosCA(bundle.Clock.Now())
+		if err != nil {
+			return err
+		}
+
+		bundle.Certs.OS = &x509.PEMEncodedCertificateAndKey{
+			Crt: talosCA.CrtPEM,
+			Key: talosCA.KeyPEM,
+		}
+	}
+
+	if bundle.Secrets == nil {
+		bundle.Secrets = &Secrets{}
+	}
+
+	if bundle.Secrets.BootstrapToken == "" {
+		token, err := genToken(6, 16)
+		if err != nil {
+			return err
+		}
+
+		bundle.Secrets.BootstrapToken = token
+	}
+
+	if bundle.Secrets.AESCBCEncryptionSecret == "" {
+		aesCBCEncryptionSecret, err := cis.CreateEncryptionToken()
+		if err != nil {
+			return err
+		}
+
+		bundle.Secrets.AESCBCEncryptionSecret = aesCBCEncryptionSecret
+	}
+
+	if bundle.TrustdInfo == nil {
+		bundle.TrustdInfo = &TrustdInfo{}
+	}
+
+	if bundle.TrustdInfo.Token == "" {
+		token, err := genToken(6, 16)
+		if err != nil {
+			return err
+		}
+
+		bundle.TrustdInfo.Token = token
+	}
+
+	if bundle.Cluster == nil {
+		bundle.Cluster = &Cluster{}
+	}
+
+	if bundle.Cluster.ID == "" {
+		clusterID, err := randBytes(constants.DefaultClusterIDSize)
+		if err != nil {
+			return fmt.Errorf("failed to generate cluster ID: %w", err)
+		}
+
+		bundle.Cluster.ID = base64.URLEncoding.EncodeToString(clusterID)
+	}
+
+	if bundle.Cluster.Secret == "" {
+		clusterSecret, err := randBytes(constants.DefaultClusterSecretSize)
+		if err != nil {
+			return fmt.Errorf("failed to generate cluster secret: %w", err)
+		}
+
+		bundle.Cluster.Secret = base64.StdEncoding.EncodeToString(clusterSecret)
+	}
+
+	return nil
 }
 
 // NewSecretsBundleFromConfig creates secrets bundle using existing config.
@@ -428,6 +577,8 @@ func NewAdminCertificateAndKey(currentTime time.Time, ca *x509.PEMEncodedCertifi
 		x509.Organization(roles.Strings()...),
 		x509.NotAfter(currentTime.Add(ttl)),
 		x509.NotBefore(currentTime),
+		x509.KeyUsage(stdx509.KeyUsageDigitalSignature),
+		x509.ExtKeyUsage([]stdx509.ExtKeyUsage{stdx509.ExtKeyUsageClientAuth}),
 	}
 
 	talosCA, err := x509.NewCertificateAuthorityFromCertificateAndKey(ca)
@@ -488,34 +639,35 @@ func NewInput(clustername, endpoint, kubernetesVersion string, secrets *SecretsB
 	}
 
 	input = &Input{
-		Certs:                      secrets.Certs,
-		VersionContract:            options.VersionContract,
-		ControlPlaneEndpoint:       endpoint,
-		PodNet:                     []string{podNet},
-		ServiceNet:                 []string{serviceNet},
-		ServiceDomain:              options.DNSDomain,
-		ClusterID:                  secrets.Cluster.ID,
-		ClusterName:                clustername,
-		ClusterSecret:              secrets.Cluster.Secret,
-		KubernetesVersion:          kubernetesVersion,
-		Secrets:                    secrets.Secrets,
-		TrustdInfo:                 secrets.TrustdInfo,
-		AdditionalSubjectAltNames:  additionalSubjectAltNames,
-		AdditionalMachineCertSANs:  additionalSubjectAltNames,
-		InstallDisk:                options.InstallDisk,
-		InstallImage:               options.InstallImage,
-		InstallExtraKernelArgs:     options.InstallExtraKernelArgs,
-		NetworkConfigOptions:       options.NetworkConfigOptions,
-		CNIConfig:                  options.CNIConfig,
-		RegistryMirrors:            options.RegistryMirrors,
-		RegistryConfig:             options.RegistryConfig,
-		Sysctls:                    options.Sysctls,
-		Debug:                      options.Debug,
-		Persist:                    options.Persist,
-		AllowSchedulingOnMasters:   options.AllowSchedulingOnMasters,
-		MachineDisks:               options.MachineDisks,
-		SystemDiskEncryptionConfig: options.SystemDiskEncryptionConfig,
-		DiscoveryEnabled:           discoveryEnabled,
+		Certs:                          secrets.Certs,
+		VersionContract:                options.VersionContract,
+		ControlPlaneEndpoint:           endpoint,
+		LocalAPIServerPort:             options.LocalAPIServerPort,
+		PodNet:                         []string{podNet},
+		ServiceNet:                     []string{serviceNet},
+		ServiceDomain:                  options.DNSDomain,
+		ClusterID:                      secrets.Cluster.ID,
+		ClusterName:                    clustername,
+		ClusterSecret:                  secrets.Cluster.Secret,
+		KubernetesVersion:              kubernetesVersion,
+		Secrets:                        secrets.Secrets,
+		TrustdInfo:                     secrets.TrustdInfo,
+		AdditionalSubjectAltNames:      additionalSubjectAltNames,
+		AdditionalMachineCertSANs:      additionalSubjectAltNames,
+		InstallDisk:                    options.InstallDisk,
+		InstallImage:                   options.InstallImage,
+		InstallExtraKernelArgs:         options.InstallExtraKernelArgs,
+		NetworkConfigOptions:           options.NetworkConfigOptions,
+		CNIConfig:                      options.CNIConfig,
+		RegistryMirrors:                options.RegistryMirrors,
+		RegistryConfig:                 options.RegistryConfig,
+		Sysctls:                        options.Sysctls,
+		Debug:                          options.Debug,
+		Persist:                        options.Persist,
+		AllowSchedulingOnControlPlanes: options.AllowSchedulingOnControlPlanes,
+		MachineDisks:                   options.MachineDisks,
+		SystemDiskEncryptionConfig:     options.SystemDiskEncryptionConfig,
+		DiscoveryEnabled:               discoveryEnabled,
 	}
 
 	return input, nil
@@ -599,4 +751,15 @@ func randBytes(size int) ([]byte, error) {
 	}
 
 	return buf, nil
+}
+
+func validatePEMEncodedCertificateAndKey(certs *x509.PEMEncodedCertificateAndKey) error {
+	_, err := certs.GetKey()
+	if err != nil {
+		return err
+	}
+
+	_, err = certs.GetCert()
+
+	return err
 }

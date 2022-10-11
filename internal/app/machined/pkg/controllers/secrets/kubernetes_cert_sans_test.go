@@ -6,66 +6,38 @@
 package secrets_test
 
 import (
-	"context"
 	"fmt"
-	"log"
 	"net"
+	"net/netip"
 	"net/url"
-	"sync"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/cosi-project/runtime/pkg/controller/runtime"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
-	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
-	"inet.af/netaddr"
 
+	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/ctest"
 	secretsctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/secrets"
-	"github.com/talos-systems/talos/pkg/logging"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 	"github.com/talos-systems/talos/pkg/machinery/resources/secrets"
 )
 
 type KubernetesCertSANsSuite struct {
-	suite.Suite
-
-	state state.State
-
-	runtime *runtime.Runtime
-	wg      sync.WaitGroup
-
-	ctx       context.Context
-	ctxCancel context.CancelFunc
+	ctest.DefaultSuite
 }
 
-func (suite *KubernetesCertSANsSuite) SetupTest() {
-	suite.ctx, suite.ctxCancel = context.WithTimeout(context.Background(), 3*time.Minute)
-
-	suite.state = state.WrapCore(namespaced.NewState(inmem.Build))
-
-	var err error
-
-	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
-	suite.Require().NoError(err)
-
-	suite.Require().NoError(suite.runtime.RegisterController(&secretsctrl.KubernetesCertSANsController{}))
-
-	suite.startRuntime()
-}
-
-func (suite *KubernetesCertSANsSuite) startRuntime() {
-	suite.wg.Add(1)
-
-	go func() {
-		defer suite.wg.Done()
-
-		suite.Assert().NoError(suite.runtime.Run(suite.ctx))
-	}()
+func TestKubernetesCertSANsSuite(t *testing.T) {
+	suite.Run(t, &KubernetesCertSANsSuite{
+		DefaultSuite: ctest.DefaultSuite{
+			AfterSetup: func(suite *ctest.DefaultSuite) {
+				suite.Require().NoError(suite.Runtime().RegisterController(&secretsctrl.KubernetesCertSANsController{}))
+			},
+		},
+	})
 }
 
 func (suite *KubernetesCertSANsSuite) TestReconcile() {
@@ -78,58 +50,104 @@ func (suite *KubernetesCertSANsSuite) TestReconcile() {
 	rootSecrets.TypedSpec().DNSDomain = "cluster.remote"
 	rootSecrets.TypedSpec().Endpoint, err = url.Parse("https://some.url:6443/")
 	suite.Require().NoError(err)
+	rootSecrets.TypedSpec().LocalEndpoint, err = url.Parse("https://localhost:6443/")
+	suite.Require().NoError(err)
 
-	suite.Require().NoError(suite.state.Create(suite.ctx, rootSecrets))
+	suite.Require().NoError(suite.State().Create(suite.Ctx(), rootSecrets))
 
 	hostnameStatus := network.NewHostnameStatus(network.NamespaceName, network.HostnameID)
 	hostnameStatus.TypedSpec().Hostname = "foo"
 	hostnameStatus.TypedSpec().Domainname = "example.com"
-	suite.Require().NoError(suite.state.Create(suite.ctx, hostnameStatus))
+	suite.Require().NoError(suite.State().Create(suite.Ctx(), hostnameStatus))
 
-	nodeAddresses := network.NewNodeAddress(network.NamespaceName, network.FilteredNodeAddressID(network.NodeAddressAccumulativeID, k8s.NodeAddressFilterNoK8s))
-	nodeAddresses.TypedSpec().Addresses = []netaddr.IPPrefix{netaddr.MustParseIPPrefix("10.2.1.3/24"), netaddr.MustParseIPPrefix("172.16.0.1/32")}
-	suite.Require().NoError(suite.state.Create(suite.ctx, nodeAddresses))
+	nodeAddresses := network.NewNodeAddress(
+		network.NamespaceName,
+		network.FilteredNodeAddressID(network.NodeAddressAccumulativeID, k8s.NodeAddressFilterNoK8s),
+	)
+	nodeAddresses.TypedSpec().Addresses = []netip.Prefix{
+		netip.MustParsePrefix("10.2.1.3/24"),
+		netip.MustParsePrefix("172.16.0.1/32"),
+	}
+	suite.Require().NoError(suite.State().Create(suite.Ctx(), nodeAddresses))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			certSANs, err := suite.state.Get(suite.ctx, resource.NewMetadata(secrets.NamespaceName, secrets.CertSANType, secrets.CertSANKubernetesID, resource.VersionUndefined))
-			if err != nil {
-				if state.IsNotFoundError(err) {
-					return retry.ExpectedError(err)
-				}
-
-				return err
+	suite.AssertWithin(10*time.Second, 100*time.Millisecond, func() error {
+		certSANs, err := ctest.Get[*secrets.CertSAN](
+			suite,
+			resource.NewMetadata(
+				secrets.NamespaceName,
+				secrets.CertSANType,
+				secrets.CertSANKubernetesID,
+				resource.VersionUndefined,
+			),
+		)
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				return retry.ExpectedError(err)
 			}
 
-			spec := certSANs.(*secrets.CertSAN).TypedSpec()
+			return err
+		}
 
-			suite.Assert().Equal(
-				[]string{
-					"example.com",
-					"foo",
-					"foo.example.com",
-					"kubernetes",
-					"kubernetes.default",
-					"kubernetes.default.svc",
-					"kubernetes.default.svc.cluster.remote",
-					"localhost",
-					"some.url",
-				}, spec.DNSNames)
-			suite.Assert().Equal("[10.2.1.3 10.4.3.2 172.16.0.1]", fmt.Sprintf("%v", spec.IPs))
+		spec := certSANs.TypedSpec()
 
-			return nil
-		},
-	))
-}
+		suite.Assert().Equal(
+			[]string{
+				"example.com",
+				"foo",
+				"foo.example.com",
+				"kubernetes",
+				"kubernetes.default",
+				"kubernetes.default.svc",
+				"kubernetes.default.svc.cluster.remote",
+				"localhost",
+				"some.url",
+			}, spec.DNSNames,
+		)
+		suite.Assert().Equal("[10.2.1.3 10.4.3.2 172.16.0.1]", fmt.Sprintf("%v", spec.IPs))
 
-func (suite *KubernetesCertSANsSuite) TearDownTest() {
-	suite.T().Log("tear down")
+		return nil
+	})
 
-	suite.ctxCancel()
+	ctest.UpdateWithConflicts(suite, rootSecrets, func(rootSecrets *secrets.KubernetesRoot) error {
+		var err error
+		rootSecrets.TypedSpec().Endpoint, err = url.Parse("https://some.other.url:6443/")
 
-	suite.wg.Wait()
-}
+		return err
+	})
 
-func TestKubernetesCertSANsSuite(t *testing.T) {
-	suite.Run(t, new(KubernetesCertSANsSuite))
+	suite.AssertWithin(10*time.Second, 100*time.Millisecond, func() error {
+		var certSANs resource.Resource
+		certSANs, err := ctest.Get[*secrets.CertSAN](
+			suite,
+			resource.NewMetadata(
+				secrets.NamespaceName,
+				secrets.CertSANType,
+				secrets.CertSANKubernetesID,
+				resource.VersionUndefined,
+			),
+		)
+		if err != nil {
+			return err
+		}
+
+		spec := certSANs.(*secrets.CertSAN).TypedSpec()
+
+		expectedDNSNames := []string{
+			"example.com",
+			"foo",
+			"foo.example.com",
+			"kubernetes",
+			"kubernetes.default",
+			"kubernetes.default.svc",
+			"kubernetes.default.svc.cluster.remote",
+			"localhost",
+			"some.other.url",
+		}
+
+		if !reflect.DeepEqual(spec.DNSNames, expectedDNSNames) {
+			return retry.ExpectedErrorf("expected %v, got %v", expectedDNSNames, spec.DNSNames)
+		}
+
+		return nil
+	})
 }

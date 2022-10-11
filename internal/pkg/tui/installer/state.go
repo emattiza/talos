@@ -20,6 +20,7 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 )
 
 const canalCustomCNI = "canal"
@@ -31,6 +32,7 @@ var customCNIPresets = map[string][]string{
 }
 
 // NewState creates new installer state.
+//
 //nolint:gocyclo
 func NewState(ctx context.Context, installer *Installer, conn *Connection) (*State, error) {
 	opts := &machineapi.GenerateConfigurationRequest{
@@ -54,9 +56,9 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 	}
 
 	if conn.ExpandingCluster() {
-		opts.ClusterConfig.ControlPlane.Endpoint = fmt.Sprintf("https://%s:%d", conn.bootstrapEndpoint, constants.DefaultControlPlanePort)
+		opts.ClusterConfig.ControlPlane.Endpoint = fmt.Sprintf("https://%s", nethelpers.JoinHostPort(conn.bootstrapEndpoint, constants.DefaultControlPlanePort))
 	} else {
-		opts.ClusterConfig.ControlPlane.Endpoint = fmt.Sprintf("https://%s:%d", conn.nodeEndpoint, constants.DefaultControlPlanePort)
+		opts.ClusterConfig.ControlPlane.Endpoint = fmt.Sprintf("https://%s", nethelpers.JoinHostPort(conn.nodeEndpoint, constants.DefaultControlPlanePort))
 	}
 
 	installDiskOptions := []interface{}{
@@ -198,9 +200,9 @@ func NewState(ctx context.Context, installer *Installer, conn *Connection) (*Sta
 				&opts.MachineConfig.KubernetesVersion,
 			),
 			components.NewItem(
-				"Allow Scheduling on Masters",
-				v1alpha1.ClusterConfigDoc.Describe("allowSchedulingOnMasters", true),
-				&opts.ClusterConfig.AllowSchedulingOnMasters,
+				"Allow Scheduling on Control Planes",
+				v1alpha1.ClusterConfigDoc.Describe("allowSchedulingOnControlPlanes", true),
+				&opts.ClusterConfig.AllowSchedulingOnControlPlanes,
 			),
 		),
 		NewPage("Network Config",

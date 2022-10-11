@@ -5,12 +5,15 @@
 package secrets
 
 import (
-	"fmt"
 	"net/url"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/crypto/x509"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // KubeletType is type of Kubelet secret resource.
@@ -20,57 +23,33 @@ const KubeletType = resource.Type("KubeletSecrets.secrets.talos.dev")
 const KubeletID = resource.ID("kubelet")
 
 // Kubelet contains root (not generated) secrets.
-type Kubelet struct {
-	md   resource.Metadata
-	spec KubeletSpec
-}
+type Kubelet = typed.Resource[KubeletSpec, KubeletRD]
 
 // KubeletSpec describes root Kubernetes secrets.
+//
+//gotagsrewrite:gen
 type KubeletSpec struct {
-	Endpoint *url.URL `yaml:"endpoint"`
+	Endpoint *url.URL `yaml:"endpoint" protobuf:"1"`
 
-	CA *x509.PEMEncodedCertificateAndKey `yaml:"ca"`
+	CA *x509.PEMEncodedCertificateAndKey `yaml:"ca" protobuf:"2"`
 
-	BootstrapTokenID     string `yaml:"bootstrapTokenID"`
-	BootstrapTokenSecret string `yaml:"bootstrapTokenSecret"`
+	BootstrapTokenID     string `yaml:"bootstrapTokenID" protobuf:"3"`
+	BootstrapTokenSecret string `yaml:"bootstrapTokenSecret" protobuf:"4"`
 }
 
 // NewKubelet initializes a Kubelet resource.
 func NewKubelet(id resource.ID) *Kubelet {
-	r := &Kubelet{
-		md:   resource.NewMetadata(NamespaceName, KubeletType, id, resource.VersionUndefined),
-		spec: KubeletSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[KubeletSpec, KubeletRD](
+		resource.NewMetadata(NamespaceName, KubeletType, id, resource.VersionUndefined),
+		KubeletSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Kubelet) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *Kubelet) Spec() interface{} {
-	return &r.spec
-}
-
-func (r *Kubelet) String() string {
-	return fmt.Sprintf("secrets.Kubelet(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Kubelet) DeepCopy() resource.Resource {
-	return &Kubelet{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// KubeletRD provides auxiliary methods for Kubelet.
+type KubeletRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Kubelet) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (KubeletRD) ResourceDefinition(resource.Metadata, KubeletSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             KubeletType,
 		Aliases:          []resource.Type{},
@@ -79,7 +58,11 @@ func (r *Kubelet) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *Kubelet) TypedSpec() *KubeletSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[KubeletSpec](KubeletType, &Kubelet{})
+	if err != nil {
+		panic(err)
+	}
 }

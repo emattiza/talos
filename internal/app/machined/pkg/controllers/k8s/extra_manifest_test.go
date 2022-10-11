@@ -20,13 +20,13 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/siderolabs/gen/slices"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 
 	k8sadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/k8s"
 	k8sctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/talos-systems/talos/pkg/logging"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
@@ -40,7 +40,7 @@ type ExtraManifestSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -71,16 +71,15 @@ func (suite *ExtraManifestSuite) startRuntime() {
 
 //nolint:dupl
 func (suite *ExtraManifestSuite) assertExtraManifests(manifests []string) error {
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(
+		suite.ctx,
+		resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return err
 	}
 
-	ids := make([]string, 0, len(resources.Items))
-
-	for _, res := range resources.Items {
-		ids = append(ids, res.Metadata().ID())
-	}
+	ids := slices.Map(resources.Items, func(r resource.Resource) string { return r.Metadata().ID() })
 
 	if !reflect.DeepEqual(manifests, ids) {
 		return retry.ExpectedError(fmt.Errorf("expected %q, got %q", manifests, ids))
@@ -90,13 +89,14 @@ func (suite *ExtraManifestSuite) assertExtraManifests(manifests []string) error 
 }
 
 func (suite *ExtraManifestSuite) TestReconcileInlineManifests() {
-	configExtraManifests := config.NewK8sExtraManifests()
-	configExtraManifests.SetExtraManifests(config.K8sExtraManifestsSpec{
-		ExtraManifests: []config.ExtraManifest{
+	configExtraManifests := k8s.NewExtraManifestsConfig()
+	*configExtraManifests.TypedSpec() = k8s.ExtraManifestsConfigSpec{
+		ExtraManifests: []k8s.ExtraManifest{
 			{
 				Name:     "namespaces",
 				Priority: "99",
-				InlineManifest: strings.TrimSpace(`
+				InlineManifest: strings.TrimSpace(
+					`
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -106,10 +106,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
     name: build
-`),
+`,
+				),
 			},
 		},
-	})
+	}
 
 	statusNetwork := network.NewStatus(network.NamespaceName, network.StatusID)
 	statusNetwork.TypedSpec().AddressReady = true
@@ -118,17 +119,27 @@ metadata:
 	suite.Require().NoError(suite.state.Create(suite.ctx, configExtraManifests))
 	suite.Require().NoError(suite.state.Create(suite.ctx, statusNetwork))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertExtraManifests(
-				[]string{
-					"99-namespaces",
-				},
-			)
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertExtraManifests(
+					[]string{
+						"99-namespaces",
+					},
+				)
+			},
+		),
+	)
 
-	r, err := suite.state.Get(suite.ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.ManifestType, "99-namespaces", resource.VersionUndefined))
+	r, err := suite.state.Get(
+		suite.ctx,
+		resource.NewMetadata(
+			k8s.ControlPlaneNamespaceName,
+			k8s.ManifestType,
+			"99-namespaces",
+			resource.VersionUndefined,
+		),
+	)
 	suite.Require().NoError(err)
 
 	manifest := r.(*k8s.Manifest) //nolint:errcheck,forcetypeassert
@@ -147,7 +158,6 @@ func (suite *ExtraManifestSuite) TearDownTest() {
 
 	// trigger updates in resources to stop watch loops
 	suite.Assert().NoError(suite.state.Create(context.Background(), v1alpha1.NewService("foo")))
-	suite.Assert().NoError(suite.state.Create(context.Background(), config.NewK8sManifests()))
 }
 
 func TestExtraManifestSuite(t *testing.T) {

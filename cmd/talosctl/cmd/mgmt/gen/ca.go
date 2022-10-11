@@ -6,11 +6,11 @@ package gen
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"time"
 
+	"github.com/siderolabs/crypto/x509"
 	"github.com/spf13/cobra"
-	"github.com/talos-systems/crypto/x509"
 
 	"github.com/talos-systems/talos/pkg/cli"
 )
@@ -40,15 +40,15 @@ var genCACmd = &cobra.Command{
 			return fmt.Errorf("error generating CA: %w", err)
 		}
 
-		if err := ioutil.WriteFile(genCACmdFlags.organization+".crt", ca.CrtPEM, 0o600); err != nil {
+		if err := os.WriteFile(genCACmdFlags.organization+".crt", ca.CrtPEM, 0o600); err != nil {
 			return fmt.Errorf("error writing CA certificate: %w", err)
 		}
 
-		if err := ioutil.WriteFile(genCACmdFlags.organization+".sha256", []byte(x509.Hash(ca.Crt)), 0o600); err != nil {
+		if err := os.WriteFile(genCACmdFlags.organization+".sha256", []byte(x509.Hash(ca.Crt)), 0o600); err != nil {
 			return fmt.Errorf("error writing certificate hash: %w", err)
 		}
 
-		if err := ioutil.WriteFile(genCACmdFlags.organization+".key", ca.KeyPEM, 0o600); err != nil {
+		if err := os.WriteFile(genCACmdFlags.organization+".key", ca.KeyPEM, 0o600); err != nil {
 			return fmt.Errorf("error writing key: %w", err)
 		}
 

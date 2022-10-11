@@ -5,71 +5,52 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
+
+//nolint:lll
+//go:generate deep-copy -type AddressSpecSpec -type AddressStatusSpec -type HardwareAddrSpec -type HostnameSpecSpec -type HostnameStatusSpec -type LinkRefreshSpec -type LinkSpecSpec -type LinkStatusSpec -type NodeAddressSpec -type NodeAddressFilterSpec -type OperatorSpecSpec -type ResolverSpecSpec -type ResolverStatusSpec -type RouteSpecSpec -type RouteStatusSpec -type StatusSpec -type TimeServerSpecSpec -type TimeServerStatusSpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
 
 // AddressSpecType is type of AddressSpec resource.
 const AddressSpecType = resource.Type("AddressSpecs.net.talos.dev")
 
 // AddressSpec resource holds physical network link status.
-type AddressSpec struct {
-	md   resource.Metadata
-	spec AddressSpecSpec
-}
+type AddressSpec = typed.Resource[AddressSpecSpec, AddressSpecRD]
 
 // AddressSpecSpec describes status of rendered secrets.
+//
+//gotagsrewrite:gen
 type AddressSpecSpec struct {
-	Address         netaddr.IPPrefix        `yaml:"address"`
-	LinkName        string                  `yaml:"linkName"`
-	Family          nethelpers.Family       `yaml:"family"`
-	Scope           nethelpers.Scope        `yaml:"scope"`
-	Flags           nethelpers.AddressFlags `yaml:"flags"`
-	AnnounceWithARP bool                    `yaml:"announceWithARP,omitempty"`
-	ConfigLayer     ConfigLayer             `yaml:"layer"`
+	Address         netip.Prefix            `yaml:"address" protobuf:"1"`
+	LinkName        string                  `yaml:"linkName" protobuf:"2"`
+	Family          nethelpers.Family       `yaml:"family" protobuf:"3"`
+	Scope           nethelpers.Scope        `yaml:"scope" protobuf:"4"`
+	Flags           nethelpers.AddressFlags `yaml:"flags" protobuf:"5"`
+	AnnounceWithARP bool                    `yaml:"announceWithARP,omitempty" protobuf:"6"`
+	ConfigLayer     ConfigLayer             `yaml:"layer" protobuf:"7"`
 }
 
 // NewAddressSpec initializes a AddressSpec resource.
 func NewAddressSpec(namespace resource.Namespace, id resource.ID) *AddressSpec {
-	r := &AddressSpec{
-		md:   resource.NewMetadata(namespace, AddressSpecType, id, resource.VersionUndefined),
-		spec: AddressSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[AddressSpecSpec, AddressSpecRD](
+		resource.NewMetadata(namespace, AddressSpecType, id, resource.VersionUndefined),
+		AddressSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *AddressSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// AddressSpecRD provides auxiliary methods for AddressSpec.
+type AddressSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *AddressSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *AddressSpec) String() string {
-	return fmt.Sprintf("network.AddressSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *AddressSpec) DeepCopy() resource.Resource {
-	return &AddressSpec{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *AddressSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (AddressSpecRD) ResourceDefinition(resource.Metadata, AddressSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             AddressSpecType,
 		Aliases:          []resource.Type{},
@@ -78,7 +59,11 @@ func (r *AddressSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *AddressSpec) TypedSpec() *AddressSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[AddressSpecSpec](AddressSpecType, &AddressSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

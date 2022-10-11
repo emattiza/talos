@@ -8,16 +8,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v3"
 
@@ -41,32 +40,32 @@ func (ctrl *KubeletStaticPodController) Name() string {
 func (ctrl *KubeletStaticPodController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
-			Namespace: k8s.ControlPlaneNamespaceName,
+			Namespace: k8s.NamespaceName,
 			Type:      k8s.StaticPodType,
 			Kind:      controller.InputStrong,
 		},
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodenameType,
-			ID:        pointer.ToString(k8s.NodenameID),
+			ID:        pointer.To(k8s.NodenameID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: v1alpha1.NamespaceName,
 			Type:      v1alpha1.ServiceType,
-			ID:        pointer.ToString("kubelet"),
+			ID:        pointer.To("kubelet"),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesType,
-			ID:        pointer.ToString(secrets.KubernetesID),
+			ID:        pointer.To(secrets.KubernetesID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesRootType,
-			ID:        pointer.ToString(secrets.KubernetesRootID),
+			ID:        pointer.To(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -121,7 +120,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 			return err
 		}
 
-		if !kubeletResource.(*v1alpha1.Service).Running() {
+		if !kubeletResource.(*v1alpha1.Service).TypedSpec().Running {
 			kubeletClient = nil
 
 			if err = ctrl.teardownStatuses(ctx, r); err != nil {
@@ -131,45 +130,7 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 			continue
 		}
 
-		rootSecretResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
-		if err != nil {
-			if state.IsNotFoundError(err) {
-				if err = ctrl.cleanupPods(logger, nil); err != nil {
-					return fmt.Errorf("error cleaning up static pods: %w", err)
-				}
-
-				continue
-			}
-
-			return err
-		}
-
-		rootSecrets := rootSecretResource.(*secrets.KubernetesRoot).TypedSpec()
-
-		secretsResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesType, secrets.KubernetesID, resource.VersionUndefined))
-		if err != nil {
-			if state.IsNotFoundError(err) {
-				if err = ctrl.cleanupPods(logger, nil); err != nil {
-					return fmt.Errorf("error cleaning up static pods: %w", err)
-				}
-
-				continue
-			}
-
-			return err
-		}
-
-		secrets := secretsResource.(*secrets.Kubernetes).Certs()
-
-		nodenameResource, err := r.Get(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
-		if err != nil {
-			// nodename should exist if the kubelet is running
-			return err
-		}
-
-		nodename := nodenameResource.(*k8s.Nodename).TypedSpec().Nodename
-
-		staticPods, err := r.List(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.StaticPodType, "", resource.VersionUndefined))
+		staticPods, err := r.List(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.StaticPodType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing static pods: %w", err)
 		}
@@ -190,6 +151,42 @@ func (ctrl *KubeletStaticPodController) Run(ctx context.Context, r controller.Ru
 		if err = ctrl.cleanupPods(logger, staticPods.Items); err != nil {
 			return fmt.Errorf("error cleaning up static pods: %w", err)
 		}
+
+		// on worker nodes, there's no way to connect to the kubelet to fetch the pod status (only API server can do that)
+		// on control plane nodes, use API servers' client kubelet certificate to fetch statuses
+		rootSecretResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesRootType, secrets.KubernetesRootID, resource.VersionUndefined))
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				kubeletClient = nil
+
+				continue
+			}
+
+			return err
+		}
+
+		rootSecrets := rootSecretResource.(*secrets.KubernetesRoot).TypedSpec()
+
+		secretsResource, err := r.Get(ctx, resource.NewMetadata(secrets.NamespaceName, secrets.KubernetesType, secrets.KubernetesID, resource.VersionUndefined))
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				kubeletClient = nil
+
+				continue
+			}
+
+			return err
+		}
+
+		secrets := secretsResource.(*secrets.Kubernetes).TypedSpec()
+
+		nodenameResource, err := r.Get(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, k8s.NodenameID, resource.VersionUndefined))
+		if err != nil {
+			// nodename should exist if the kubelet is running
+			return err
+		}
+
+		nodename := nodenameResource.(*k8s.Nodename).TypedSpec().Nodename
 
 		// render static pods first, and attempt to build kubelet client last,
 		// as if kubelet issues certs from the API server, API server should be launched first.
@@ -216,7 +213,7 @@ func (ctrl *KubeletStaticPodController) writePod(logger *zap.Logger, staticPod r
 
 	podPath := ctrl.podPath(staticPod)
 
-	existingPod, err := ioutil.ReadFile(podPath)
+	existingPod, err := os.ReadFile(podPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -229,7 +226,7 @@ func (ctrl *KubeletStaticPodController) writePod(logger *zap.Logger, staticPod r
 
 	logger.Sugar().Infof("writing static pod %q", podPath)
 
-	return ioutil.WriteFile(podPath, renderedPod, 0o600)
+	return os.WriteFile(podPath, renderedPod, 0o600)
 }
 
 func (ctrl *KubeletStaticPodController) teardownPod(logger *zap.Logger, staticPod resource.Resource) error {
@@ -295,7 +292,7 @@ func (ctrl *KubeletStaticPodController) cleanupPods(logger *zap.Logger, staticPo
 }
 
 func (ctrl *KubeletStaticPodController) teardownStatuses(ctx context.Context, r controller.Runtime) error {
-	statuses, err := r.List(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined))
+	statuses, err := r.List(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined))
 	if err != nil {
 		return fmt.Errorf("error listing pod statuses: %w", err)
 	}
@@ -319,24 +316,24 @@ func (ctrl *KubeletStaticPodController) refreshPodStatus(ctx context.Context, r 
 	podsSeen := map[string]struct{}{}
 
 	for _, pod := range podList.Items {
-		if pod.OwnerReferences != nil {
+		if pod.Metadata.Annotations.ConfigSource != "file" {
 			continue
 		}
 
 		pod := pod
 
-		statusID := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+		statusID := fmt.Sprintf("%s/%s", pod.Metadata.Namespace, pod.Metadata.Name)
 
 		podsSeen[statusID] = struct{}{}
 
-		if err = r.Modify(ctx, k8s.NewStaticPodStatus(k8s.ControlPlaneNamespaceName, statusID), func(r resource.Resource) error {
+		if err = r.Modify(ctx, k8s.NewStaticPodStatus(k8s.NamespaceName, statusID), func(r resource.Resource) error {
 			return k8sadapter.StaticPodStatus(r.(*k8s.StaticPodStatus)).SetStatus(&pod.Status)
 		}); err != nil {
 			return fmt.Errorf("error updating pod status: %w", err)
 		}
 	}
 
-	statuses, err := r.List(ctx, resource.NewMetadata(k8s.ControlPlaneNamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined))
+	statuses, err := r.List(ctx, resource.NewMetadata(k8s.NamespaceName, k8s.StaticPodStatusType, "", resource.VersionUndefined))
 	if err != nil {
 		return fmt.Errorf("error listing pod statuses: %w", err)
 	}

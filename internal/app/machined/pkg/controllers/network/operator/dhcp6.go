@@ -6,9 +6,11 @@ package operator
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +18,11 @@ import (
 	"github.com/insomniacslk/dhcp/dhcpv6"
 	"github.com/insomniacslk/dhcp/dhcpv6/nclient6"
 	"github.com/jsimonetti/rtnetlink"
+	"github.com/siderolabs/gen/slices"
 	"github.com/talos-systems/go-retry/retry"
 	"go.uber.org/zap"
+	"go4.org/netipx"
 	"golang.org/x/sys/unix"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
@@ -29,19 +32,26 @@ import (
 type DHCP6 struct {
 	logger *zap.Logger
 
-	linkName string
+	linkName            string
+	duid                []byte
+	skipHostnameRequest bool
 
-	mu        sync.Mutex
-	addresses []network.AddressSpecSpec
-	hostname  []network.HostnameSpecSpec
-	resolvers []network.ResolverSpecSpec
+	mu          sync.Mutex
+	addresses   []network.AddressSpecSpec
+	hostname    []network.HostnameSpecSpec
+	resolvers   []network.ResolverSpecSpec
+	timeservers []network.TimeServerSpecSpec
 }
 
 // NewDHCP6 creates DHCPv6 operator.
-func NewDHCP6(logger *zap.Logger, linkName string) *DHCP6 {
+func NewDHCP6(logger *zap.Logger, linkName string, config network.DHCP6OperatorSpec) *DHCP6 {
+	duidBin, _ := hex.DecodeString(config.DUID) //nolint:errcheck
+
 	return &DHCP6{
-		logger:   logger,
-		linkName: linkName,
+		logger:              logger,
+		linkName:            linkName,
+		duid:                duidBin,
+		skipHostnameRequest: config.SkipHostnameRequest,
 	}
 }
 
@@ -133,15 +143,18 @@ func (d *DHCP6) ResolverSpecs() []network.ResolverSpecSpec {
 
 // TimeServerSpecs implements Operator interface.
 func (d *DHCP6) TimeServerSpecs() []network.TimeServerSpecSpec {
-	return nil
-}
-
-func (d *DHCP6) parseReply(reply *dhcpv6.Message) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if reply.Options.OneIANA() != nil {
-		addr, _ := netaddr.FromStdIPNet(&net.IPNet{
+	return d.timeservers
+}
+
+func (d *DHCP6) parseReply(reply *dhcpv6.Message) (leaseTime time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if reply.Options.OneIANA() != nil && reply.Options.OneIANA().Options.OneAddress() != nil {
+		addr, _ := netipx.FromStdIPNet(&net.IPNet{
 			IP:   reply.Options.OneIANA().Options.OneAddress().IPv6Addr,
 			Mask: net.CIDRMask(128, 128),
 		})
@@ -156,20 +169,22 @@ func (d *DHCP6) parseReply(reply *dhcpv6.Message) {
 				ConfigLayer: network.ConfigOperator,
 			},
 		}
+
+		leaseTime = reply.Options.OneIANA().Options.OneAddress().ValidLifetime
 	} else {
 		d.addresses = nil
 	}
 
 	if len(reply.Options.DNS()) > 0 {
-		dns := make([]netaddr.IP, len(reply.Options.DNS()))
+		convertIP := func(ip net.IP) netip.Addr {
+			result, _ := netipx.FromStdIP(ip)
 
-		for i := range dns {
-			dns[i], _ = netaddr.FromStdIP(reply.Options.DNS()[i])
+			return result
 		}
 
 		d.resolvers = []network.ResolverSpecSpec{
 			{
-				DNSServers:  dns,
+				DNSServers:  slices.Map(reply.Options.DNS(), convertIP),
 				ConfigLayer: network.ConfigOperator,
 			},
 		}
@@ -177,7 +192,7 @@ func (d *DHCP6) parseReply(reply *dhcpv6.Message) {
 		d.resolvers = nil
 	}
 
-	if reply.Options.FQDN() != nil && len(reply.Options.FQDN().DomainName.Labels) > 0 {
+	if reply.Options.FQDN() != nil && len(reply.Options.FQDN().DomainName.Labels) > 0 && !d.skipHostnameRequest {
 		d.hostname = []network.HostnameSpecSpec{
 			{
 				Hostname:    reply.Options.FQDN().DomainName.Labels[0],
@@ -188,6 +203,25 @@ func (d *DHCP6) parseReply(reply *dhcpv6.Message) {
 	} else {
 		d.hostname = nil
 	}
+
+	if len(reply.Options.NTPServers()) > 0 {
+		convertIP := func(ip net.IP) string {
+			result, _ := netipx.FromStdIP(ip)
+
+			return result.String()
+		}
+
+		d.timeservers = []network.TimeServerSpecSpec{
+			{
+				NTPServers:  slices.Map(reply.Options.NTPServers(), convertIP),
+				ConfigLayer: network.ConfigOperator,
+			},
+		}
+	} else {
+		d.timeservers = nil
+	}
+
+	return leaseTime
 }
 
 func (d *DHCP6) renew(ctx context.Context) (time.Duration, error) {
@@ -198,16 +232,25 @@ func (d *DHCP6) renew(ctx context.Context) (time.Duration, error) {
 
 	defer cli.Close() //nolint:errcheck
 
-	reply, err := cli.RapidSolicit(ctx)
+	var modifiers []dhcpv6.Modifier
+
+	if len(d.duid) > 0 {
+		duid, derr := dhcpv6.DuidFromBytes(d.duid)
+		if derr != nil {
+			d.logger.Error("failed to parse DUID, ignored", zap.String("link", d.linkName))
+		} else {
+			modifiers = []dhcpv6.Modifier{dhcpv6.WithClientID(*duid)}
+		}
+	}
+
+	reply, err := cli.RapidSolicit(ctx, modifiers...)
 	if err != nil {
 		return 0, err
 	}
 
 	d.logger.Debug("DHCP6 REPLY", zap.String("link", d.linkName), zap.String("dhcp", collapseSummary(reply.Summary())))
 
-	d.parseReply(reply)
-
-	return reply.Options.OneIANA().Options.OneAddress().ValidLifetime, nil
+	return d.parseReply(reply), nil
 }
 
 func (d *DHCP6) waitIPv6LinkReady(ctx context.Context, iface *net.Interface) error {

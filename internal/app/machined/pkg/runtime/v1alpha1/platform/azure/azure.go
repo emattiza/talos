@@ -9,24 +9,23 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	stderrors "errors"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
-	"github.com/AlekSi/pointer"
+	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-procfs/procfs"
 	"golang.org/x/sys/unix"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/errors"
 	"github.com/talos-systems/talos/pkg/download"
-	"github.com/talos-systems/talos/pkg/machinery/config"
-	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
-	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
 const (
@@ -34,9 +33,11 @@ const (
 	// https://blogs.msdn.microsoft.com/mast/2015/05/18/what-is-the-ip-address-168-63-129-16/
 	AzureInternalEndpoint = "http://168.63.129.16"
 	// AzureHostnameEndpoint is the local endpoint for the hostname.
-	AzureHostnameEndpoint = "http://169.254.169.254/metadata/instance/compute/name?api-version=2021-05-01&format=text"
+	AzureHostnameEndpoint = "http://169.254.169.254/metadata/instance/compute/osProfile/computerName?api-version=2021-12-13&format=text"
 	// AzureInterfacesEndpoint is the local endpoint to get external IPs.
-	AzureInterfacesEndpoint = "http://169.254.169.254/metadata/instance/network/interface?api-version=2021-05-01"
+	AzureInterfacesEndpoint = "http://169.254.169.254/metadata/instance/network/interface?api-version=2021-12-13&format=json"
+	// AzureLoadbalancerEndpoint is the local endpoint for load balancer config.
+	AzureLoadbalancerEndpoint = "http://169.254.169.254/metadata/loadbalancer?api-version=2021-05-01&format=json"
 
 	mnt = "/mnt"
 )
@@ -57,6 +58,16 @@ type IPAddresses struct {
 	PublicIPAddress  string `json:"publicIpAddress"`
 }
 
+// LoadBalancerMetadata represents load balancer metadata in IMDS.
+type LoadBalancerMetadata struct {
+	LoadBalancer struct {
+		PublicIPAddresses []struct {
+			FrontendIPAddress string `json:"frontendIpAddress,omitempty"`
+			PrivateIPAddress  string `json:"privateIpAddress,omitempty"`
+		} `json:"publicIpAddresses,omitempty"`
+	} `json:"loadbalancer,omitempty"`
+}
+
 // Azure is the concrete type that implements the platform.Platform interface.
 type Azure struct{}
 
@@ -71,129 +82,99 @@ func (a *Azure) Name() string {
 	return "azure"
 }
 
-// ConfigurationNetwork implements the network configuration interface.
-func (a *Azure) ConfigurationNetwork(metadataNetworkConfig []byte, confProvider config.Provider) (config.Provider, error) {
-	var machineConfig *v1alpha1.Config
+// ParseMetadata parses Azure network metadata into the platform network config.
+//
+//nolint:gocyclo
+func (a *Azure) ParseMetadata(interfaceAddresses []NetworkConfig, host []byte) (*runtime.PlatformNetworkConfig, error) {
+	var networkConfig runtime.PlatformNetworkConfig
 
-	machineConfig, ok := confProvider.(*v1alpha1.Config)
-	if !ok {
-		return nil, fmt.Errorf("unable to determine machine config type")
+	// hostname
+	if len(host) > 0 {
+		hostnameSpec := network.HostnameSpecSpec{
+			ConfigLayer: network.ConfigPlatform,
+		}
+
+		if err := hostnameSpec.ParseFQDN(string(host)); err != nil {
+			return nil, err
+		}
+
+		networkConfig.Hostnames = append(networkConfig.Hostnames, hostnameSpec)
 	}
 
-	if machineConfig.MachineConfig == nil {
-		machineConfig.MachineConfig = &v1alpha1.MachineConfig{}
-	}
-
-	if machineConfig.MachineConfig.MachineNetwork == nil {
-		machineConfig.MachineConfig.MachineNetwork = &v1alpha1.NetworkConfig{}
-	}
-
-	var interfaceAddresses []NetworkConfig
-
-	if err := json.Unmarshal(metadataNetworkConfig, &interfaceAddresses); err != nil {
-		return nil, err
-	}
-
-	if machineConfig.MachineConfig.MachineNetwork.NetworkInterfaces == nil {
-		for idx, iface := range interfaceAddresses {
-			device := &v1alpha1.Device{
-				DeviceInterface:   fmt.Sprintf("eth%d", idx),
-				DeviceDHCP:        true,
-				DeviceDHCPOptions: &v1alpha1.DHCPOptions{DHCPIPv6: pointer.ToBool(true)},
+	// external IP
+	for _, iface := range interfaceAddresses {
+		for _, ipv4addr := range iface.IPv4.IPAddresses {
+			if ip, err := netip.ParseAddr(ipv4addr.PublicIPAddress); err == nil {
+				networkConfig.ExternalIPs = append(networkConfig.ExternalIPs, ip)
 			}
+		}
 
-			ipv6 := false
-
-			for _, ipv6addr := range iface.IPv6.IPAddresses {
-				ipv6 = ipv6addr.PublicIPAddress != "" || ipv6addr.PrivateIPAddress != ""
-			}
-
-			if ipv6 {
-				machineConfig.MachineConfig.MachineNetwork.NetworkInterfaces = append(machineConfig.MachineConfig.MachineNetwork.NetworkInterfaces, device)
+		for _, ipv6addr := range iface.IPv6.IPAddresses {
+			if ip, err := netip.ParseAddr(ipv6addr.PublicIPAddress); err == nil {
+				networkConfig.ExternalIPs = append(networkConfig.ExternalIPs, ip)
 			}
 		}
 	}
 
-	return confProvider, nil
+	// DHCP6 for enabled interfaces
+	for idx, iface := range interfaceAddresses {
+		ipv6 := false
+
+		for _, ipv6addr := range iface.IPv6.IPAddresses {
+			ipv6 = ipv6addr.PublicIPAddress != "" || ipv6addr.PrivateIPAddress != ""
+		}
+
+		if ipv6 {
+			networkConfig.Operators = append(networkConfig.Operators, network.OperatorSpecSpec{
+				Operator:  network.OperatorDHCP6,
+				LinkName:  fmt.Sprintf("eth%d", idx),
+				RequireUp: true,
+				DHCP6: network.DHCP6OperatorSpec{
+					RouteMetric: 1024,
+				},
+			})
+		}
+	}
+
+	return &networkConfig, nil
+}
+
+// ParseLoadBalancerIP parses Azure LoadBalancer metadata into the platform external ip list.
+func (a *Azure) ParseLoadBalancerIP(lbConfig LoadBalancerMetadata, exIP []netip.Addr) ([]netip.Addr, error) {
+	lbAddresses := exIP
+
+	for _, addr := range lbConfig.LoadBalancer.PublicIPAddresses {
+		ipaddr := addr.FrontendIPAddress
+
+		if i := strings.IndexByte(ipaddr, ']'); i != -1 {
+			ipaddr = strings.TrimPrefix(ipaddr[:i], "[")
+		}
+
+		if ip, err := netip.ParseAddr(ipaddr); err == nil {
+			lbAddresses = append(lbAddresses, ip)
+		}
+	}
+
+	return lbAddresses, nil
 }
 
 // Configuration implements the platform.Platform interface.
-func (a *Azure) Configuration(ctx context.Context) ([]byte, error) {
+func (a *Azure) Configuration(ctx context.Context, r state.State) ([]byte, error) {
 	defer func() {
 		if err := linuxAgent(ctx); err != nil {
 			log.Printf("failed to update instance status, err: %s", err.Error())
 		}
 	}()
 
-	log.Printf("fetching network config from %q", AzureInterfacesEndpoint)
-
-	metadataNetworkConfig, err := download.Download(ctx, AzureInterfacesEndpoint,
-		download.WithHeaders(map[string]string{"Metadata": "true"}))
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch network config from metadata service")
-	}
-
 	log.Printf("fetching machine config from ovf-env.xml")
 
 	// Custom data is not available in IMDS, so trying to find it on CDROM.
-	machineConfig, err := a.configFromCD()
-	if err != nil {
-		log.Printf("fetching machine config from cdrom failed, err: %s", err.Error())
-
-		return nil, err
-	}
-
-	confProvider, err := configloader.NewFromBytes(machineConfig)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing machine config: %w", err)
-	}
-
-	confProvider, err = a.ConfigurationNetwork(metadataNetworkConfig, confProvider)
-	if err != nil {
-		return nil, err
-	}
-
-	return confProvider.Bytes()
+	return a.configFromCD()
 }
 
 // Mode implements the platform.Platform interface.
 func (a *Azure) Mode() runtime.Mode {
 	return runtime.ModeCloud
-}
-
-// Hostname implements the platform.Platform interface.
-func (a *Azure) Hostname(ctx context.Context) (hostname []byte, err error) {
-	log.Printf("fetching hostname from: %q", AzureHostnameEndpoint)
-
-	host, err := download.Download(ctx, AzureHostnameEndpoint,
-		download.WithHeaders(map[string]string{"Metadata": "true"}),
-		download.WithErrorOnNotFound(errors.ErrNoHostname),
-		download.WithErrorOnEmptyResponse(errors.ErrNoHostname))
-	if err != nil {
-		return nil, err
-	}
-
-	return host, nil
-}
-
-// ExternalIPs implements the runtime.Platform interface.
-func (a *Azure) ExternalIPs(ctx context.Context) (addrs []net.IP, err error) {
-	log.Printf("fetching externalIP from: %q", AzureInterfacesEndpoint)
-
-	metadataNetworkConfig, err := download.Download(ctx, AzureInterfacesEndpoint,
-		download.WithHeaders(map[string]string{"Metadata": "true"}),
-		download.WithErrorOnNotFound(errors.ErrNoExternalIPs),
-		download.WithErrorOnEmptyResponse(errors.ErrNoExternalIPs))
-	if err != nil {
-		return nil, err
-	}
-
-	addrs, err = a.getPublicIPs(metadataNetworkConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	return addrs, nil
 }
 
 // KernelArgs implements the runtime.Platform interface.
@@ -206,8 +187,10 @@ func (a *Azure) KernelArgs() procfs.Parameters {
 }
 
 // configFromCD handles looking for devices and trying to mount/fetch xml to get the custom data.
+//
+//nolint:gocyclo
 func (a *Azure) configFromCD() ([]byte, error) {
-	devList, err := ioutil.ReadDir("/dev")
+	devList, err := os.ReadDir("/dev")
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +208,7 @@ func (a *Azure) configFromCD() ([]byte, error) {
 				continue
 			}
 
-			ovfEnvFile, err := ioutil.ReadFile(filepath.Join(mnt, "ovf-env.xml"))
+			ovfEnvFile, err := os.ReadFile(filepath.Join(mnt, "ovf-env.xml"))
 			if err != nil {
 				// Device mount worked, but it wasn't the "CD" that contains the xml file
 				if os.IsNotExist(err) {
@@ -247,39 +230,85 @@ func (a *Azure) configFromCD() ([]byte, error) {
 				return nil, err
 			}
 
-			b64CustomData, err := base64.StdEncoding.DecodeString(ovfEnvData.CustomData)
-			if err != nil {
-				return nil, err
+			if len(ovfEnvData.CustomData) > 0 {
+				b64CustomData, err := base64.StdEncoding.DecodeString(ovfEnvData.CustomData)
+				if err != nil {
+					return nil, err
+				}
+
+				return b64CustomData, nil
 			}
 
-			return b64CustomData, nil
+			return nil, errors.ErrNoConfigSource
 		}
 	}
 
 	return nil, errors.ErrNoConfigSource
 }
 
-// getPublicIPs parced network metadata response.
-func (a *Azure) getPublicIPs(metadataNetworkConfig []byte) (addrs []net.IP, err error) {
+// NetworkConfiguration implements the runtime.Platform interface.
+//
+//nolint:gocyclo
+func (a *Azure) NetworkConfiguration(ctx context.Context, _ state.State, ch chan<- *runtime.PlatformNetworkConfig) error {
+	log.Printf("fetching network config from %q", AzureInterfacesEndpoint)
+
+	metadataNetworkConfig, err := download.Download(ctx, AzureInterfacesEndpoint,
+		download.WithHeaders(map[string]string{"Metadata": "true"}))
+	if err != nil {
+		return fmt.Errorf("failed to fetch network config from metadata service: %w", err)
+	}
+
 	var interfaceAddresses []NetworkConfig
 
 	if err = json.Unmarshal(metadataNetworkConfig, &interfaceAddresses); err != nil {
-		return nil, errors.ErrNoExternalIPs
+		return err
 	}
 
-	for _, iface := range interfaceAddresses {
-		for _, ipv4addr := range iface.IPv4.IPAddresses {
-			if ip := net.ParseIP(ipv4addr.PublicIPAddress); ip != nil {
-				addrs = append(addrs, ip)
-			}
+	log.Printf("fetching hostname from: %q", AzureHostnameEndpoint)
+
+	host, err := download.Download(ctx, AzureHostnameEndpoint,
+		download.WithHeaders(map[string]string{"Metadata": "true"}),
+		download.WithErrorOnNotFound(errors.ErrNoHostname),
+		download.WithErrorOnEmptyResponse(errors.ErrNoHostname))
+	if err != nil && !stderrors.Is(err, errors.ErrNoHostname) {
+		return fmt.Errorf("failed to fetch hostname from metadata service: %w", err)
+	}
+
+	networkConfig, err := a.ParseMetadata(interfaceAddresses, host)
+	if err != nil {
+		return fmt.Errorf("failed to parse network metadata: %w", err)
+	}
+
+	log.Printf("fetching load balancer metadata from: %q", AzureLoadbalancerEndpoint)
+
+	var loadBalancerAddresses LoadBalancerMetadata
+
+	lbConfig, err := download.Download(ctx, AzureLoadbalancerEndpoint,
+		download.WithHeaders(map[string]string{"Metadata": "true"}),
+		download.WithErrorOnNotFound(errors.ErrNoConfigSource),
+		download.WithErrorOnEmptyResponse(errors.ErrNoConfigSource))
+	if err != nil && !stderrors.Is(err, errors.ErrNoConfigSource) {
+		log.Printf("failed to fetch load balancer config from metadata service: %s", err)
+
+		lbConfig = nil
+	}
+
+	if len(lbConfig) > 0 {
+		if err = json.Unmarshal(lbConfig, &loadBalancerAddresses); err != nil {
+			return fmt.Errorf("failed to parse loadbalancer metadata: %w", err)
 		}
 
-		for _, ipv6addr := range iface.IPv6.IPAddresses {
-			if ip := net.ParseIP(ipv6addr.PublicIPAddress); ip != nil {
-				addrs = append(addrs, ip)
-			}
+		networkConfig.ExternalIPs, err = a.ParseLoadBalancerIP(loadBalancerAddresses, networkConfig.ExternalIPs)
+		if err != nil {
+			return fmt.Errorf("failed to define externalIPs: %w", err)
 		}
 	}
 
-	return addrs, nil
+	select {
+	case ch <- networkConfig:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
 }

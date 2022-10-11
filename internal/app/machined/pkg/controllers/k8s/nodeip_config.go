@@ -8,10 +8,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"github.com/talos-systems/net"
 	"go.uber.org/zap"
 
@@ -33,7 +33,7 @@ func (ctrl *NodeIPConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -88,6 +88,15 @@ func (ctrl *NodeIPConfigController) Run(ctx context.Context, r controller.Runtim
 				}
 
 				spec.ExcludeSubnets = nil
+
+				// filter out Pod & Service CIDRs, they can't be kubelet IPs
+				spec.ExcludeSubnets = append(
+					append(
+						spec.ExcludeSubnets,
+						cfgProvider.Cluster().Network().PodCIDRs()...,
+					),
+					cfgProvider.Cluster().Network().ServiceCIDRs()...,
+				)
 
 				// filter out any virtual IPs, they can't be node IPs either
 				for _, device := range cfgProvider.Machine().Network().Devices() {

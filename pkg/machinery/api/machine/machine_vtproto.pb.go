@@ -57,6 +57,43 @@ func (m *ApplyConfigurationRequest) MarshalToSizedBufferVT(dAtA []byte) (int, er
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.TryModeTimeout != nil {
+		if marshalto, ok := interface{}(m.TryModeTimeout).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := marshalto.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.TryModeTimeout)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = encodeVarint(dAtA, i, uint64(len(encoded)))
+		}
+		i--
+		dAtA[i] = 0x32
+	}
+	if m.DryRun {
+		i--
+		if m.DryRun {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x28
+	}
+	if m.Mode != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Mode))
+		i--
+		dAtA[i] = 0x20
+	}
 	if m.Immediate {
 		i--
 		if m.Immediate {
@@ -116,6 +153,18 @@ func (m *ApplyConfiguration) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.ModeDetails) > 0 {
+		i -= len(m.ModeDetails)
+		copy(dAtA[i:], m.ModeDetails)
+		i = encodeVarint(dAtA, i, uint64(len(m.ModeDetails)))
+		i--
+		dAtA[i] = 0x22
+	}
+	if m.Mode != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Mode))
+		i--
+		dAtA[i] = 0x18
 	}
 	if len(m.Warnings) > 0 {
 		for iNdEx := len(m.Warnings) - 1; iNdEx >= 0; iNdEx-- {
@@ -263,6 +312,13 @@ func (m *Reboot) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.ActorId) > 0 {
+		i -= len(m.ActorId)
+		copy(dAtA[i:], m.ActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.ActorId)))
+		i--
+		dAtA[i] = 0x12
 	}
 	if m.Metadata != nil {
 		if marshalto, ok := interface{}(m.Metadata).(interface {
@@ -873,6 +929,156 @@ func (m *AddressEvent) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *MachineStatusEvent_MachineStatus_UnmetCondition) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *MachineStatusEvent_MachineStatus_UnmetCondition) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *MachineStatusEvent_MachineStatus_UnmetCondition) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.Reason) > 0 {
+		i -= len(m.Reason)
+		copy(dAtA[i:], m.Reason)
+		i = encodeVarint(dAtA, i, uint64(len(m.Reason)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if len(m.Name) > 0 {
+		i -= len(m.Name)
+		copy(dAtA[i:], m.Name)
+		i = encodeVarint(dAtA, i, uint64(len(m.Name)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *MachineStatusEvent_MachineStatus) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *MachineStatusEvent_MachineStatus) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *MachineStatusEvent_MachineStatus) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.UnmetConditions) > 0 {
+		for iNdEx := len(m.UnmetConditions) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.UnmetConditions[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Ready {
+		i--
+		if m.Ready {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *MachineStatusEvent) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *MachineStatusEvent) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *MachineStatusEvent) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Status != nil {
+		size, err := m.Status.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.Stage != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Stage))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *EventsRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -902,6 +1108,13 @@ func (m *EventsRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.WithActorId) > 0 {
+		i -= len(m.WithActorId)
+		copy(dAtA[i:], m.WithActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.WithActorId)))
+		i--
+		dAtA[i] = 0x22
 	}
 	if m.TailSeconds != 0 {
 		i = encodeVarint(dAtA, i, uint64(m.TailSeconds))
@@ -952,6 +1165,13 @@ func (m *Event) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.ActorId) > 0 {
+		i -= len(m.ActorId)
+		copy(dAtA[i:], m.ActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.ActorId)))
+		i--
+		dAtA[i] = 0x22
 	}
 	if len(m.Id) > 0 {
 		i -= len(m.Id)
@@ -1152,6 +1372,13 @@ func (m *Reset) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.ActorId) > 0 {
+		i -= len(m.ActorId)
+		copy(dAtA[i:], m.ActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.ActorId)))
+		i--
+		dAtA[i] = 0x12
+	}
 	if m.Metadata != nil {
 		if marshalto, ok := interface{}(m.Metadata).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
@@ -1252,6 +1479,13 @@ func (m *Shutdown) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.ActorId) > 0 {
+		i -= len(m.ActorId)
+		copy(dAtA[i:], m.ActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.ActorId)))
+		i--
+		dAtA[i] = 0x12
+	}
 	if m.Metadata != nil {
 		if marshalto, ok := interface{}(m.Metadata).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
@@ -1273,6 +1507,49 @@ func (m *Shutdown) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		}
 		i--
 		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *ShutdownRequest) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *ShutdownRequest) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *ShutdownRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Force {
+		i--
+		if m.Force {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
@@ -1421,6 +1698,13 @@ func (m *Upgrade) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.ActorId) > 0 {
+		i -= len(m.ActorId)
+		copy(dAtA[i:], m.ActorId)
+		i = encodeVarint(dAtA, i, uint64(len(m.ActorId)))
+		i--
+		dAtA[i] = 0x1a
 	}
 	if len(m.Ack) > 0 {
 		i -= len(m.Ack)
@@ -7431,9 +7715,9 @@ func (m *ClusterConfig) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.AllowSchedulingOnMasters {
+	if m.AllowSchedulingOnControlPlanes {
 		i--
-		if m.AllowSchedulingOnMasters {
+		if m.AllowSchedulingOnControlPlanes {
 			dAtA[i] = 1
 		} else {
 			dAtA[i] = 0
@@ -7861,6 +8145,126 @@ func (m *GenerateClientConfigurationResponse) MarshalToSizedBufferVT(dAtA []byte
 	return len(dAtA) - i, nil
 }
 
+func (m *PacketCaptureRequest) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *PacketCaptureRequest) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PacketCaptureRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.BpfFilter) > 0 {
+		for iNdEx := len(m.BpfFilter) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.BpfFilter[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x22
+		}
+	}
+	if m.SnapLen != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.SnapLen))
+		i--
+		dAtA[i] = 0x18
+	}
+	if m.Promiscuous {
+		i--
+		if m.Promiscuous {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x10
+	}
+	if len(m.Interface) > 0 {
+		i -= len(m.Interface)
+		copy(dAtA[i:], m.Interface)
+		i = encodeVarint(dAtA, i, uint64(len(m.Interface)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *BPFInstruction) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *BPFInstruction) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *BPFInstruction) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.K != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.K))
+		i--
+		dAtA[i] = 0x20
+	}
+	if m.Jf != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Jf))
+		i--
+		dAtA[i] = 0x18
+	}
+	if m.Jt != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Jt))
+		i--
+		dAtA[i] = 0x10
+	}
+	if m.Op != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Op))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func encodeVarint(dAtA []byte, offset int, v uint64) int {
 	offset -= sov(v)
 	base := offset
@@ -7872,7 +8276,6 @@ func encodeVarint(dAtA []byte, offset int, v uint64) int {
 	dAtA[offset] = uint8(v)
 	return base
 }
-
 func (m *ApplyConfigurationRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -7888,6 +8291,22 @@ func (m *ApplyConfigurationRequest) SizeVT() (n int) {
 	}
 	if m.Immediate {
 		n += 2
+	}
+	if m.Mode != 0 {
+		n += 1 + sov(uint64(m.Mode))
+	}
+	if m.DryRun {
+		n += 2
+	}
+	if m.TryModeTimeout != nil {
+		if size, ok := interface{}(m.TryModeTimeout).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.TryModeTimeout)
+		}
+		n += 1 + l + sov(uint64(l))
 	}
 	if m.unknownFields != nil {
 		n += len(m.unknownFields)
@@ -7916,6 +8335,13 @@ func (m *ApplyConfiguration) SizeVT() (n int) {
 			l = len(s)
 			n += 1 + l + sov(uint64(l))
 		}
+	}
+	if m.Mode != 0 {
+		n += 1 + sov(uint64(m.Mode))
+	}
+	l = len(m.ModeDetails)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
 	}
 	if m.unknownFields != nil {
 		n += len(m.unknownFields)
@@ -7970,6 +8396,10 @@ func (m *Reboot) SizeVT() (n int) {
 		} else {
 			l = proto.Size(m.Metadata)
 		}
+		n += 1 + l + sov(uint64(l))
+	}
+	l = len(m.ActorId)
+	if l > 0 {
 		n += 1 + l + sov(uint64(l))
 	}
 	if m.unknownFields != nil {
@@ -8217,6 +8647,66 @@ func (m *AddressEvent) SizeVT() (n int) {
 	return n
 }
 
+func (m *MachineStatusEvent_MachineStatus_UnmetCondition) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.Name)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	l = len(m.Reason)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
+func (m *MachineStatusEvent_MachineStatus) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Ready {
+		n += 2
+	}
+	if len(m.UnmetConditions) > 0 {
+		for _, e := range m.UnmetConditions {
+			l = e.SizeVT()
+			n += 1 + l + sov(uint64(l))
+		}
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
+func (m *MachineStatusEvent) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Stage != 0 {
+		n += 1 + sov(uint64(m.Stage))
+	}
+	if m.Status != nil {
+		l = m.Status.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
 func (m *EventsRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -8232,6 +8722,10 @@ func (m *EventsRequest) SizeVT() (n int) {
 	}
 	if m.TailSeconds != 0 {
 		n += 1 + sov(uint64(m.TailSeconds))
+	}
+	l = len(m.WithActorId)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
 	}
 	if m.unknownFields != nil {
 		n += len(m.unknownFields)
@@ -8266,6 +8760,10 @@ func (m *Event) SizeVT() (n int) {
 		n += 1 + l + sov(uint64(l))
 	}
 	l = len(m.Id)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	l = len(m.ActorId)
 	if l > 0 {
 		n += 1 + l + sov(uint64(l))
 	}
@@ -8334,6 +8832,10 @@ func (m *Reset) SizeVT() (n int) {
 		}
 		n += 1 + l + sov(uint64(l))
 	}
+	l = len(m.ActorId)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
 	if m.unknownFields != nil {
 		n += len(m.unknownFields)
 	}
@@ -8373,6 +8875,25 @@ func (m *Shutdown) SizeVT() (n int) {
 			l = proto.Size(m.Metadata)
 		}
 		n += 1 + l + sov(uint64(l))
+	}
+	l = len(m.ActorId)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
+func (m *ShutdownRequest) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Force {
+		n += 2
 	}
 	if m.unknownFields != nil {
 		n += len(m.unknownFields)
@@ -8440,6 +8961,10 @@ func (m *Upgrade) SizeVT() (n int) {
 		n += 1 + l + sov(uint64(l))
 	}
 	l = len(m.Ack)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	l = len(m.ActorId)
 	if l > 0 {
 		n += 1 + l + sov(uint64(l))
 	}
@@ -11015,7 +11540,7 @@ func (m *ClusterConfig) SizeVT() (n int) {
 		l = m.ClusterNetwork.SizeVT()
 		n += 1 + l + sov(uint64(l))
 	}
-	if m.AllowSchedulingOnMasters {
+	if m.AllowSchedulingOnControlPlanes {
 		n += 2
 	}
 	if m.unknownFields != nil {
@@ -11192,14 +11717,64 @@ func (m *GenerateClientConfigurationResponse) SizeVT() (n int) {
 	return n
 }
 
+func (m *PacketCaptureRequest) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.Interface)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.Promiscuous {
+		n += 2
+	}
+	if m.SnapLen != 0 {
+		n += 1 + sov(uint64(m.SnapLen))
+	}
+	if len(m.BpfFilter) > 0 {
+		for _, e := range m.BpfFilter {
+			l = e.SizeVT()
+			n += 1 + l + sov(uint64(l))
+		}
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
+func (m *BPFInstruction) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Op != 0 {
+		n += 1 + sov(uint64(m.Op))
+	}
+	if m.Jt != 0 {
+		n += 1 + sov(uint64(m.Jt))
+	}
+	if m.Jf != 0 {
+		n += 1 + sov(uint64(m.Jf))
+	}
+	if m.K != 0 {
+		n += 1 + sov(uint64(m.K))
+	}
+	if m.unknownFields != nil {
+		n += len(m.unknownFields)
+	}
+	return n
+}
+
 func sov(x uint64) (n int) {
 	return (bits.Len64(x|1) + 6) / 7
 }
-
 func soz(x uint64) (n int) {
 	return sov(uint64((x << 1) ^ uint64((int64(x) >> 63))))
 }
-
 func (m *ApplyConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11303,6 +11878,89 @@ func (m *ApplyConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.Immediate = bool(v != 0)
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Mode", wireType)
+			}
+			m.Mode = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Mode |= ApplyConfigurationRequest_Mode(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DryRun", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.DryRun = bool(v != 0)
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TryModeTimeout", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.TryModeTimeout == nil {
+				m.TryModeTimeout = &durationpb.Duration{}
+			}
+			if unmarshal, ok := interface{}(m.TryModeTimeout).(interface {
+				UnmarshalVT([]byte) error
+			}); ok {
+				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.TryModeTimeout); err != nil {
+					return err
+				}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -11325,7 +11983,6 @@ func (m *ApplyConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ApplyConfiguration) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11431,6 +12088,57 @@ func (m *ApplyConfiguration) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Warnings = append(m.Warnings, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Mode", wireType)
+			}
+			m.Mode = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Mode |= ApplyConfigurationRequest_Mode(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ModeDetails", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ModeDetails = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -11453,7 +12161,6 @@ func (m *ApplyConfiguration) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ApplyConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11539,7 +12246,6 @@ func (m *ApplyConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RebootRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11610,7 +12316,6 @@ func (m *RebootRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Reboot) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11684,6 +12389,38 @@ func (m *Reboot) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -11706,7 +12443,6 @@ func (m *Reboot) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RebootResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11792,7 +12528,6 @@ func (m *RebootResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *BootstrapRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11884,7 +12619,6 @@ func (m *BootstrapRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Bootstrap) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -11980,7 +12714,6 @@ func (m *Bootstrap) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *BootstrapResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12066,7 +12799,6 @@ func (m *BootstrapResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *SequenceEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12213,7 +12945,6 @@ func (m *SequenceEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *PhaseEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12316,7 +13047,6 @@ func (m *PhaseEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *TaskEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12419,7 +13149,6 @@ func (m *TaskEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStateEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12590,7 +13319,6 @@ func (m *ServiceStateEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RestartEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12661,7 +13389,6 @@ func (m *RestartEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ConfigLoadErrorEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12745,7 +13472,6 @@ func (m *ConfigLoadErrorEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ConfigValidationErrorEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12829,7 +13555,6 @@ func (m *ConfigValidationErrorEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *AddressEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -12945,7 +13670,332 @@ func (m *AddressEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
+func (m *MachineStatusEvent_MachineStatus_UnmetCondition) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: MachineStatusEvent_MachineStatus_UnmetCondition: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: MachineStatusEvent_MachineStatus_UnmetCondition: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Name", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Name = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Reason", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Reason = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
 
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *MachineStatusEvent_MachineStatus) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: MachineStatusEvent_MachineStatus: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: MachineStatusEvent_MachineStatus: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Ready", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Ready = bool(v != 0)
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field UnmetConditions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.UnmetConditions = append(m.UnmetConditions, &MachineStatusEvent_MachineStatus_UnmetCondition{})
+			if err := m.UnmetConditions[len(m.UnmetConditions)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *MachineStatusEvent) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: MachineStatusEvent: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: MachineStatusEvent: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Stage", wireType)
+			}
+			m.Stage = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Stage |= MachineStatusEvent_MachineStage(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Status", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Status == nil {
+				m.Status = &MachineStatusEvent_MachineStatus{}
+			}
+			if err := m.Status.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func (m *EventsRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13045,6 +14095,38 @@ func (m *EventsRequest) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field WithActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.WithActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -13067,7 +14149,6 @@ func (m *EventsRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Event) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13217,6 +14298,38 @@ func (m *Event) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Id = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -13239,7 +14352,6 @@ func (m *Event) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ResetPartitionSpec) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13343,7 +14455,6 @@ func (m *ResetPartitionSpec) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ResetRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13469,7 +14580,6 @@ func (m *ResetRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Reset) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13543,6 +14653,38 @@ func (m *Reset) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -13565,7 +14707,6 @@ func (m *Reset) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ResetResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13651,7 +14792,6 @@ func (m *ResetResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Shutdown) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13725,6 +14865,38 @@ func (m *Shutdown) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -13747,7 +14919,77 @@ func (m *Shutdown) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
+func (m *ShutdownRequest) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: ShutdownRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: ShutdownRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Force", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Force = bool(v != 0)
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
 
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func (m *ShutdownResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13833,7 +15075,6 @@ func (m *ShutdownResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *UpgradeRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -13977,7 +15218,6 @@ func (m *UpgradeRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Upgrade) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14083,6 +15323,38 @@ func (m *Upgrade) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Ack = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActorId", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ActorId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -14105,7 +15377,6 @@ func (m *Upgrade) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *UpgradeResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14191,7 +15462,6 @@ func (m *UpgradeResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceList) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14321,7 +15591,6 @@ func (m *ServiceList) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceListResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14407,7 +15676,6 @@ func (m *ServiceListResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14595,7 +15863,6 @@ func (m *ServiceInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceEvents) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14681,7 +15948,6 @@ func (m *ServiceEvents) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceEvent) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -14841,7 +16107,6 @@ func (m *ServiceEvent) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceHealth) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15009,7 +16274,6 @@ func (m *ServiceHealth) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStartRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15093,7 +16357,6 @@ func (m *ServiceStartRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStart) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15221,7 +16484,6 @@ func (m *ServiceStart) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStartResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15307,7 +16569,6 @@ func (m *ServiceStartResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStopRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15391,7 +16652,6 @@ func (m *ServiceStopRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStop) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15519,7 +16779,6 @@ func (m *ServiceStop) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceStopResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15605,7 +16864,6 @@ func (m *ServiceStopResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceRestartRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15689,7 +16947,6 @@ func (m *ServiceRestartRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceRestart) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15817,7 +17074,6 @@ func (m *ServiceRestart) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ServiceRestartResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15903,7 +17159,6 @@ func (m *ServiceRestartResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CopyRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -15987,7 +17242,6 @@ func (m *CopyRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ListRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -16179,7 +17433,6 @@ func (m *ListRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DiskUsageRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -16321,7 +17574,6 @@ func (m *DiskUsageRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *FileInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -16660,7 +17912,6 @@ func (m *FileInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DiskUsageInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -16871,7 +18122,6 @@ func (m *DiskUsageInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Mounts) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17001,7 +18251,6 @@ func (m *Mounts) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *MountsResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17087,7 +18336,6 @@ func (m *MountsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *MountStat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17241,7 +18489,6 @@ func (m *MountStat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Version) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17445,7 +18692,6 @@ func (m *Version) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *VersionResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17531,7 +18777,6 @@ func (m *VersionResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *VersionInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17775,7 +19020,6 @@ func (m *VersionInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *PlatformInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17891,7 +19135,6 @@ func (m *PlatformInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *FeaturesInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -17963,7 +19206,6 @@ func (m *FeaturesInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *LogsRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18137,7 +19379,6 @@ func (m *LogsRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ReadRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18221,7 +19462,6 @@ func (m *ReadRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RollbackRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18273,7 +19513,6 @@ func (m *RollbackRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Rollback) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18369,7 +19608,6 @@ func (m *Rollback) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RollbackResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18455,7 +19693,6 @@ func (m *RollbackResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ContainersRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18558,7 +19795,6 @@ func (m *ContainersRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ContainerInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18821,7 +20057,6 @@ func (m *ContainerInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Container) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -18951,7 +20186,6 @@ func (m *Container) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ContainersResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19037,7 +20271,6 @@ func (m *ContainersResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DmesgRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19129,7 +20362,6 @@ func (m *DmesgRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ProcessesResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19215,7 +20447,6 @@ func (m *ProcessesResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Process) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19345,7 +20576,6 @@ func (m *Process) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ProcessInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19631,7 +20861,6 @@ func (m *ProcessInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RestartRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19766,7 +20995,6 @@ func (m *RestartRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Restart) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19862,7 +21090,6 @@ func (m *Restart) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RestartResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -19948,7 +21175,6 @@ func (m *RestartResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *StatsRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20051,7 +21277,6 @@ func (m *StatsRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Stats) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20181,7 +21406,6 @@ func (m *Stats) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *StatsResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20267,7 +21491,6 @@ func (m *StatsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Stat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20485,7 +21708,6 @@ func (m *Stat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Memory) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20617,7 +21839,6 @@ func (m *Memory) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *MemoryResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -20703,7 +21924,6 @@ func (m *MemoryResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *MemInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -21667,7 +22887,6 @@ func (m *MemInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *HostnameResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -21753,7 +22972,6 @@ func (m *HostnameResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *Hostname) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -21881,7 +23099,6 @@ func (m *Hostname) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *LoadAvgResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -21967,7 +23184,6 @@ func (m *LoadAvgResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *LoadAvg) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -22096,7 +23312,6 @@ func (m *LoadAvg) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *SystemStatResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -22182,7 +23397,6 @@ func (m *SystemStatResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *SystemStat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -22593,7 +23807,6 @@ func (m *SystemStat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CPUStat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -22755,7 +23968,6 @@ func (m *CPUStat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *SoftIRQStat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -22997,7 +24209,6 @@ func (m *SoftIRQStat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CPUInfoResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -23083,7 +24294,6 @@ func (m *CPUInfoResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CPUsInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -23213,7 +24423,6 @@ func (m *CPUsInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CPUInfo) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -23977,7 +25186,6 @@ func (m *CPUInfo) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *NetworkDeviceStatsResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -24063,7 +25271,6 @@ func (m *NetworkDeviceStatsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *NetworkDeviceStats) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -24229,7 +25436,6 @@ func (m *NetworkDeviceStats) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *NetDev) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -24617,7 +25823,6 @@ func (m *NetDev) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DiskStatsResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -24703,7 +25908,6 @@ func (m *DiskStatsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DiskStats) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -24869,7 +26073,6 @@ func (m *DiskStats) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DiskStat) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25238,7 +26441,6 @@ func (m *DiskStat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdLeaveClusterRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25290,7 +26492,6 @@ func (m *EtcdLeaveClusterRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdLeaveCluster) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25386,7 +26587,6 @@ func (m *EtcdLeaveCluster) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdLeaveClusterResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25472,7 +26672,6 @@ func (m *EtcdLeaveClusterResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdRemoveMemberRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25556,7 +26755,6 @@ func (m *EtcdRemoveMemberRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdRemoveMember) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25652,7 +26850,6 @@ func (m *EtcdRemoveMember) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdRemoveMemberResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25738,7 +26935,6 @@ func (m *EtcdRemoveMemberResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdForfeitLeadershipRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25790,7 +26986,6 @@ func (m *EtcdForfeitLeadershipRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdForfeitLeadership) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -25918,7 +27113,6 @@ func (m *EtcdForfeitLeadership) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdForfeitLeadershipResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26004,7 +27198,6 @@ func (m *EtcdForfeitLeadershipResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdMemberListRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26076,7 +27269,6 @@ func (m *EtcdMemberListRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdMember) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26263,7 +27455,6 @@ func (m *EtcdMember) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdMembers) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26425,7 +27616,6 @@ func (m *EtcdMembers) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdMemberListResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26511,7 +27701,6 @@ func (m *EtcdMemberListResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdSnapshotRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26563,7 +27752,6 @@ func (m *EtcdSnapshotRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdRecover) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26659,7 +27847,6 @@ func (m *EtcdRecover) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *EtcdRecoverResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26745,7 +27932,6 @@ func (m *EtcdRecoverResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *RouteConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26880,7 +28066,6 @@ func (m *RouteConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *DHCPOptionsConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -26951,7 +28136,6 @@ func (m *DHCPOptionsConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *NetworkDeviceConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27196,7 +28380,6 @@ func (m *NetworkDeviceConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *NetworkConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27314,7 +28497,6 @@ func (m *NetworkConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *InstallConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27430,7 +28612,6 @@ func (m *InstallConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *MachineConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27605,7 +28786,6 @@ func (m *MachineConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ControlPlaneConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27689,7 +28869,6 @@ func (m *ControlPlaneConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *CNIConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27805,7 +28984,6 @@ func (m *CNIConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ClusterNetworkConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -27925,7 +29103,6 @@ func (m *ClusterNetworkConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *ClusterConfig) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28061,7 +29238,7 @@ func (m *ClusterConfig) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 4:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AllowSchedulingOnMasters", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field AllowSchedulingOnControlPlanes", wireType)
 			}
 			var v int
 			for shift := uint(0); ; shift += 7 {
@@ -28078,7 +29255,7 @@ func (m *ClusterConfig) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-			m.AllowSchedulingOnMasters = bool(v != 0)
+			m.AllowSchedulingOnControlPlanes = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -28101,7 +29278,6 @@ func (m *ClusterConfig) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28301,7 +29477,6 @@ func (m *GenerateConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateConfiguration) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28463,7 +29638,6 @@ func (m *GenerateConfiguration) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28549,7 +29723,6 @@ func (m *GenerateConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateClientConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28677,7 +29850,6 @@ func (m *GenerateClientConfigurationRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateClientConfiguration) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28909,7 +30081,6 @@ func (m *GenerateClientConfiguration) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-
 func (m *GenerateClientConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -28995,7 +30166,289 @@ func (m *GenerateClientConfigurationResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
+func (m *PacketCaptureRequest) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PacketCaptureRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PacketCaptureRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Interface", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Interface = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Promiscuous", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Promiscuous = bool(v != 0)
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field SnapLen", wireType)
+			}
+			m.SnapLen = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.SnapLen |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field BpfFilter", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.BpfFilter = append(m.BpfFilter, &BPFInstruction{})
+			if err := m.BpfFilter[len(m.BpfFilter)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
 
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *BPFInstruction) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: BPFInstruction: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: BPFInstruction: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Op", wireType)
+			}
+			m.Op = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Op |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Jt", wireType)
+			}
+			m.Jt = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Jt |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Jf", wireType)
+			}
+			m.Jf = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Jf |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field K", wireType)
+			}
+			m.K = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.K |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func skip(dAtA []byte) (n int, err error) {
 	l := len(dAtA)
 	iNdEx := 0

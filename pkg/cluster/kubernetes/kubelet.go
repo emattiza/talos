@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/talos-systems/go-retry/retry"
-	"gopkg.in/yaml.v3"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,35 +37,13 @@ func upgradeKubelet(ctx context.Context, cluster UpgradeProvider, options Upgrad
 
 	options.Log("updating kubelet to version %q", options.ToVersion)
 
-	for _, node := range append(append([]string(nil), options.masterNodes...), options.workerNodes...) {
+	for _, node := range append(append([]string(nil), options.controlPlaneNodes...), options.workerNodes...) {
 		if err := upgradeKubeletOnNode(ctx, cluster, options, node); err != nil {
 			return fmt.Errorf("error updating node %q: %w", node, err)
 		}
 	}
 
 	return nil
-}
-
-func serviceSpecFromResource(r resource.Resource) (*v1alpha1.ServiceSpec, error) {
-	marshaled, err := resource.MarshalYAML(r)
-	if err != nil {
-		return nil, err
-	}
-
-	yml, err := yaml.Marshal(marshaled)
-	if err != nil {
-		return nil, err
-	}
-
-	var mock struct {
-		Spec v1alpha1.ServiceSpec `yaml:"spec"`
-	}
-
-	if err = yaml.Unmarshal(yml, &mock); err != nil {
-		return nil, err
-	}
-
-	return &mock.Spec, nil
 }
 
 //nolint:gocyclo,cyclop
@@ -78,55 +56,48 @@ func upgradeKubeletOnNode(ctx context.Context, cluster UpgradeProvider, options 
 		return fmt.Errorf("error building Talos API client: %w", err)
 	}
 
-	ctx = client.WithNodes(ctx, node)
+	ctx = client.WithNode(ctx, node)
 
 	options.Log(" > %q: starting update", node)
 
-	watchClient, err := c.Resources.Watch(ctx, v1alpha1.NamespaceName, v1alpha1.ServiceType, kubelet)
-	if err != nil {
+	watchCh := make(chan safe.WrappedStateEvent[*v1alpha1.Service])
+
+	if err = safe.StateWatch(ctx, c.COSI, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, kubelet, resource.VersionUndefined), watchCh); err != nil {
 		return fmt.Errorf("error watching service: %w", err)
 	}
 
-	// first response is resource definition
-	_, err = watchClient.Recv()
-	if err != nil {
-		return fmt.Errorf("error watching service: %w", err)
+	var ev safe.WrappedStateEvent[*v1alpha1.Service]
+
+	select {
+	case ev = <-watchCh:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
-	// second is the initial state
-	watchInitial, err := watchClient.Recv()
-	if err != nil {
-		return fmt.Errorf("error watching service: %w", err)
+	if ev.Type() != state.Created {
+		return fmt.Errorf("unexpected event type: %s", ev.Type())
 	}
 
-	if watchInitial.EventType != state.Created {
-		return fmt.Errorf("unexpected event type: %s", watchInitial.EventType)
-	}
-
-	initialService, err := serviceSpecFromResource(watchInitial.Resource)
+	initialService, err := ev.Resource()
 	if err != nil {
 		return fmt.Errorf("error inspecting service: %w", err)
 	}
 
-	if !initialService.Running || !initialService.Healthy {
+	if !initialService.TypedSpec().Running || !initialService.TypedSpec().Healthy {
 		return fmt.Errorf("kubelet is not healthy")
 	}
 
 	// find out current kubelet version, as the machine config might have a missing image field,
 	// look it up from the kubelet spec
 
-	kubeletSpec, err := c.Resources.Get(ctx, k8s.NamespaceName, k8s.KubeletSpecType, kubelet)
+	kubeletSpec, err := safe.StateGet[*k8s.KubeletSpec](ctx, c.COSI, resource.NewMetadata(k8s.NamespaceName, k8s.KubeletSpecType, kubelet, resource.VersionUndefined))
 	if err != nil {
 		return fmt.Errorf("error fetching kubelet spec: %w", err)
 	}
 
-	if len(kubeletSpec) != 1 {
-		return fmt.Errorf("unexpected number of responses: %d", len(kubeletSpec))
-	}
-
 	skipWait := false
 
-	err = patchNodeConfig(ctx, cluster, node, upgradeKubeletPatcher(options, kubeletSpec[0].Resource))
+	err = patchNodeConfig(ctx, cluster, node, upgradeKubeletPatcher(options, kubeletSpec))
 	if err != nil {
 		if errors.Is(err, errUpdateSkipped) {
 			skipWait = true
@@ -146,36 +117,34 @@ func upgradeKubeletOnNode(ctx context.Context, cluster UpgradeProvider, options 
 
 		// first, wait for kubelet to go down
 		for {
-			var watchUpdated client.WatchResponse
-
-			watchUpdated, err = watchClient.Recv()
-			if err != nil {
-				return fmt.Errorf("error watching service: %w", err)
+			select {
+			case ev = <-watchCh:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 
-			if watchUpdated.EventType == state.Destroyed {
+			if ev.Type() == state.Destroyed {
 				break
 			}
 		}
 
 		// now wait for kubelet to go up & healthy
 		for {
-			var watchUpdated client.WatchResponse
-
-			watchUpdated, err = watchClient.Recv()
-			if err != nil {
-				return fmt.Errorf("error watching service: %w", err)
+			select {
+			case ev = <-watchCh:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 
-			if watchUpdated.EventType == state.Created || watchUpdated.EventType == state.Updated {
-				var service *v1alpha1.ServiceSpec
+			if ev.Type() == state.Created || ev.Type() == state.Updated {
+				var service *v1alpha1.Service
 
-				service, err = serviceSpecFromResource(watchUpdated.Resource)
+				service, err = ev.Resource()
 				if err != nil {
 					return fmt.Errorf("error inspecting service: %w", err)
 				}
 
-				if service.Running && service.Healthy {
+				if service.TypedSpec().Running && service.TypedSpec().Healthy {
 					break
 				}
 			}
@@ -184,9 +153,11 @@ func upgradeKubeletOnNode(ctx context.Context, cluster UpgradeProvider, options 
 
 	options.Log(" > %q: waiting for node update", node)
 
-	if err = retry.Constant(3*time.Minute, retry.WithUnits(10*time.Second)).Retry(func() error {
-		return checkNodeKubeletVersion(ctx, cluster, node, "v"+options.ToVersion)
-	}); err != nil {
+	if err = retry.Constant(3*time.Minute, retry.WithUnits(10*time.Second)).Retry(
+		func() error {
+			return checkNodeKubeletVersion(ctx, cluster, node, "v"+options.ToVersion)
+		},
+	); err != nil {
 		return err
 	}
 
@@ -195,7 +166,10 @@ func upgradeKubeletOnNode(ctx context.Context, cluster UpgradeProvider, options 
 	return nil
 }
 
-func upgradeKubeletPatcher(options UpgradeOptions, kubeletSpec resource.Resource) func(config *v1alpha1config.Config) error {
+func upgradeKubeletPatcher(
+	options UpgradeOptions,
+	kubeletSpec *k8s.KubeletSpec,
+) func(config *v1alpha1config.Config) error {
 	return func(config *v1alpha1config.Config) error {
 		if config.MachineConfig == nil {
 			config.MachineConfig = &v1alpha1config.MachineConfig{}
@@ -205,16 +179,7 @@ func upgradeKubeletPatcher(options UpgradeOptions, kubeletSpec resource.Resource
 			config.MachineConfig.MachineKubelet = &v1alpha1config.KubeletConfig{}
 		}
 
-		var (
-			any *resource.Any
-			ok  bool
-		)
-
-		if any, ok = kubeletSpec.(*resource.Any); !ok {
-			return fmt.Errorf("unexpected resource type")
-		}
-
-		oldImage := any.Value().(map[string]interface{})["image"].(string) //nolint:errcheck,forcetypeassert
+		oldImage := kubeletSpec.TypedSpec().Image
 
 		logUpdate := func(oldImage string) {
 			parts := strings.Split(oldImage, ":")
@@ -223,6 +188,8 @@ func upgradeKubeletPatcher(options UpgradeOptions, kubeletSpec resource.Resource
 			if len(parts) > 1 {
 				version = parts[1]
 			}
+
+			version = strings.TrimLeft(version, "v")
 
 			options.Log(" > update %s: %s -> %s", kubelet, version, options.ToVersion)
 
@@ -285,7 +252,13 @@ func checkNodeKubeletVersion(ctx context.Context, cluster UpgradeProvider, nodeT
 		nodeFound = true
 
 		if node.Status.NodeInfo.KubeletVersion != version {
-			return retry.ExpectedError(fmt.Errorf("node version mismatch: got %q, expected %q", node.Status.NodeInfo.KubeletVersion, version))
+			return retry.ExpectedError(
+				fmt.Errorf(
+					"node version mismatch: got %q, expected %q",
+					node.Status.NodeInfo.KubeletVersion,
+					version,
+				),
+			)
 		}
 
 		ready := false

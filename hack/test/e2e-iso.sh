@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -eoux pipefail
 
@@ -17,15 +17,16 @@ function create_cluster {
     --name="${CLUSTER_NAME}" \
     --kubernetes-version=${KUBERNETES_VERSION} \
     --iso-path=${ARTIFACTS}/talos-amd64.iso \
-    --masters=1 \
+    --controlplanes=1 \
     --workers=0 \
     --mtu=1450 \
     --memory=2048 \
     --cpus=2.0 \
     --cidr=172.20.2.0/24 \
     --with-apply-config \
-    --install-image=${REGISTRY:-ghcr.io}/talos-systems/installer:${TAG} \
+    --install-image=${REGISTRY:-ghcr.io}/siderolabs/installer:${TAG} \
     --cni-bundle-url=${ARTIFACTS}/talosctl-cni-bundle-'${ARCH}'.tar.gz \
+    --crashdump \
     ${REGISTRY_MIRROR_FLAGS}
 
   "${TALOSCTL}" config node "${NODE}"

@@ -8,8 +8,7 @@ package check
 import (
 	"context"
 	"fmt"
-	"reflect"
-	"sort"
+	"net/netip"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,82 +19,119 @@ import (
 )
 
 // K8sAllNodesReportedAssertion checks whether all the nodes show up in node list.
-func K8sAllNodesReportedAssertion(ctx context.Context, cluster ClusterInfo) error {
-	clientset, err := cluster.K8sClient(ctx)
+//
+//nolint:gocyclo
+func K8sAllNodesReportedAssertion(ctx context.Context, cl ClusterInfo) error {
+	clientset, err := cl.K8sClient(ctx)
 	if err != nil {
 		return err
 	}
 
-	expectedNodes := cluster.Nodes()
+	expectedNodeInfos := cl.Nodes()
 
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	var actualNodes []string
+	actualNodeInfos := make([]cluster.NodeInfo, 0, len(nodes.Items))
 
 	for _, node := range nodes.Items {
+		var internalIP netip.Addr
+
+		var ips []netip.Addr
+
 		for _, nodeAddress := range node.Status.Addresses {
 			if nodeAddress.Type == v1.NodeInternalIP {
-				actualNodes = append(actualNodes, nodeAddress.Address)
+				internalIP, err = netip.ParseAddr(nodeAddress.Address)
+				if err != nil {
+					return err
+				}
+
+				ips = append(ips, internalIP)
+			} else if nodeAddress.Type == v1.NodeExternalIP {
+				externalIP, err := netip.ParseAddr(nodeAddress.Address)
+				if err != nil {
+					return err
+				}
+
+				ips = append(ips, externalIP)
 			}
 		}
+
+		actualNodeInfo := cluster.NodeInfo{
+			InternalIP: internalIP,
+			IPs:        ips,
+		}
+
+		actualNodeInfos = append(actualNodeInfos, actualNodeInfo)
 	}
 
-	sort.Strings(expectedNodes)
-	sort.Strings(actualNodes)
-
-	if reflect.DeepEqual(expectedNodes, actualNodes) {
-		return nil
-	}
-
-	return fmt.Errorf("expected %v nodes, but got %v nodes", expectedNodes, actualNodes)
+	return cluster.NodesMatch(expectedNodeInfos, actualNodeInfos)
 }
 
-// K8sFullControlPlaneAssertion checks whether all the master nodes are k8s master nodes.
+// K8sFullControlPlaneAssertion checks whether all the controlplane nodes are k8s controlplane nodes.
 //
 //nolint:gocyclo,cyclop
-func K8sFullControlPlaneAssertion(ctx context.Context, cluster ClusterInfo) error {
-	clientset, err := cluster.K8sClient(ctx)
+func K8sFullControlPlaneAssertion(ctx context.Context, cl ClusterInfo) error {
+	clientset, err := cl.K8sClient(ctx)
 	if err != nil {
 		return err
 	}
 
-	expectedNodes := append(cluster.NodesByType(machine.TypeInit), cluster.NodesByType(machine.TypeControlPlane)...)
+	expectedNodes := append(cl.NodesByType(machine.TypeInit), cl.NodesByType(machine.TypeControlPlane)...)
 
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	var actualNodes []string
+	actualNodes := make([]cluster.NodeInfo, 0, len(nodes.Items))
 
 	for _, node := range nodes.Items {
 		for label := range node.Labels {
-			if label == constants.LabelNodeRoleMaster {
+			if label == constants.LabelNodeRoleMaster || label == constants.LabelNodeRoleControlPlane {
+				var internalIP netip.Addr
+
+				var ips []netip.Addr
+
 				for _, nodeAddress := range node.Status.Addresses {
 					if nodeAddress.Type == v1.NodeInternalIP {
-						actualNodes = append(actualNodes, nodeAddress.Address)
+						internalIP, err = netip.ParseAddr(nodeAddress.Address)
+						if err != nil {
+							return err
+						}
 
-						break
+						ips = append(ips, internalIP)
+					} else if nodeAddress.Type == v1.NodeExternalIP {
+						externalIP, err2 := netip.ParseAddr(nodeAddress.Address)
+						if err2 != nil {
+							return err2
+						}
+
+						ips = append(ips, externalIP)
 					}
 				}
+
+				actualNodeInfo := cluster.NodeInfo{
+					InternalIP: internalIP,
+					IPs:        ips,
+				}
+
+				actualNodes = append(actualNodes, actualNodeInfo)
 
 				break
 			}
 		}
 	}
 
-	sort.Strings(expectedNodes)
-	sort.Strings(actualNodes)
-
-	if !reflect.DeepEqual(expectedNodes, actualNodes) {
-		return fmt.Errorf("expected %v nodes, but got %v nodes", expectedNodes, actualNodes)
+	err = cluster.NodesMatch(expectedNodes, actualNodes)
+	if err != nil {
+		return err
 	}
 
 	// NB: We run the control plane check after node readiness check in order to
-	// ensure that all control plane nodes have been labeled with the master
+	// ensure that all control plane nodes have been labeled with the controlplane
 	// label.
 
 	// daemonset check only there for pre-0.9 clusters with self-hosted control plane
@@ -142,7 +178,8 @@ func K8sFullControlPlaneAssertion(ctx context.Context, cluster ClusterInfo) erro
 		pods.Items = pods.Items[:n]
 
 		if len(pods.Items) != len(actualNodes) {
-			return fmt.Errorf("expected number of pods for %s to be %d, got %d", k8sApp, len(actualNodes), len(pods.Items))
+			return fmt.Errorf("expected number of pods for %s to be %d, got %d",
+				k8sApp, len(actualNodes), len(pods.Items))
 		}
 
 		var notReadyPods []string
@@ -230,6 +267,8 @@ func K8sAllNodesSchedulableAssertion(ctx context.Context, cluster cluster.K8sPro
 }
 
 // K8sPodReadyAssertion checks whether all the pods matching label selector are Ready, and there is at least one.
+//
+//nolint:gocyclo
 func K8sPodReadyAssertion(ctx context.Context, cluster cluster.K8sProvider, namespace, labelSelector string) error {
 	clientset, err := cluster.K8sClient(ctx)
 	if err != nil {
@@ -247,9 +286,36 @@ func K8sPodReadyAssertion(ctx context.Context, cluster cluster.K8sProvider, name
 		return fmt.Errorf("no pods found for namespace %q and label selector %q", namespace, labelSelector)
 	}
 
-	var notReadyPods []string
+	var notReadyPods, readyPods []string
 
 	for _, pod := range pods.Items {
+		// skip deleted pods
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+
+		// skip failed pods
+		if pod.Status.Phase == v1.PodFailed {
+			continue
+		}
+
+		// skip pods which `kubectl get pods` marks as 'Completed':
+		// * these pods have a phase 'Running', but all containers are terminated
+		// * such pods appear after a graceful kubelet shutdown
+		allContainersTerminated := true
+
+		for _, containerStatus := range pod.Status.ContainerStatuses {
+			if containerStatus.State.Terminated == nil {
+				allContainersTerminated = false
+
+				break
+			}
+		}
+
+		if allContainersTerminated {
+			continue
+		}
+
 		ready := false
 
 		for _, cond := range pod.Status.Conditions {
@@ -264,7 +330,13 @@ func K8sPodReadyAssertion(ctx context.Context, cluster cluster.K8sProvider, name
 
 		if !ready {
 			notReadyPods = append(notReadyPods, pod.Name)
+		} else {
+			readyPods = append(readyPods, pod.Name)
 		}
+	}
+
+	if len(readyPods) == 0 {
+		return fmt.Errorf("no ready pods found for namespace %q and label selector %q", namespace, labelSelector)
 	}
 
 	if len(notReadyPods) == 0 {

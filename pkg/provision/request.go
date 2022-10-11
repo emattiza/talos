@@ -52,8 +52,16 @@ type NetworkRequest struct {
 	MTU          int
 	Nameservers  []net.IP
 
+	LoadBalancerPorts []int
+
 	// CNI-specific parameters.
 	CNI CNIConfig
+
+	// DHCP options
+	DHCPSkipHostname bool
+
+	// Docker-specific parameters.
+	DockerDisableIPv6 bool
 }
 
 // NodeRequests is a list of NodeRequest.
@@ -87,8 +95,8 @@ func (reqs NodeRequests) FindInitNode() (req NodeRequest, err error) {
 	return
 }
 
-// MasterNodes returns subset of nodes which are Init/ControlPlane type.
-func (reqs NodeRequests) MasterNodes() (nodes []NodeRequest) {
+// ControlPlaneNodes returns subset of nodes which are Init/ControlPlane type.
+func (reqs NodeRequests) ControlPlaneNodes() (nodes []NodeRequest) {
 	for i := range reqs {
 		if reqs[i].Type == machine.TypeInit || reqs[i].Type == machine.TypeControlPlane {
 			nodes = append(nodes, reqs[i])

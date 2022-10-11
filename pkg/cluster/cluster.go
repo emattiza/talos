@@ -7,8 +7,13 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net/netip"
+	"sort"
 
+	"github.com/siderolabs/gen/maps"
+	"github.com/siderolabs/gen/slices"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
@@ -42,15 +47,86 @@ type CrashDumper interface {
 	CrashDump(ctx context.Context, out io.Writer)
 }
 
+// NodeInfo describes a Talos node.
+type NodeInfo struct {
+	InternalIP netip.Addr
+	IPs        []netip.Addr
+}
+
 // Info describes the Talos cluster.
 type Info interface {
-	// Nodes returns list of all node endpoints (IPs).
-	Nodes() []string
+	// Nodes returns list of all node infos.
+	Nodes() []NodeInfo
 	// NodesByType return list of node endpoints by type.
-	NodesByType(machine.Type) []string
+	NodesByType(machine.Type) []NodeInfo
 }
 
 // Bootstrapper performs Talos cluster bootstrap.
 type Bootstrapper interface {
 	Bootstrap(ctx context.Context, out io.Writer) error
+}
+
+// IPsToNodeInfos converts list of IPs to a list of NodeInfos.
+func IPsToNodeInfos(ips []string) ([]NodeInfo, error) {
+	result := make([]NodeInfo, len(ips))
+
+	for i, ip := range ips {
+		info, err := IPToNodeInfo(ip)
+		if err != nil {
+			return nil, err
+		}
+
+		result[i] = *info
+	}
+
+	return result, nil
+}
+
+// IPToNodeInfo converts a node internal IP to a NodeInfo.
+func IPToNodeInfo(ip string) (*NodeInfo, error) {
+	parsed, err := netip.ParseAddr(ip)
+	if err != nil {
+		return nil, err
+	}
+
+	return &NodeInfo{
+		InternalIP: parsed,
+		IPs:        []netip.Addr{parsed},
+	}, nil
+}
+
+// NodesMatch asserts that the provided expected set of nodes match the actual set of nodes.
+//
+// Each expectedNode IPs should have a non-empty intersection with actualNode IPs.
+func NodesMatch(expected, actual []NodeInfo) error {
+	actualNodes := slices.ToMap(actual, func(n NodeInfo) (*NodeInfo, struct{}) { return &n, struct{}{} })
+
+	for _, expectedNodeInfo := range expected {
+		found := false
+
+		for actualNodeInfo := range actualNodes {
+			// expectedNodeInfo.IPs intersection with actualNodeInfo.IPs is not empty
+			if len(maps.Intersect(slices.ToSet(actualNodeInfo.IPs), slices.ToSet(expectedNodeInfo.IPs))) > 0 {
+				delete(actualNodes, actualNodeInfo)
+
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			return fmt.Errorf("can't find expected node with IPs %q", expectedNodeInfo.IPs)
+		}
+	}
+
+	if len(actualNodes) > 0 {
+		unexpectedIPs := slices.FlatMap(maps.Keys(actualNodes), func(n *NodeInfo) []netip.Addr { return n.IPs })
+
+		sort.Slice(unexpectedIPs, func(i, j int) bool { return unexpectedIPs[i].Less(unexpectedIPs[j]) })
+
+		return fmt.Errorf("unexpected nodes with IPs %q", unexpectedIPs)
+	}
+
+	return nil
 }

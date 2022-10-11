@@ -5,25 +5,26 @@
 package network
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // HostnameStatusType is type of HostnameStatus resource.
 const HostnameStatusType = resource.Type("HostnameStatuses.net.talos.dev")
 
 // HostnameStatus resource holds node hostname.
-type HostnameStatus struct {
-	md   resource.Metadata
-	spec HostnameStatusSpec
-}
+type HostnameStatus = typed.Resource[HostnameStatusSpec, HostnameStatusRD]
 
 // HostnameStatusSpec describes node nostname.
+//
+//gotagsrewrite:gen
 type HostnameStatusSpec struct {
-	Hostname   string `yaml:"hostname"`
-	Domainname string `yaml:"domainname"`
+	Hostname   string `yaml:"hostname" protobuf:"1"`
+	Domainname string `yaml:"domainname" protobuf:"2"`
 }
 
 // FQDN returns the fully-qualified domain name.
@@ -48,40 +49,17 @@ func (spec *HostnameStatusSpec) DNSNames() []string {
 
 // NewHostnameStatus initializes a HostnameStatus resource.
 func NewHostnameStatus(namespace resource.Namespace, id resource.ID) *HostnameStatus {
-	r := &HostnameStatus{
-		md:   resource.NewMetadata(namespace, HostnameStatusType, id, resource.VersionUndefined),
-		spec: HostnameStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[HostnameStatusSpec, HostnameStatusRD](
+		resource.NewMetadata(namespace, HostnameStatusType, id, resource.VersionUndefined),
+		HostnameStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *HostnameStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// HostnameStatusRD provides auxiliary methods for HostnameStatus.
+type HostnameStatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *HostnameStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *HostnameStatus) String() string {
-	return fmt.Sprintf("network.HostnameStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *HostnameStatus) DeepCopy() resource.Resource {
-	return &HostnameStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *HostnameStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (HostnameStatusRD) ResourceDefinition(resource.Metadata, HostnameStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             HostnameStatusType,
 		Aliases:          []resource.Type{"hostname"},
@@ -99,7 +77,11 @@ func (r *HostnameStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *HostnameStatus) TypedSpec() *HostnameStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[HostnameStatusSpec](HostnameStatusType, &HostnameStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

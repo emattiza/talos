@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/siderolabs/gen/maps"
 	"google.golang.org/grpc"
-	metadata "google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -36,12 +37,7 @@ var sensitiveFields = map[string]struct{}{
 // ExtractMetadata formats metadata from incoming grpc context as string for the log.
 func ExtractMetadata(ctx context.Context) string {
 	md, _ := metadata.FromIncomingContext(ctx)
-	keys := make([]string, 0, len(md))
-
-	for key := range md {
-		keys = append(keys, key)
-	}
-
+	keys := maps.Keys(md)
 	sort.Strings(keys)
 
 	pairs := make([]string, 0, len(keys))

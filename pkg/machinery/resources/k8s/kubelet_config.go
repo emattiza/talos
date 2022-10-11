@@ -5,11 +5,13 @@
 package k8s
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // KubeletConfigType is type of KubeletConfig resource.
@@ -19,70 +21,36 @@ const KubeletConfigType = resource.Type("KubeletConfigs.kubernetes.talos.dev")
 const KubeletID = resource.ID("kubelet")
 
 // KubeletConfig resource holds source of kubelet configuration.
-type KubeletConfig struct {
-	md   resource.Metadata
-	spec *KubeletConfigSpec
-}
+type KubeletConfig = typed.Resource[KubeletConfigSpec, KubeletConfigRD]
 
 // KubeletConfigSpec holds the source of kubelet configuration.
+//
+//gotagsrewrite:gen
 type KubeletConfigSpec struct {
-	Image                 string            `yaml:"image"`
-	ClusterDNS            []string          `yaml:"clusterDNS"`
-	ClusterDomain         string            `yaml:"clusterDomain"`
-	ExtraArgs             map[string]string `yaml:"extraArgs,omitempty"`
-	ExtraMounts           []specs.Mount     `yaml:"extraMounts,omitempty"`
-	CloudProviderExternal bool              `yaml:"cloudProviderExternal"`
+	Image                        string                 `yaml:"image" protobuf:"1"`
+	ClusterDNS                   []string               `yaml:"clusterDNS" protobuf:"2"`
+	ClusterDomain                string                 `yaml:"clusterDomain" protobuf:"3"`
+	ExtraArgs                    map[string]string      `yaml:"extraArgs,omitempty" protobuf:"4"`
+	ExtraMounts                  []specs.Mount          `yaml:"extraMounts,omitempty" protobuf:"5"`
+	ExtraConfig                  map[string]interface{} `yaml:"extraConfig,omitempty" protobuf:"6"`
+	CloudProviderExternal        bool                   `yaml:"cloudProviderExternal" protobuf:"7"`
+	DefaultRuntimeSeccompEnabled bool                   `yaml:"defaultRuntimeSeccompEnabled" protobuf:"8"`
+	SkipNodeRegistration         bool                   `yaml:"skipNodeRegistration" protobuf:"9"`
 }
 
 // NewKubeletConfig initializes an empty KubeletConfig resource.
 func NewKubeletConfig(namespace resource.Namespace, id resource.ID) *KubeletConfig {
-	r := &KubeletConfig{
-		md:   resource.NewMetadata(namespace, KubeletConfigType, id, resource.VersionUndefined),
-		spec: &KubeletConfigSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[KubeletConfigSpec, KubeletConfigRD](
+		resource.NewMetadata(namespace, KubeletConfigType, id, resource.VersionUndefined),
+		KubeletConfigSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *KubeletConfig) Metadata() *resource.Metadata {
-	return &r.md
-}
+// KubeletConfigRD provides auxiliary methods for KubeletConfig.
+type KubeletConfigRD struct{}
 
-// Spec implements resource.Resource.
-func (r *KubeletConfig) Spec() interface{} {
-	return r.spec
-}
-
-func (r *KubeletConfig) String() string {
-	return fmt.Sprintf("k8s.KubeletConfig(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *KubeletConfig) DeepCopy() resource.Resource {
-	extraArgs := make(map[string]string, len(r.spec.ExtraArgs))
-
-	for k, v := range r.spec.ExtraArgs {
-		extraArgs[k] = v
-	}
-
-	return &KubeletConfig{
-		md: r.md,
-		spec: &KubeletConfigSpec{
-			Image:                 r.spec.Image,
-			ClusterDNS:            append([]string(nil), r.spec.ClusterDNS...),
-			ClusterDomain:         r.spec.ClusterDomain,
-			ExtraArgs:             extraArgs,
-			ExtraMounts:           append([]specs.Mount(nil), r.spec.ExtraMounts...),
-			CloudProviderExternal: r.spec.CloudProviderExternal,
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *KubeletConfig) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (KubeletConfigRD) ResourceDefinition(resource.Metadata, KubeletConfigSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             KubeletConfigType,
 		Aliases:          []resource.Type{},
@@ -90,7 +58,11 @@ func (r *KubeletConfig) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *KubeletConfig) TypedSpec() *KubeletConfigSpec {
-	return r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[KubeletConfigSpec](KubeletConfigType, &KubeletConfig{})
+	if err != nil {
+		panic(err)
+	}
 }

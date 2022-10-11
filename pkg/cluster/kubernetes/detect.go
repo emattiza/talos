@@ -14,6 +14,7 @@ import (
 )
 
 // DetectLowestVersion returns lowest Kubernetes components versions in the cluster.
+//
 //nolint:gocyclo
 func DetectLowestVersion(ctx context.Context, cluster UpgradeProvider, options UpgradeOptions) (string, error) {
 	k8sClient, err := cluster.K8sHelper(ctx)
@@ -34,12 +35,6 @@ func DetectLowestVersion(ctx context.Context, cluster UpgradeProvider, options U
 	}
 
 	var version *semver.Version
-	if options.ToVersion != "" {
-		version, err = semver.NewVersion(options.ToVersion)
-		if err != nil {
-			return "", err
-		}
-	}
 
 	for _, pod := range pods.Items {
 		app := pod.GetObjectMeta().GetLabels()["k8s-app"]
@@ -52,12 +47,12 @@ func DetectLowestVersion(ctx context.Context, cluster UpgradeProvider, options U
 				continue
 			}
 
-			parts := strings.Split(container.Image, ":")
-			if len(parts) == 1 {
+			idx := strings.LastIndex(container.Image, ":")
+			if idx == -1 {
 				continue
 			}
 
-			v, err := semver.NewVersion(strings.TrimLeft(parts[1], "v"))
+			v, err := semver.NewVersion(strings.TrimLeft(container.Image[idx+1:], "v"))
 			if err != nil {
 				options.Log("failed to parse %s container version %s", app, err)
 
@@ -68,6 +63,10 @@ func DetectLowestVersion(ctx context.Context, cluster UpgradeProvider, options U
 				version = v
 			}
 		}
+	}
+
+	if version == nil {
+		return "", fmt.Errorf("failed to detect lowest Kubernetes version")
 	}
 
 	return version.String(), nil

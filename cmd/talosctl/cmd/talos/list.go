@@ -7,7 +7,6 @@ package talos
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -15,8 +14,8 @@ import (
 
 	humanize "github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc/codes"
 
+	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/client"
 )
@@ -38,7 +37,18 @@ var lsCmd = &cobra.Command{
 	Short:   "Retrieve a directory listing",
 	Long:    ``,
 	Args:    cobra.MaximumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return completePathFromNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if recurse && recursionDepth != 1 {
+			return fmt.Errorf("only one of flags --recurse and --depth can be specified at the same time")
+		}
+
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			rootDir := "/"
 
@@ -64,9 +74,13 @@ var lsCmd = &cobra.Command{
 				}
 			}
 
+			if recurse {
+				recursionDepth = -1
+			}
+
 			stream, err := c.LS(ctx, &machineapi.ListRequest{
 				Root:           rootDir,
-				Recurse:        recurse,
+				Recurse:        recursionDepth > 1 || recurse,
 				RecursionDepth: recursionDepth,
 				Types:          reqTypes,
 			})
@@ -74,44 +88,15 @@ var lsCmd = &cobra.Command{
 				return fmt.Errorf("error fetching logs: %s", err)
 			}
 
-			defaultNode := client.RemotePeer(stream.Context())
-
 			if !long {
 				w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 				fmt.Fprintln(w, "NODE\tNAME")
 
-				multipleNodes := false
-				node := defaultNode
+				defer w.Flush() //nolint:errcheck
 
-				for {
-					info, err := stream.Recv()
-					if err != nil {
-						if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-							if multipleNodes {
-								return w.Flush()
-							}
-
-							return nil
-						}
-
-						return fmt.Errorf("error streaming results: %s", err)
-					}
-
-					if info.Metadata != nil && info.Metadata.Hostname != "" {
-						multipleNodes = true
-						node = info.Metadata.Hostname
-					}
-
-					if info.Metadata != nil && info.Metadata.Error != "" {
-						fmt.Fprintf(os.Stderr, "%s: %s\n", node, info.Metadata.Error)
-
-						continue
-					}
-
+				return helpers.ReadGRPCStream(stream, func(info *machineapi.FileInfo, node string, multipleNodes bool) error {
 					if info.Error != "" {
-						fmt.Fprintf(os.Stderr, "%s: error reading file %s: %s\n", node, info.Name, info.Error)
-
-						continue
+						return helpers.NonFatalError(fmt.Errorf("%s: error reading file %s: %s", node, info.Name, info.Error))
 					}
 
 					if !multipleNodes {
@@ -123,36 +108,18 @@ var lsCmd = &cobra.Command{
 						)
 					}
 
-				}
+					return nil
+				})
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+			defer w.Flush() //nolint:errcheck
+
 			fmt.Fprintln(w, "NODE\tMODE\tUID\tGID\tSIZE(B)\tLASTMOD\tNAME")
-			for {
-				info, err := stream.Recv()
-				if err != nil {
-					if err == io.EOF || client.StatusCode(err) == codes.Canceled {
-						return w.Flush()
-					}
 
-					return fmt.Errorf("error streaming results: %s", err)
-				}
-
-				node := defaultNode
-				if info.Metadata != nil && info.Metadata.Hostname != "" {
-					node = info.Metadata.Hostname
-				}
-
+			return helpers.ReadGRPCStream(stream, func(info *machineapi.FileInfo, node string, multipleNodes bool) error {
 				if info.Error != "" {
-					fmt.Fprintf(os.Stderr, "%s: error reading file %s: %s\n", node, info.Name, info.Error)
-
-					continue
-				}
-
-				if info.Metadata != nil && info.Metadata.Error != "" {
-					fmt.Fprintf(os.Stderr, "%s: %s\n", node, info.Metadata.Error)
-
-					continue
+					return helpers.NonFatalError(fmt.Errorf("%s: error reading file %s: %s", node, info.Name, info.Error))
 				}
 
 				display := info.RelativeName
@@ -188,7 +155,9 @@ var lsCmd = &cobra.Command{
 					timestampFormatted,
 					display,
 				)
-			}
+
+				return nil
+			})
 		})
 	},
 }
@@ -204,7 +173,7 @@ func init() {
 	lsCmd.Flags().BoolVarP(&long, "long", "l", false, "display additional file details")
 	lsCmd.Flags().BoolVarP(&recurse, "recurse", "r", false, "recurse into subdirectories")
 	lsCmd.Flags().BoolVarP(&humanizeFlag, "humanize", "H", false, "humanize size and time in the output")
-	lsCmd.Flags().Int32VarP(&recursionDepth, "depth", "d", 0, "maximum recursion depth")
+	lsCmd.Flags().Int32VarP(&recursionDepth, "depth", "d", 1, "maximum recursion depth")
 	lsCmd.Flags().StringSliceVarP(&types, "type", "t", nil, typesHelp)
 	addCommand(lsCmd)
 }

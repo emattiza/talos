@@ -2,11 +2,11 @@
 commit = "HEAD"
 
 project_name = "Talos"
-github_repo = "talos-systems/talos"
-match_deps = "^github.com/(talos-systems/[a-zA-Z0-9-]+)$"
+github_repo = "siderolabs/talos"
+match_deps = "^github.com/((talos-systems|siderolabs)/[a-zA-Z0-9-]+)$"
 
 # previous release
-previous = "v0.13.0"
+previous = "v1.2.0"
 
 pre_release = true
 
@@ -15,135 +15,90 @@ preface = """\
 
 [notes]
 
-    [notes.vlan]
-        title = "VLAN Enhancements"
-        description="""\
-Talos now supports setting MTU and Virtual IPs on VLAN interfaces.
+    [notes.kernel_modules]
+        title = "Kernel Modules"
+        description = """\
+Talos now supports settings kernel module parameters.
+
+Eg:
+
+```yaml
+machine:
+  kernel:
+    modules:
+      - name: "br_netfilter"
+        parameters:
+          - nf_conntrack_max=131072
+```
 """
 
-    [notes.upgrades]
-        title = "Kubernetes Upgrade Enhancements"
-        description="""\
-`talosctl upgrade-k8s` was improved to:
-
-* sync all boostrap manifest resources in the Kubernetes cluster with versions bundled with current version Talos
-* upgrade `kubelet` to the version of the control plane components (without node reboot)
-
-So there is no need to update CoreDNS, Flannel container manually after running `upgrade-k8s` anymore.
+    [notes.sbc]
+        title = "Nano Pi R4S"
+        description = """\
+Talos now supports the Nano Pi R4S SBC.
 """
 
-    [notes.discovery]
-        title = "Cluster Discovery"
-        description="""\
-[Cluster Discovery](https://www.talos.dev/docs/v0.14/guides/discovery/) is enabled by default for Talos 0.14.
-Cluster Discovery can be disabled with `talosctl gen config --with-cluster-discovery=false`.
-"""
-
-    [notes.logs]
-        title = "Log Shipping"
-        description="""\
-Talos can now [ship system logs](https://www.talos.dev/docs/v0.14/guides/logging/)
-to the configured destination using either JSON-over-UDP or JSON-over-TCP:
-see `.machine.logging` machine configuration option.
+    [notes.sbc1]
+        title = "Raspberry Generic Images"
+        description = """\
+The Raspberry Pi 4 specific image has been deprecated and will be removed in the v1.4 release of Talos.
+Talos now ships a generic Raspberry Pi image that should support more Raspberry Pi variants.
+Refer to the docs at https://www.talos.dev/v1.3/talos-guides/install/single-board-computers/rpi_generic/ to find which ones are supported.
 """
 
     [notes.updates]
         title = "Component Updates"
         description="""\
-* Linux: 5.15.6
-* etcd: 3.5.1
-* containerd: 1.5.8
-* runc: 1.0.3
-* Kubernetes: 1.23.1
-* CoreDNS: 1.8.6
-* Flannel (default CNI): 0.15.1
+* Kubernetes: v1.26.0-alpha.1
+* Flannel: v0.19.2
+* CoreDNS: v1.10.0
+* etcd: v3.5.5
+* Linux: 5.15.72
 
-Talos is built with Go 1.17.5
+Talos is built with Go 1.19.2.
 """
 
-    [notes.caps]
-        title = "Kexec and capabilities"
-        description = """\
-When kexec support is disabled
-Talos no longer drops Linux capabilities (`CAP_SYS_BOOT` and `CAP_SYS_MODULES`) for child processes.
-That is helpful for advanced use-cases like Docker-in-Docker.
+    [notes.etcd]
+        title = "etcd Consistency Check"
+        description="""\
+Talos enables [--experimental-compact-hash-check-enabled](https://github.com/etcd-io/etcd/pull/14120) option by default to improve
+etcd store consistency guarantees.
 
-If you want to permanently disable kexec and capabilities dropping, pass `kexec_load_disabled=1` argument to the kernel.
+This options is only available with etcd >= v3.5.5, so Talos doesn't support version of etcd before v3.5.5.
+"""
 
-For example:
+    [notes.auditpolicy]
+        title = "kube-apiserver Audit Policy"
+        description="""\
+Talos now supports setting custom audit policy for `kube-apiserver` in the machine configuration.
+"""
 
-```yaml
-install:
-  extraKernelArgs:
-    - sysctl.kernel.kexec_load_disabled=1
+    [notes.routes]
+        title = "Routes"
+        description="""\
+Talos now supports setting MTU for a specific route.
+"""
+
+    [notes.cmdline]
+        title = "Kernel Command Line ip= Argument"
+        description="""\
+Talos now supports referencing interface name via `enxMAC` address notation:
+
 ```
-
-Please note that capabilities are dropped before machine configuration is loaded,
-so disabling kexec via `machine.sysctls` will not be enough.
-"""
-
-    [notes.support]
-        title = "`talosctl support`"
-        description = """\
-`talosctl` CLI tool now has a new subcommand called `support`, that can gather all
-cluster information that could help with future debugging in a single run.
-
-Output of the command is a `zip` archive with all talos service logs, kubernetes pod logs and manifests,
-talos resources manifests and so on.
-Generated archive does not contain any secret information so it is safe to send it for analysis to a third party.
-"""
-
-    [notes.kubelet]
-        title = "Kubelet"
-        description = """\
-Kubelet configuration can be updated without node restart (`.machine.kubelet` section of machine configuration) with commands
-`talosctl edit mc --immediate`, `talosctl apply-config --immediate`, `talosctl patch mc --immediate`.
-
-Kubelet service can now be restarted with `talosctl service kubelet restart`.
-
-Kubelet node IP configuration (`.machine.kubelet.nodeIP.validSubnets`) can now include negative subnet matches (prefixed with `!`).
-"""
-
-    [notes.siderolink]
-        title = "SideroLink"
-        description = """\
-A set of Talos ehancements is going to unlock a number of exciting features in the upcoming release of [Sidero](https://www.sidero.dev/):
-
-* `SideroLink`: a point-to-point Wireguard tunnel connecting Talos node back to the provisioning platform (Sidero).
-* event sink (kernel arg `talos.event.sink=http://10.0.0.1:4000`) delivers Talos internal events to the specified destination.
-* kmsg log delivery (kernel arg `talos.logging.kernel=tcp://10.0.0.1:4001`) sends kernel logs as JSON lines over TCP or UDP.
-"""
-
-    [notes.ntp]
-        title = "NTP Sync"
-        description = """\
-Talos NTP sync process was improved to align better with kernel time adjustment periods and to filter out spikes.
-"""
-
-    [notes.installer]
-        title = "`installer` and `imager` images"
-        description = """\
-Talos supports two target architectures: `amd64` and `arm64`, so all Talos images are built for both `amd64` and `arm64`.
-
-New image `imager` was added which contains Talos assets for both architectures which allows to generate Talos disk images
-cross-arch: e.g. generate Talos Raspberry PI disk image on `amd64` machine.
-
-As `installer` image is used only to do initial install and upgrades, it now contains Talos assets for a specific architecture.
-This reduces size of the `installer` image leading to faster upgrades and less memory usage.
-
-There are no user-visible changes except that now `imager` container image should be used to produce Talos disk images.
+ip=172.20.0.2::172.20.0.1:255.255.255.0::enx7085c2dfbc59
+```
 """
 
 [make_deps]
 
     [make_deps.tools]
         variable = "TOOLS"
-        repository = "github.com/talos-systems/tools"
+        repository = "github.com/siderolabs/tools"
 
     [make_deps.pkgs]
         variable = "PKGS"
-        repository = "github.com/talos-systems/pkgs"
+        repository = "github.com/siderolabs/pkgs"
 
     [make_deps.extras]
         variable = "EXTRAS"
-        repository = "github.com/talos-systems/extras"
+        repository = "github.com/siderolabs/extras"

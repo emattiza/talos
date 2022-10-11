@@ -10,19 +10,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
-	grpctls "github.com/talos-systems/crypto/tls"
-	"github.com/talos-systems/net"
+	cosiv1alpha1 "github.com/cosi-project/runtime/api/v1alpha1"
+	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/cosi-project/runtime/pkg/state/protobuf/client"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -34,31 +32,27 @@ import (
 	storageapi "github.com/talos-systems/talos/pkg/machinery/api/storage"
 	timeapi "github.com/talos-systems/talos/pkg/machinery/api/time"
 	clientconfig "github.com/talos-systems/talos/pkg/machinery/client/config"
-	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
-
-// Credentials represents the set of values required to initialize a valid
-// Client.
-type Credentials struct {
-	CA  []byte
-	Crt tls.Certificate
-}
 
 // Client implements the proto.MachineServiceClient interface. It serves as the
 // concrete type with the required methods.
 type Client struct {
 	options *Options
-	conn    *grpc.ClientConn
+	conn    *grpcConnectionWrapper
 
-	MachineClient  machineapi.MachineServiceClient
-	TimeClient     timeapi.TimeServiceClient
-	ClusterClient  clusterapi.ClusterServiceClient
-	StorageClient  storageapi.StorageServiceClient
-	ResourceClient resourceapi.ResourceServiceClient
-	InspectClient  inspectapi.InspectServiceClient
+	MachineClient machineapi.MachineServiceClient
+	TimeClient    timeapi.TimeServiceClient
+	ClusterClient clusterapi.ClusterServiceClient
+	StorageClient storageapi.StorageServiceClient
+	InspectClient inspectapi.InspectServiceClient
 
-	Resources *ResourcesClient
-	Inspect   *InspectClient
+	// Deprecated: use COSI client.
+	Resources      *ResourcesClient
+	ResourceClient resourceapi.ResourceServiceClient //nolint:staticcheck
+
+	COSI state.State
+
+	Inspect *InspectClient
 }
 
 func (c *Client) resolveConfigContext() error {
@@ -130,6 +124,26 @@ func (c *Client) GetEndpoints() []string {
 	return nil
 }
 
+// GetClusterName returns the client's cluster name from the override set with WithClustername
+// or from the configuration.
+func (c *Client) GetClusterName() string {
+	if c.options.clusterNameOverride != "" {
+		return c.options.clusterNameOverride
+	}
+
+	if c.options.config != nil {
+		if err := c.resolveConfigContext(); err != nil {
+			return ""
+		}
+
+		if c.options.configContext != nil {
+			return c.options.configContext.Cluster
+		}
+	}
+
+	return ""
+}
+
 // New returns a new Client.
 func New(ctx context.Context, opts ...OptionFunc) (c *Client, err error) {
 	c = new(Client)
@@ -146,7 +160,7 @@ func New(ctx context.Context, opts ...OptionFunc) (c *Client, err error) {
 		return nil, errors.New("failed to determine endpoints")
 	}
 
-	c.conn, err = c.GetConn(ctx)
+	c.conn, err = c.getConn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client connection: %w", err)
 	}
@@ -155,158 +169,12 @@ func New(ctx context.Context, opts ...OptionFunc) (c *Client, err error) {
 	c.TimeClient = timeapi.NewTimeServiceClient(c.conn)
 	c.ClusterClient = clusterapi.NewClusterServiceClient(c.conn)
 	c.StorageClient = storageapi.NewStorageServiceClient(c.conn)
-	c.ResourceClient = resourceapi.NewResourceServiceClient(c.conn)
+	c.ResourceClient = resourceapi.NewResourceServiceClient(c.conn) //nolint:staticcheck
 	c.InspectClient = inspectapi.NewInspectServiceClient(c.conn)
 
 	c.Resources = &ResourcesClient{c.ResourceClient}
 	c.Inspect = &InspectClient{c.InspectClient}
-
-	return c, nil
-}
-
-// GetConn creates new gRPC connection.
-func (c *Client) GetConn(ctx context.Context, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	endpoints := c.GetEndpoints()
-
-	var target string
-
-	switch {
-	case c.options.unixSocketPath != "":
-		target = fmt.Sprintf("unix:///%s", c.options.unixSocketPath)
-	case len(endpoints) > 1:
-		target = fmt.Sprintf("%s:///%s", talosListResolverScheme, strings.Join(endpoints, ","))
-	default:
-		// NB: we use the `dns` scheme here in order to handle fancier situations
-		// when there is a single endpoint.
-		// Such possibilities include SRV records, multiple IPs from A and/or AAAA
-		// records, and descriptive TXT records which include things like load
-		// balancer specs.
-		target = fmt.Sprintf("dns:///%s:%d", net.FormatAddress(endpoints[0]), constants.ApidPort)
-	}
-
-	dialOpts := []grpc.DialOption(nil)
-
-	if c.options.unixSocketPath == "" {
-		// Add TLS credentials to gRPC DialOptions
-		tlsConfig := c.options.tlsConfig
-		if tlsConfig == nil {
-			if err := c.resolveConfigContext(); err != nil {
-				return nil, fmt.Errorf("failed to resolve configuration context: %w", err)
-			}
-
-			creds, err := CredentialsFromConfigContext(c.options.configContext)
-			if err != nil {
-				return nil, fmt.Errorf("failed to acquire credentials: %w", err)
-			}
-
-			tlsConfig, err = grpctls.New(
-				grpctls.WithKeypair(creds.Crt),
-				grpctls.WithClientAuthType(grpctls.Mutual),
-				grpctls.WithCACertPEM(creds.CA),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to construct TLS credentials: %w", err)
-			}
-		}
-
-		dialOpts = append(dialOpts,
-			grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-		)
-	}
-
-	dialOpts = append(dialOpts, c.options.grpcDialOptions...)
-
-	dialOpts = append(dialOpts, opts...)
-
-	return grpc.DialContext(ctx, target, dialOpts...)
-}
-
-// CredentialsFromConfigContext constructs the client Credentials from the given configuration Context.
-func CredentialsFromConfigContext(context *clientconfig.Context) (*Credentials, error) {
-	caBytes, err := base64.StdEncoding.DecodeString(context.CA)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding CA: %w", err)
-	}
-
-	crtBytes, err := base64.StdEncoding.DecodeString(context.Crt)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding certificate: %w", err)
-	}
-
-	keyBytes, err := base64.StdEncoding.DecodeString(context.Key)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding key: %w", err)
-	}
-
-	crt, err := tls.X509KeyPair(crtBytes, keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("could not load client key pair: %s", err)
-	}
-
-	return &Credentials{
-		CA:  caBytes,
-		Crt: crt,
-	}, nil
-}
-
-// NewClientContextAndCredentialsFromConfig initializes Credentials from config file.
-//
-// Deprecated: use Option-based methods for client creation.
-func NewClientContextAndCredentialsFromConfig(p, ctx string) (context *clientconfig.Context, creds *Credentials, err error) {
-	c, err := clientconfig.Open(p)
-	if err != nil {
-		return
-	}
-
-	context, creds, err = NewClientContextAndCredentialsFromParsedConfig(c, ctx)
-
-	return
-}
-
-// NewClientContextAndCredentialsFromParsedConfig initializes Credentials from parsed configuration.
-//
-// Deprecated: use Option-based methods for client creation.
-func NewClientContextAndCredentialsFromParsedConfig(c *clientconfig.Config, ctx string) (context *clientconfig.Context, creds *Credentials, err error) {
-	if ctx != "" {
-		c.Context = ctx
-	}
-
-	if c.Context == "" {
-		return nil, nil, fmt.Errorf("'context' key is not set in the config")
-	}
-
-	context = c.Contexts[c.Context]
-	if context == nil {
-		return nil, nil, fmt.Errorf("context %q is not defined in 'contexts' key in config", c.Context)
-	}
-
-	creds, err = CredentialsFromConfigContext(context)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to extract credentials from context: %w", err)
-	}
-
-	return context, creds, nil
-}
-
-// NewClient initializes a Client.
-//
-// Deprecated: use client.NewFromConfigContext() instead.
-func NewClient(cfg *tls.Config, endpoints []string, port int, opts ...grpc.DialOption) (c *Client, err error) {
-	opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(cfg)))
-
-	cfg.ServerName = endpoints[0]
-
-	c = &Client{}
-
-	// TODO(smira): endpoints[0] should be replaced with proper load-balancing
-	c.conn, err = grpc.DialContext(context.Background(), fmt.Sprintf("%s:%d", net.FormatAddress(endpoints[0]), port), opts...)
-	if err != nil {
-		return
-	}
-
-	c.MachineClient = machineapi.NewMachineServiceClient(c.conn)
-	c.TimeClient = timeapi.NewTimeServiceClient(c.conn)
-	c.ClusterClient = clusterapi.NewClusterServiceClient(c.conn)
+	c.COSI = state.WrapCore(client.NewAdapter(cosiv1alpha1.NewStateClient(c.conn)))
 
 	return c, nil
 }
@@ -475,14 +343,21 @@ func (c *Client) Reset(ctx context.Context, graceful, reboot bool) (err error) {
 }
 
 // ResetGeneric implements the proto.MachineServiceClient interface.
-func (c *Client) ResetGeneric(ctx context.Context, req *machineapi.ResetRequest) (err error) {
+func (c *Client) ResetGeneric(ctx context.Context, req *machineapi.ResetRequest) error {
+	_, err := c.ResetGenericWithResponse(ctx, req)
+
+	return err
+}
+
+// ResetGenericWithResponse resets the machine and returns the response.
+func (c *Client) ResetGenericWithResponse(ctx context.Context, req *machineapi.ResetRequest) (*machineapi.ResetResponse, error) {
 	resp, err := c.MachineClient.Reset(ctx, req)
 
 	if err == nil {
 		_, err = FilterMessages(resp, err)
 	}
 
-	return
+	return resp, err
 }
 
 // RebootMode provides various mode through which the reboot process can be done.
@@ -494,7 +369,14 @@ func WithPowerCycle(req *machineapi.RebootRequest) {
 }
 
 // Reboot implements the proto.MachineServiceClient interface.
-func (c *Client) Reboot(ctx context.Context, opts ...RebootMode) (err error) {
+func (c *Client) Reboot(ctx context.Context, opts ...RebootMode) error {
+	_, err := c.RebootWithResponse(ctx, opts...)
+
+	return err
+}
+
+// RebootWithResponse reboots the machine and returns the response.
+func (c *Client) RebootWithResponse(ctx context.Context, opts ...RebootMode) (*machineapi.RebootResponse, error) {
 	var req machineapi.RebootRequest
 	for _, opt := range opts {
 		opt(&req)
@@ -506,7 +388,7 @@ func (c *Client) Reboot(ctx context.Context, opts ...RebootMode) (err error) {
 		_, err = FilterMessages(resp, err)
 	}
 
-	return
+	return resp, err
 }
 
 // Rollback implements the proto.MachineServiceClient interface.
@@ -531,15 +413,38 @@ func (c *Client) Bootstrap(ctx context.Context, req *machineapi.BootstrapRequest
 	return
 }
 
+// ShutdownOption provides shutdown API options.
+type ShutdownOption func(*machineapi.ShutdownRequest)
+
+// WithShutdownForce forces the shutdown even if the Kubernetes API is down.
+func WithShutdownForce(force bool) ShutdownOption {
+	return func(req *machineapi.ShutdownRequest) {
+		req.Force = force
+	}
+}
+
 // Shutdown implements the proto.MachineServiceClient interface.
-func (c *Client) Shutdown(ctx context.Context) (err error) {
-	resp, err := c.MachineClient.Shutdown(ctx, &emptypb.Empty{})
+func (c *Client) Shutdown(ctx context.Context, opts ...ShutdownOption) error {
+	_, err := c.ShutdownWithResponse(ctx, opts...)
+
+	return err
+}
+
+// ShutdownWithResponse shuts down the machine and returns the response.
+func (c *Client) ShutdownWithResponse(ctx context.Context, opts ...ShutdownOption) (*machineapi.ShutdownResponse, error) {
+	var req machineapi.ShutdownRequest
+
+	for _, opt := range opts {
+		opt(&req)
+	}
+
+	resp, err := c.MachineClient.Shutdown(ctx, &req)
 
 	if err == nil {
 		_, err = FilterMessages(resp, err)
 	}
 
-	return
+	return resp, err
 }
 
 // Dmesg implements the proto.MachineServiceClient interface.
@@ -645,8 +550,7 @@ func (c *Client) Copy(ctx context.Context, rootPath string) (io.ReadCloser, <-ch
 	return ReadStream(stream)
 }
 
-// Upgrade initiates a Talos upgrade ... and implements the proto.MachineServiceClient
-// interface.
+// Upgrade initiates a Talos upgrade and implements the proto.MachineServiceClient interface.
 func (c *Client) Upgrade(ctx context.Context, image string, preserve, stage, force bool, callOptions ...grpc.CallOption) (resp *machineapi.UpgradeResponse, err error) {
 	resp, err = c.MachineClient.Upgrade(
 		ctx,
@@ -891,7 +795,9 @@ func (c *Client) EtcdRecover(ctx context.Context, snapshot io.Reader, callOption
 		default:
 		}
 
-		n, err := snapshot.Read(buf)
+		var n int
+
+		n, err = snapshot.Read(buf)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -903,11 +809,21 @@ func (c *Client) EtcdRecover(ctx context.Context, snapshot io.Reader, callOption
 		if err = cli.Send(&common.Data{
 			Bytes: buf[:n],
 		}); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+
 			return nil, err
 		}
 	}
 
-	return cli.CloseAndRecv()
+	resp, err := cli.CloseAndRecv()
+
+	var filtered interface{}
+	filtered, err = FilterMessages(resp, err)
+	resp, _ = filtered.(*machineapi.EtcdRecoverResponse) //nolint:errcheck
+
+	return resp, err
 }
 
 // GenerateClientConfiguration implements proto.MachineServiceClient interface.
@@ -921,6 +837,16 @@ func (c *Client) GenerateClientConfiguration(ctx context.Context, req *machineap
 	return
 }
 
+// PacketCapture implements the proto.MachineServiceClient interface.
+func (c *Client) PacketCapture(ctx context.Context, req *machineapi.PacketCaptureRequest) (io.ReadCloser, <-chan error, error) {
+	stream, err := c.MachineClient.PacketCapture(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return ReadStream(stream)
+}
+
 // MachineStream is a common interface for streams returned by streaming APIs.
 type MachineStream interface {
 	Recv() (*common.Data, error)
@@ -928,6 +854,8 @@ type MachineStream interface {
 }
 
 // ReadStream converts grpc stream into io.Reader.
+//
+//nolint:gocyclo
 func ReadStream(stream MachineStream) (io.ReadCloser, <-chan error, error) {
 	errCh := make(chan error, 1)
 	pr, pw := io.Pipe()
@@ -940,7 +868,7 @@ func ReadStream(stream MachineStream) (io.ReadCloser, <-chan error, error) {
 		for {
 			data, err := stream.Recv()
 			if err != nil {
-				if err == io.EOF || StatusCode(err) == codes.Canceled {
+				if err == io.EOF || StatusCode(err) == codes.Canceled || StatusCode(err) == codes.DeadlineExceeded {
 					return
 				}
 				//nolint:errcheck
@@ -957,7 +885,11 @@ func ReadStream(stream MachineStream) (io.ReadCloser, <-chan error, error) {
 			}
 
 			if data.Metadata != nil && data.Metadata.Error != "" {
-				errCh <- errors.New(data.Metadata.Error)
+				if data.Metadata.Status != nil {
+					errCh <- status.FromProto(data.Metadata.Status).Err()
+				} else {
+					errCh <- errors.New(data.Metadata.Error)
+				}
 			}
 		}
 	}()

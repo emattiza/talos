@@ -5,76 +5,55 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // RouteStatusType is type of RouteStatus resource.
 const RouteStatusType = resource.Type("RouteStatuses.net.talos.dev")
 
 // RouteStatus resource holds physical network link status.
-type RouteStatus struct {
-	md   resource.Metadata
-	spec RouteStatusSpec
-}
+type RouteStatus = typed.Resource[RouteStatusSpec, RouteStatusRD]
 
 // RouteStatusSpec describes status of rendered secrets.
+//
+//gotagsrewrite:gen
 type RouteStatusSpec struct {
-	Family       nethelpers.Family        `yaml:"family"`
-	Destination  netaddr.IPPrefix         `yaml:"dst"`
-	Source       netaddr.IP               `yaml:"src"`
-	Gateway      netaddr.IP               `yaml:"gateway"`
-	OutLinkIndex uint32                   `yaml:"outLinkIndex,omitempty"`
-	OutLinkName  string                   `yaml:"outLinkName,omitempty"`
-	Table        nethelpers.RoutingTable  `yaml:"table"`
-	Priority     uint32                   `yaml:"priority"`
-	Scope        nethelpers.Scope         `yaml:"scope"`
-	Type         nethelpers.RouteType     `yaml:"type"`
-	Flags        nethelpers.RouteFlags    `yaml:"flags"`
-	Protocol     nethelpers.RouteProtocol `yaml:"protocol"`
+	Family       nethelpers.Family        `yaml:"family" protobuf:"1"`
+	Destination  netip.Prefix             `yaml:"dst" protobuf:"2"`
+	Source       netip.Addr               `yaml:"src" protobuf:"3"`
+	Gateway      netip.Addr               `yaml:"gateway" protobuf:"4"`
+	OutLinkIndex uint32                   `yaml:"outLinkIndex,omitempty" protobuf:"5"`
+	OutLinkName  string                   `yaml:"outLinkName,omitempty" protobuf:"6"`
+	Table        nethelpers.RoutingTable  `yaml:"table" protobuf:"7"`
+	Priority     uint32                   `yaml:"priority" protobuf:"8"`
+	Scope        nethelpers.Scope         `yaml:"scope" protobuf:"9"`
+	Type         nethelpers.RouteType     `yaml:"type" protobuf:"10"`
+	Flags        nethelpers.RouteFlags    `yaml:"flags" protobuf:"11"`
+	Protocol     nethelpers.RouteProtocol `yaml:"protocol" protobuf:"12"`
+	MTU          uint32                   `yaml:"mtu,omitempty" protobuf:"13"`
 }
 
 // NewRouteStatus initializes a RouteStatus resource.
 func NewRouteStatus(namespace resource.Namespace, id resource.ID) *RouteStatus {
-	r := &RouteStatus{
-		md:   resource.NewMetadata(namespace, RouteStatusType, id, resource.VersionUndefined),
-		spec: RouteStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[RouteStatusSpec, RouteStatusRD](
+		resource.NewMetadata(namespace, RouteStatusType, id, resource.VersionUndefined),
+		RouteStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *RouteStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// RouteStatusRD provides auxiliary methods for RouteStatus.
+type RouteStatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *RouteStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *RouteStatus) String() string {
-	return fmt.Sprintf("network.RouteStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *RouteStatus) DeepCopy() resource.Resource {
-	return &RouteStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *RouteStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (RouteStatusRD) ResourceDefinition(resource.Metadata, RouteStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             RouteStatusType,
 		Aliases:          []resource.Type{"route", "routes"},
@@ -100,7 +79,11 @@ func (r *RouteStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *RouteStatus) TypedSpec() *RouteStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[RouteStatusSpec](RouteStatusType, &RouteStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

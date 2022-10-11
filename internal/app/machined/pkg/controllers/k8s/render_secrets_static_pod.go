@@ -8,16 +8,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	stdlibtemplate "text/template"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/machinery/constants"
@@ -39,25 +38,25 @@ func (ctrl *RenderSecretsStaticPodController) Inputs() []controller.Input {
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesRootType,
-			ID:        pointer.ToString(secrets.KubernetesRootID),
+			ID:        pointer.To(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.EtcdRootType,
-			ID:        pointer.ToString(secrets.EtcdRootID),
+			ID:        pointer.To(secrets.EtcdRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesType,
-			ID:        pointer.ToString(secrets.KubernetesID),
+			ID:        pointer.To(secrets.KubernetesID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.EtcdType,
-			ID:        pointer.ToString(secrets.EtcdID),
+			ID:        pointer.To(secrets.EtcdID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -122,8 +121,8 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 
 		rootEtcdSecrets := rootEtcdRes.(*secrets.EtcdRoot).TypedSpec()
 		rootK8sSecrets := rootK8sRes.(*secrets.KubernetesRoot).TypedSpec()
-		etcdSecrets := etcdRes.(*secrets.Etcd).Certs()
-		k8sSecrets := secretsRes.(*secrets.Kubernetes).Certs()
+		etcdSecrets := etcdRes.(*secrets.Etcd).TypedSpec()
+		k8sSecrets := secretsRes.(*secrets.Kubernetes).TypedSpec()
 
 		serviceAccountKey, err := rootK8sSecrets.ServiceAccount.GetKey()
 		if err != nil {
@@ -144,12 +143,16 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 		for _, pod := range []struct {
 			name      string
 			directory string
+			uid       int
+			gid       int
 			secrets   []secret
 			templates []template
 		}{
 			{
 				name:      "kube-apiserver",
 				directory: constants.KubernetesAPIServerSecretsDir,
+				uid:       constants.KubernetesAPIServerRunUser,
+				gid:       constants.KubernetesAPIServerRunGroup,
 				secrets: []secret{
 					{
 						getter:       func() *x509.PEMEncodedCertificateAndKey { return rootEtcdSecrets.EtcdCA },
@@ -199,15 +202,13 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 						filename: "encryptionconfig.yaml",
 						template: kubeSystemEncryptionConfigTemplate,
 					},
-					{
-						filename: "auditpolicy.yaml",
-						template: kubeSystemAuditPolicyTemplate,
-					},
 				},
 			},
 			{
 				name:      "kube-controller-manager",
 				directory: constants.KubernetesControllerManagerSecretsDir,
+				uid:       constants.KubernetesControllerManagerRunUser,
+				gid:       constants.KubernetesControllerManagerRunGroup,
 				secrets: []secret{
 					{
 						getter:       func() *x509.PEMEncodedCertificateAndKey { return rootK8sSecrets.CA },
@@ -234,6 +235,8 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 			{
 				name:      "kube-scheduler",
 				directory: constants.KubernetesSchedulerSecretsDir,
+				uid:       constants.KubernetesSchedulerRunUser,
+				gid:       constants.KubernetesSchedulerRunGroup,
 				templates: []template{
 					{
 						filename: "kubeconfig",
@@ -250,21 +253,21 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 				certAndKey := secret.getter()
 
 				if secret.certFilename != "" {
-					if err = ioutil.WriteFile(filepath.Join(pod.directory, secret.certFilename), certAndKey.Crt, 0o400); err != nil {
+					if err = os.WriteFile(filepath.Join(pod.directory, secret.certFilename), certAndKey.Crt, 0o400); err != nil {
 						return fmt.Errorf("error writing certificate %q for %q: %w", secret.certFilename, pod.name, err)
 					}
 
-					if err = os.Chown(filepath.Join(pod.directory, secret.certFilename), constants.KubernetesRunUser, -1); err != nil {
+					if err = os.Chown(filepath.Join(pod.directory, secret.certFilename), pod.uid, pod.gid); err != nil {
 						return fmt.Errorf("error chowning %q for %q: %w", secret.certFilename, pod.name, err)
 					}
 				}
 
 				if secret.keyFilename != "" {
-					if err = ioutil.WriteFile(filepath.Join(pod.directory, secret.keyFilename), certAndKey.Key, 0o400); err != nil {
+					if err = os.WriteFile(filepath.Join(pod.directory, secret.keyFilename), certAndKey.Key, 0o400); err != nil {
 						return fmt.Errorf("error writing key %q for %q: %w", secret.keyFilename, pod.name, err)
 					}
 
-					if err = os.Chown(filepath.Join(pod.directory, secret.keyFilename), constants.KubernetesRunUser, -1); err != nil {
+					if err = os.Chown(filepath.Join(pod.directory, secret.keyFilename), pod.uid, pod.gid); err != nil {
 						return fmt.Errorf("error chowning %q for %q: %w", secret.keyFilename, pod.name, err)
 					}
 				}
@@ -294,11 +297,11 @@ func (ctrl *RenderSecretsStaticPodController) Run(ctx context.Context, r control
 					return fmt.Errorf("error executing template %q: %w", templ.filename, err)
 				}
 
-				if err = ioutil.WriteFile(filepath.Join(pod.directory, templ.filename), buf.Bytes(), 0o400); err != nil {
+				if err = os.WriteFile(filepath.Join(pod.directory, templ.filename), buf.Bytes(), 0o400); err != nil {
 					return fmt.Errorf("error writing template %q for %q: %w", templ.filename, pod.name, err)
 				}
 
-				if err = os.Chown(filepath.Join(pod.directory, templ.filename), constants.KubernetesRunUser, -1); err != nil {
+				if err = os.Chown(filepath.Join(pod.directory, templ.filename), pod.uid, pod.gid); err != nil {
 					return fmt.Errorf("error chowning %q for %q: %w", templ.filename, pod.name, err)
 				}
 			}

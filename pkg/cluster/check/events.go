@@ -18,6 +18,7 @@ import (
 )
 
 // AllNodesBootedAssertion checks whether nodes reached end of 'Boot' sequence.
+//
 //nolint:gocyclo
 func AllNodesBootedAssertion(ctx context.Context, cluster ClusterInfo) error {
 	cli, err := cluster.Client()
@@ -27,8 +28,10 @@ func AllNodesBootedAssertion(ctx context.Context, cluster ClusterInfo) error {
 
 	nodes := cluster.Nodes()
 
+	nodeInternalIPs := mapIPsToStrings(mapNodeInfosToInternalIPs(nodes))
+
 	ctx, cancel := context.WithCancel(ctx)
-	nodesCtx := client.WithNodes(ctx, nodes...)
+	nodesCtx := client.WithNodes(ctx, nodeInternalIPs...)
 
 	nodesBootStarted := map[string]struct{}{}
 	nodesBootStopped := map[string]struct{}{}

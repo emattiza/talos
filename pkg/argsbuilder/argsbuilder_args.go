@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/siderolabs/gen/maps"
 )
 
 // Key represents an arg key.
@@ -27,6 +29,7 @@ func (a Args) MustMerge(args Args, setters ...MergeOption) {
 }
 
 // Merge implements the ArgsBuilder interface.
+//
 //nolint:gocyclo
 func (a Args) Merge(args Args, setters ...MergeOption) error {
 	var opts MergeOptions
@@ -88,12 +91,7 @@ func (a Args) Set(k, v Key) ArgsBuilder {
 
 // Args implements the ArgsBuilder interface.
 func (a Args) Args() []string {
-	keys := make([]string, 0, len(a))
-
-	for key := range a {
-		keys = append(keys, key)
-	}
-
+	keys := maps.Keys(a)
 	sort.Strings(keys)
 
 	args := []string{}

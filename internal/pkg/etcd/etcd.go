@@ -9,12 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
+	"math/rand"
 	"os"
 	"time"
 
-	"github.com/talos-systems/crypto/x509"
-	"github.com/talos-systems/net"
+	"github.com/cosi-project/runtime/pkg/state"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
@@ -23,10 +22,10 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
-	"github.com/talos-systems/talos/pkg/kubernetes"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 )
 
 // QuorumCheckTimeout is the amount of time to allow for KV operations before quorum is declared invalid.
@@ -41,9 +40,9 @@ type Client struct {
 // a list of endpoints.
 func NewClient(endpoints []string) (client *Client, err error) {
 	tlsInfo := transport.TLSInfo{
-		CertFile:      constants.KubernetesEtcdAdminCert,
-		KeyFile:       constants.KubernetesEtcdAdminKey,
-		TrustedCAFile: constants.KubernetesEtcdCACert,
+		CertFile:      constants.EtcdAdminCert,
+		KeyFile:       constants.EtcdAdminKey,
+		TrustedCAFile: constants.EtcdCACert,
 	}
 
 	tlsConfig, err := tlsInfo.ClientConfig()
@@ -67,29 +66,19 @@ func NewClient(endpoints []string) (client *Client, err error) {
 
 // NewLocalClient initializes and returns etcd client configured to talk to localhost endpoint.
 func NewLocalClient() (client *Client, err error) {
-	return NewClient([]string{"127.0.0.1:2379"})
+	return NewClient([]string{nethelpers.JoinHostPort("localhost", constants.EtcdClientPort)})
 }
 
 // NewClientFromControlPlaneIPs initializes and returns an etcd client
 // configured to talk to all members.
-func NewClientFromControlPlaneIPs(ctx context.Context, creds *x509.PEMEncodedCertificateAndKey, endpoint *url.URL) (client *Client, err error) {
-	h, err := kubernetes.NewTemporaryClientFromPKI(creds, endpoint)
+func NewClientFromControlPlaneIPs(ctx context.Context, resources state.State) (client *Client, err error) {
+	endpoints, err := GetEndpoints(ctx, resources)
 	if err != nil {
-		return nil, fmt.Errorf("error building kubernetes client from PKI: %w", err)
+		return nil, err
 	}
 
-	defer h.Close() //nolint:errcheck
-
-	var endpoints []string
-
-	if endpoints, err = h.MasterIPs(ctx); err != nil {
-		return nil, fmt.Errorf("error getting kubernetes endpoints: %w", err)
-	}
-
-	// Etcd expects host:port format.
-	for i := 0; i < len(endpoints); i++ {
-		endpoints[i] = net.FormatAddress(endpoints[i]) + ":2379"
-	}
+	// Shuffle endpoints to establish random order on each call to avoid patterns based on sorted IP list.
+	rand.Shuffle(len(endpoints), func(i, j int) { endpoints[i], endpoints[j] = endpoints[j], endpoints[i] })
 
 	return NewClient(endpoints)
 }

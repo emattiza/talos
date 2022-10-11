@@ -19,6 +19,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/siderolabs/go-pointer"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 
@@ -38,7 +39,7 @@ type NodenameSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -69,7 +70,10 @@ func (suite *NodenameSuite) startRuntime() {
 
 //nolint:dupl
 func (suite *NodenameSuite) assertNodename(expected string) error {
-	resources, err := suite.state.List(suite.ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, "", resource.VersionUndefined))
+	resources, err := suite.state.List(
+		suite.ctx,
+		resource.NewMetadata(k8s.NamespaceName, k8s.NodenameType, "", resource.VersionUndefined),
+	)
 	if err != nil {
 		return err
 	}
@@ -83,7 +87,11 @@ func (suite *NodenameSuite) assertNodename(expected string) error {
 	}
 
 	if resources.Items[0].(*k8s.Nodename).TypedSpec().Nodename != expected {
-		return retry.ExpectedErrorf("expected %q, got %q", expected, resources.Items[0].(*k8s.Nodename).TypedSpec().Nodename)
+		return retry.ExpectedErrorf(
+			"expected %q, got %q",
+			expected,
+			resources.Items[0].(*k8s.Nodename).TypedSpec().Nodename,
+		)
 	}
 
 	return nil
@@ -93,17 +101,19 @@ func (suite *NodenameSuite) TestDefault() {
 	u, err := url.Parse("https://foo:6443")
 	suite.Require().NoError(err)
 
-	cfg := config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{},
-		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: u,
+	cfg := config.NewMachineConfig(
+		&v1alpha1.Config{
+			ConfigVersion: "v1alpha1",
+			MachineConfig: &v1alpha1.MachineConfig{},
+			ClusterConfig: &v1alpha1.ClusterConfig{
+				ControlPlane: &v1alpha1.ControlPlaneConfig{
+					Endpoint: &v1alpha1.Endpoint{
+						URL: u,
+					},
 				},
 			},
 		},
-	})
+	)
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
 
@@ -113,32 +123,36 @@ func (suite *NodenameSuite) TestDefault() {
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, hostnameStatus))
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertNodename("foo")
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertNodename("foo")
+			},
+		),
+	)
 }
 
 func (suite *NodenameSuite) TestFQDN() {
 	u, err := url.Parse("https://foo:6443")
 	suite.Require().NoError(err)
 
-	cfg := config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{
-			MachineKubelet: &v1alpha1.KubeletConfig{
-				KubeletRegisterWithFQDN: true,
+	cfg := config.NewMachineConfig(
+		&v1alpha1.Config{
+			ConfigVersion: "v1alpha1",
+			MachineConfig: &v1alpha1.MachineConfig{
+				MachineKubelet: &v1alpha1.KubeletConfig{
+					KubeletRegisterWithFQDN: pointer.To(true),
+				},
 			},
-		},
-		ClusterConfig: &v1alpha1.ClusterConfig{
-			ControlPlane: &v1alpha1.ControlPlaneConfig{
-				Endpoint: &v1alpha1.Endpoint{
-					URL: u,
+			ClusterConfig: &v1alpha1.ClusterConfig{
+				ControlPlane: &v1alpha1.ControlPlaneConfig{
+					Endpoint: &v1alpha1.Endpoint{
+						URL: u,
+					},
 				},
 			},
 		},
-	})
+	)
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
 
@@ -148,11 +162,13 @@ func (suite *NodenameSuite) TestFQDN() {
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, hostnameStatus))
 
-	suite.Assert().NoError(retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			return suite.assertNodename("foo.bar.ltd")
-		},
-	))
+	suite.Assert().NoError(
+		retry.Constant(3*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				return suite.assertNodename("foo.bar.ltd")
+			},
+		),
+	)
 }
 
 func (suite *NodenameSuite) TearDownTest() {
@@ -163,17 +179,26 @@ func (suite *NodenameSuite) TearDownTest() {
 	suite.wg.Wait()
 
 	// trigger updates in resources to stop watch loops
-	err := suite.state.Create(context.Background(), config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{},
-	}))
+	err := suite.state.Create(
+		context.Background(), config.NewMachineConfig(
+			&v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{},
+			},
+		),
+	)
 	if state.IsConflictError(err) {
 		err = suite.state.Destroy(context.Background(), config.NewMachineConfig(nil).Metadata())
 	}
 
 	suite.Require().NoError(err)
 
-	suite.Assert().NoError(suite.state.Create(context.Background(), network.NewHostnameStatus(network.NamespaceName, "bar")))
+	suite.Assert().NoError(
+		suite.state.Create(
+			context.Background(),
+			network.NewHostnameStatus(network.NamespaceName, "bar"),
+		),
+	)
 }
 
 func TestNodenameSuite(t *testing.T) {

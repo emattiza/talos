@@ -9,11 +9,12 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"go.etcd.io/etcd/client/v3/concurrency"
+	"github.com/hashicorp/go-multierror"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -52,7 +53,7 @@ func (ctrl *ManifestApplyController) Inputs() []controller.Input {
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesType,
-			ID:        pointer.ToString(secrets.KubernetesID),
+			ID:        pointer.To(secrets.KubernetesID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -63,7 +64,7 @@ func (ctrl *ManifestApplyController) Inputs() []controller.Input {
 		{
 			Namespace: v1alpha1.NamespaceName,
 			Type:      v1alpha1.ServiceType,
-			ID:        pointer.ToString("etcd"),
+			ID:        pointer.To("etcd"),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -99,7 +100,7 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 			return err
 		}
 
-		secrets := secretsResources.(*secrets.Kubernetes).Certs()
+		secrets := secretsResources.(*secrets.Kubernetes).TypedSpec()
 
 		// wait for etcd to be healthy as controller relies on etcd for locking
 		etcdResource, err := r.Get(ctx, resource.NewMetadata(v1alpha1.NamespaceName, v1alpha1.ServiceType, "etcd", resource.VersionUndefined))
@@ -111,7 +112,7 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 			return err
 		}
 
-		if !etcdResource.(*v1alpha1.Service).Healthy() {
+		if !etcdResource.(*v1alpha1.Service).TypedSpec().Healthy {
 			continue
 		}
 
@@ -132,7 +133,7 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 			)
 
 			kubeconfig, err = clientcmd.BuildConfigFromKubeconfigGetter("", func() (*clientcmdapi.Config, error) {
-				return clientcmd.Load([]byte(secrets.AdminKubeconfig))
+				return clientcmd.Load([]byte(secrets.LocalhostAdminKubeconfig))
 			})
 			if err != nil {
 				return fmt.Errorf("error loading kubeconfig: %w", err)
@@ -154,7 +155,7 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 				return fmt.Errorf("error building dynamic client: %w", err)
 			}
 
-			if err = ctrl.etcdLock(ctx, logger, func() error {
+			if err = etcd.WithLock(ctx, constants.EtcdTalosManifestApplyMutex, logger, func() error {
 				return ctrl.apply(ctx, logger, mapper, dyn, manifests)
 			}); err != nil {
 				return err
@@ -164,11 +165,9 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 		if err = r.Modify(ctx, k8s.NewManifestStatus(k8s.ControlPlaneNamespaceName), func(r resource.Resource) error {
 			status := r.(*k8s.ManifestStatus).TypedSpec()
 
-			status.ManifestsApplied = make([]string, 0, len(manifests.Items))
-
-			for _, manifest := range manifests.Items {
-				status.ManifestsApplied = append(status.ManifestsApplied, manifest.Metadata().ID())
-			}
+			status.ManifestsApplied = slices.Map(manifests.Items, func(m resource.Resource) string {
+				return m.Metadata().ID()
+			})
 
 			return nil
 		}); err != nil {
@@ -177,44 +176,12 @@ func (ctrl *ManifestApplyController) Run(ctx context.Context, r controller.Runti
 	}
 }
 
-func (ctrl *ManifestApplyController) etcdLock(ctx context.Context, logger *zap.Logger, f func() error) error {
-	etcdClient, err := etcd.NewLocalClient()
-	if err != nil {
-		return fmt.Errorf("error creating etcd client: %w", err)
-	}
-
-	defer etcdClient.Close() //nolint:errcheck
-
-	session, err := concurrency.NewSession(etcdClient.Client)
-	if err != nil {
-		return fmt.Errorf("error creating etcd session: %w", err)
-	}
-
-	defer session.Close() //nolint:errcheck
-
-	mutex := concurrency.NewMutex(session, constants.EtcdTalosManifestApplyMutex)
-
-	logger.Debug("waiting for mutex")
-
-	if err := mutex.Lock(ctx); err != nil {
-		return fmt.Errorf("error acquiring mutex: %w", err)
-	}
-
-	logger.Debug("mutex acquired")
-
-	defer mutex.Unlock(ctx) //nolint:errcheck
-
-	return f()
-}
-
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (ctrl *ManifestApplyController) apply(ctx context.Context, logger *zap.Logger, mapper *restmapper.DeferredDiscoveryRESTMapper, dyn dynamic.Interface, manifests resource.List) error {
 	// flatten list of objects to be applied
-	objects := make([]*unstructured.Unstructured, 0, len(manifests.Items))
-
-	for _, manifest := range manifests.Items {
-		objects = append(objects, k8sadapter.Manifest(manifest.(*k8s.Manifest)).Objects()...)
-	}
+	objects := slices.FlatMap(manifests.Items, func(m resource.Resource) []*unstructured.Unstructured {
+		return k8sadapter.Manifest(m.(*k8s.Manifest)).Objects()
+	})
 
 	// sort the list so that namespaces come first, followed by CRDs and everything else after that
 	sort.SliceStable(objects, func(i, j int) bool {
@@ -251,13 +218,28 @@ func (ctrl *ManifestApplyController) apply(ctx context.Context, logger *zap.Logg
 		return false
 	})
 
+	var multiErr *multierror.Error
+
 	for _, obj := range objects {
 		gvk := obj.GroupVersionKind()
 		objName := fmt.Sprintf("%s/%s/%s/%s", gvk.Group, gvk.Version, gvk.Kind, obj.GetName())
 
 		mapping, err := mapper.RESTMapping(obj.GroupVersionKind().GroupKind(), obj.GroupVersionKind().Version)
 		if err != nil {
-			return fmt.Errorf("error creating mapping for object %s: %w", objName, err)
+			switch {
+			case apierrors.IsNotFound(err):
+				fallthrough
+			case apierrors.IsInvalid(err):
+				fallthrough
+			case meta.IsNoMatchError(err):
+				// most probably a problem with the manifest, so we should continue with other manifests
+				multiErr = multierror.Append(multiErr, fmt.Errorf("error creating mapping for object %s: %w", objName, err))
+
+				continue
+			default:
+				// connection errors, etc.; it makes no sense to continue with other manifests
+				return fmt.Errorf("error creating mapping for object %s: %w", objName, err)
+			}
 		}
 
 		var dr dynamic.ResourceInterface
@@ -283,9 +265,18 @@ func (ctrl *ManifestApplyController) apply(ctx context.Context, logger *zap.Logg
 			FieldManager: "talos",
 		})
 		if err != nil {
-			if apierrors.IsAlreadyExists(err) {
+			switch {
+			case apierrors.IsAlreadyExists(err):
 				// later on we might want to do something here, e.g. do server-side apply, for now do nothing
-			} else {
+			case apierrors.IsMethodNotSupported(err):
+				fallthrough
+			case apierrors.IsBadRequest(err):
+				fallthrough
+			case apierrors.IsInvalid(err):
+				// resource is malformed, continue with other manifests
+				multiErr = multierror.Append(multiErr, fmt.Errorf("error creating %s: %w", objName, err))
+			default:
+				// connection errors, etc.; it makes no sense to continue with other manifests
 				return fmt.Errorf("error creating %s: %w", objName, err)
 			}
 		} else {
@@ -293,7 +284,7 @@ func (ctrl *ManifestApplyController) apply(ctx context.Context, logger *zap.Logg
 		}
 	}
 
-	return nil
+	return multiErr.ErrorOrNil()
 }
 
 func isNamespace(gvk schema.GroupVersionKind) bool {

@@ -60,22 +60,42 @@ service MachineService {
   rpc ServiceRestart(ServiceRestartRequest) returns (ServiceRestartResponse);
   rpc ServiceStart(ServiceStartRequest) returns (ServiceStartResponse);
   rpc ServiceStop(ServiceStopRequest) returns (ServiceStopResponse);
-  rpc Shutdown(google.protobuf.Empty) returns (ShutdownResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc Stats(StatsRequest) returns (StatsResponse);
   rpc SystemStat(google.protobuf.Empty) returns (SystemStatResponse);
   rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
   rpc Version(google.protobuf.Empty) returns (VersionResponse);
   // GenerateClientConfiguration generates talosctl client configuration (talosconfig).
   rpc GenerateClientConfiguration(GenerateClientConfigurationRequest) returns (GenerateClientConfigurationResponse);
+  // PacketCapture performs packet capture and streams back pcap file.
+  rpc PacketCapture(PacketCaptureRequest) returns (stream common.Data);
 }
 
 // rpc applyConfiguration
 // ApplyConfiguration describes a request to assert a new configuration upon a
 // node.
 message ApplyConfigurationRequest {
+  enum Mode {
+    REBOOT = 0;
+    AUTO = 1;
+    NO_REBOOT = 2;
+    STAGED = 3;
+    TRY = 4;
+  }
   bytes data = 1;
-  bool on_reboot = 2;
-  bool immediate = 3;
+  // replaced by mode
+  bool on_reboot = 2 [
+    (common.remove_deprecated_field) = "v1.4",
+    deprecated = true
+  ];
+  // replaced by mode
+  bool immediate = 3 [
+    (common.remove_deprecated_field) = "v1.4",
+    deprecated = true
+  ];
+  Mode mode = 4;
+  bool dry_run = 5;
+  google.protobuf.Duration try_mode_timeout = 6;
 }
 
 // ApplyConfigurationResponse describes the response to a configuration request.
@@ -83,6 +103,10 @@ message ApplyConfiguration {
   common.Metadata metadata = 1;
   // Configuration validation warnings.
   repeated string warnings = 2;
+  // States which mode was actually chosen.
+  ApplyConfigurationRequest.Mode mode = 3;
+  // Human-readable message explaining the result of the apply configuration call.
+  string mode_details = 4;
 }
 
 message ApplyConfigurationResponse {
@@ -101,6 +125,7 @@ message RebootRequest {
 // The reboot message containing the reboot status.
 message Reboot {
   common.Metadata metadata = 1;
+  string actor_id = 2;
 }
 
 message RebootResponse {
@@ -195,16 +220,43 @@ message AddressEvent {
   repeated string addresses = 2;
 }
 
+// MachineStatusEvent reports changes to the MachineStatus resource.
+message MachineStatusEvent {
+  message MachineStatus {
+    message UnmetCondition {
+      string name = 1;
+      string reason = 2;
+    }
+    bool ready = 1;
+    repeated UnmetCondition unmet_conditions = 2;
+  }
+  enum MachineStage {
+    UNKNOWN = 0;
+    BOOTING = 1;
+    INSTALLING = 2;
+    MAINTENANCE = 3;
+    RUNNING = 4;
+    REBOOTING = 5;
+    SHUTTING_DOWN = 6;
+    RESETTING = 7;
+    UPGRADING = 8;
+  }
+  MachineStage stage = 1;
+  MachineStatus status = 2;
+}
+
 message EventsRequest {
   int32 tail_events = 1;
   string tail_id = 2;
   int32 tail_seconds = 3;
+  string with_actor_id = 4;
 }
 
 message Event {
   common.Metadata metadata = 1;
   google.protobuf.Any data = 2;
   string id = 3;
+  string actor_id = 4;
 }
 
 // rpc reset
@@ -227,6 +279,7 @@ message ResetRequest {
 // The reset message containing the restart status.
 message Reset {
   common.Metadata metadata = 1;
+  string actor_id = 2;
 }
 
 message ResetResponse {
@@ -237,6 +290,12 @@ message ResetResponse {
 // The messages message containing the shutdown status.
 message Shutdown {
   common.Metadata metadata = 1;
+  string actor_id = 2;
+}
+
+message ShutdownRequest {
+  // Force indicates whether node should shutdown without first cordening and draining
+  bool force = 1;
 }
 
 message ShutdownResponse {
@@ -254,6 +313,7 @@ message UpgradeRequest {
 message Upgrade {
   common.Metadata metadata = 1;
   string ack = 2;
+  string actor_id = 3;
 }
 
 message UpgradeResponse {
@@ -943,16 +1003,10 @@ message InstallConfig {
 
 message MachineConfig {
   enum MachineType {
-    option allow_alias = true;
     TYPE_UNKNOWN = 0;
     TYPE_INIT = 1;
     TYPE_CONTROL_PLANE = 2;
     TYPE_WORKER = 3;
-    // Deprecated alias for TYPE_WORKER. It will be removed in v0.15.
-    TYPE_JOIN = 3 [
-      (common.remove_deprecated_enum_value) = "v0.15",
-      deprecated = true
-    ];
   }
   MachineType type = 1;
   InstallConfig install_config = 2;
@@ -978,7 +1032,7 @@ message ClusterConfig {
   string name = 1;
   ControlPlaneConfig control_plane = 2;
   ClusterNetworkConfig cluster_network = 3;
-  bool allow_scheduling_on_masters = 4;
+  bool allow_scheduling_on_control_planes = 4;
 }
 
 // GenerateConfigurationRequest describes a request to generate a new configuration
@@ -1022,4 +1076,22 @@ message GenerateClientConfiguration {
 
 message GenerateClientConfigurationResponse {
   repeated GenerateClientConfiguration messages = 1;
+}
+
+message PacketCaptureRequest {
+  // Interface name to perform packet capture on.
+  string interface = 1;
+  // Enable promiscuous mode.
+  bool promiscuous = 2;
+  // Snap length in bytes.
+  uint32 snap_len = 3;
+  // BPF filter.
+  repeated BPFInstruction bpf_filter = 4;
+}
+
+message BPFInstruction {
+  uint32 op = 1;
+  uint32 jt = 2;
+  uint32 jf = 3;
+  uint32 k = 4;
 }

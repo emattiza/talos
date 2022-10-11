@@ -6,7 +6,6 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/cosi-project/runtime/pkg/controller"
@@ -78,17 +77,19 @@ func (ctrl *ServiceController) Run(ctx context.Context, r controller.Runtime, lo
 					if err := r.Modify(ctx, service, func(r resource.Resource) error {
 						svc := r.(*v1alpha1.Service) //nolint:errcheck,forcetypeassert
 
-						svc.SetRunning(true)
-						svc.SetHealthy(msg.GetHealth().GetHealthy())
-						svc.SetUnknown(msg.GetHealth().GetUnknown())
+						*svc.TypedSpec() = v1alpha1.ServiceSpec{
+							Running: true,
+							Healthy: msg.GetHealth().GetHealthy(),
+							Unknown: msg.GetHealth().GetUnknown(),
+						}
 
 						return nil
 					}); err != nil {
-						logger.Info(fmt.Sprintf("failed creating service resource %s", service), zap.Error(err))
+						logger.Info("failed creating service resource", zap.String("id", service.Metadata().ID()), zap.Error(err))
 					}
 				default:
 					if err := r.Destroy(ctx, service.Metadata()); err != nil && !state.IsNotFoundError(err) {
-						logger.Info(fmt.Sprintf("failed destroying service resource %s", service), zap.Error(err))
+						logger.Info("failed destroying service resource", zap.String("id", service.Metadata().ID()), zap.Error(err))
 					}
 				}
 			}

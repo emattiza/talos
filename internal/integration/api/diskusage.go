@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -23,10 +22,10 @@ import (
 type DiskUsageSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 
-	nodeCtx context.Context
+	nodeCtx context.Context //nolint:containedctx
 }
 
 // SuiteName ...
@@ -39,7 +38,7 @@ func (suite *DiskUsageSuite) SetupTest() {
 	// make sure API calls have timeout
 	suite.ctx, suite.ctxCancel = context.WithTimeout(context.Background(), 2*time.Minute)
 
-	suite.nodeCtx = client.WithNodes(suite.ctx, suite.RandomDiscoveredNode())
+	suite.nodeCtx = client.WithNodes(suite.ctx, suite.RandomDiscoveredNodeInternalIP())
 }
 
 // TearDownTest ...

@@ -5,7 +5,10 @@
 package generate
 
 import (
-	"github.com/AlekSi/pointer"
+	"os"
+
+	"github.com/siderolabs/go-pointer"
+	"gopkg.in/yaml.v3"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	v1alpha1 "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
@@ -15,10 +18,19 @@ import (
 // GenOption controls generate options specific to input generation.
 type GenOption func(o *GenOptions) error
 
-// WithEndpointList specifies endpoints to use when acessing Talos cluster.
+// WithEndpointList specifies endpoints to use when accessing Talos cluster.
 func WithEndpointList(endpoints []string) GenOption {
 	return func(o *GenOptions) error {
 		o.EndpointList = endpoints
+
+		return nil
+	}
+}
+
+// WithLocalAPIServerPort specifies the local API server port for the cluster.
+func WithLocalAPIServerPort(port int) GenOption {
+	return func(o *GenOptions) error {
+		o.LocalAPIServerPort = port
 
 		return nil
 	}
@@ -118,7 +130,7 @@ func WithRegistryInsecureSkipVerify(host string) GenOption {
 			o.RegistryConfig[host].RegistryTLS = &v1alpha1.RegistryTLSConfig{}
 		}
 
-		o.RegistryConfig[host].RegistryTLS.TLSInsecureSkipVerify = true
+		o.RegistryConfig[host].RegistryTLS.TLSInsecureSkipVerify = pointer.To(true)
 
 		return nil
 	}
@@ -169,10 +181,10 @@ func WithUserDisks(disks []*v1alpha1.MachineDisk) GenOption {
 	}
 }
 
-// WithAllowSchedulingOnMasters specifies AllowSchedulingOnMasters flag.
-func WithAllowSchedulingOnMasters(enabled bool) GenOption {
+// WithAllowSchedulingOnControlPlanes specifies AllowSchedulingOnControlPlane flag.
+func WithAllowSchedulingOnControlPlanes(enabled bool) GenOption {
 	return func(o *GenOptions) error {
-		o.AllowSchedulingOnMasters = enabled
+		o.AllowSchedulingOnControlPlanes = enabled
 
 		return nil
 	}
@@ -208,7 +220,7 @@ func WithRoles(roles role.Set) GenOption {
 // WithClusterDiscovery enables cluster discovery feature.
 func WithClusterDiscovery(enabled bool) GenOption {
 	return func(o *GenOptions) error {
-		o.DiscoveryEnabled = pointer.ToBool(enabled)
+		o.DiscoveryEnabled = pointer.To(enabled)
 
 		return nil
 	}
@@ -229,27 +241,52 @@ func WithSysctls(params map[string]string) GenOption {
 	}
 }
 
+// WithSecrets reads secrets from a provided file.
+func WithSecrets(file string) GenOption {
+	return func(o *GenOptions) error {
+		yamlBytes, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+
+		var secrets SecretsBundle
+
+		err = yaml.Unmarshal(yamlBytes, &secrets)
+		if err != nil {
+			return err
+		}
+
+		secrets.Clock = NewClock()
+
+		o.Secrets = &secrets
+
+		return nil
+	}
+}
+
 // GenOptions describes generate parameters.
 type GenOptions struct {
-	EndpointList               []string
-	InstallDisk                string
-	InstallImage               string
-	InstallExtraKernelArgs     []string
-	AdditionalSubjectAltNames  []string
-	NetworkConfigOptions       []v1alpha1.NetworkConfigOption
-	CNIConfig                  *v1alpha1.CNIConfig
-	RegistryMirrors            map[string]*v1alpha1.RegistryMirrorConfig
-	RegistryConfig             map[string]*v1alpha1.RegistryConfig
-	Sysctls                    map[string]string
-	DNSDomain                  string
-	Debug                      bool
-	Persist                    bool
-	AllowSchedulingOnMasters   bool
-	MachineDisks               []*v1alpha1.MachineDisk
-	VersionContract            *config.VersionContract
-	SystemDiskEncryptionConfig *v1alpha1.SystemDiskEncryptionConfig
-	Roles                      role.Set
-	DiscoveryEnabled           *bool
+	EndpointList                   []string
+	InstallDisk                    string
+	InstallImage                   string
+	InstallExtraKernelArgs         []string
+	AdditionalSubjectAltNames      []string
+	NetworkConfigOptions           []v1alpha1.NetworkConfigOption
+	CNIConfig                      *v1alpha1.CNIConfig
+	RegistryMirrors                map[string]*v1alpha1.RegistryMirrorConfig
+	RegistryConfig                 map[string]*v1alpha1.RegistryConfig
+	Sysctls                        map[string]string
+	DNSDomain                      string
+	Debug                          bool
+	Persist                        bool
+	AllowSchedulingOnControlPlanes bool
+	MachineDisks                   []*v1alpha1.MachineDisk
+	VersionContract                *config.VersionContract
+	SystemDiskEncryptionConfig     *v1alpha1.SystemDiskEncryptionConfig
+	Roles                          role.Set
+	DiscoveryEnabled               *bool
+	LocalAPIServerPort             int
+	Secrets                        *SecretsBundle
 }
 
 // DefaultGenOptions returns default options.

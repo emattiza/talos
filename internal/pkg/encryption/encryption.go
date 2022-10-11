@@ -11,10 +11,10 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/encryption"
-	"github.com/talos-systems/go-blockdevice/blockdevice/encryption/luks"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/encryption"
+	"github.com/siderolabs/go-blockdevice/blockdevice/encryption/luks"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
 
 	"github.com/talos-systems/talos/internal/pkg/encryption/keys"
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -84,6 +84,7 @@ type Handler struct {
 }
 
 // Open encrypted partition.
+//
 //nolint:gocyclo
 func (h *Handler) Open() (string, error) {
 	partPath, err := h.partition.Path()

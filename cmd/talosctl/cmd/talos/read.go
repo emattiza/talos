@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/talos-systems/talos/cmd/talosctl/pkg/talos/helpers"
 	"github.com/talos-systems/talos/pkg/machinery/client"
@@ -19,10 +19,18 @@ import (
 
 // readCmd represents the read command.
 var readCmd = &cobra.Command{
-	Use:   "read <path>",
-	Short: "Read a file on the machine",
-	Long:  ``,
-	Args:  cobra.ExactArgs(1),
+	Use:     "read <path>",
+	Short:   "Read a file on the machine",
+	Long:    ``,
+	Args:    cobra.ExactArgs(1),
+	Aliases: []string{"cat"},
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveError | cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return completePathFromNode(toComplete), cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return WithClient(func(ctx context.Context, c *client.Client) error {
 			if err := helpers.FailIfMultiNodes(ctx, "read"); err != nil {
@@ -36,24 +44,30 @@ var readCmd = &cobra.Command{
 
 			defer r.Close() //nolint:errcheck
 
-			var wg sync.WaitGroup
+			var eg errgroup.Group
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			eg.Go(func() error {
+				var errors error
+
 				for err := range errCh {
-					fmt.Fprintln(os.Stderr, err.Error())
+					if err != nil {
+						errors = helpers.AppendErrors(errors, err)
+					}
 				}
-			}()
 
-			defer wg.Wait()
+				return errors
+			})
 
 			_, err = io.Copy(os.Stdout, r)
 			if err != nil {
 				return fmt.Errorf("error reading: %w", err)
 			}
 
-			return r.Close()
+			if err = r.Close(); err != nil {
+				return err
+			}
+
+			return eg.Wait()
 		})
 	},
 }

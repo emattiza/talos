@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +21,6 @@ import (
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
-	"inet.af/netaddr"
 
 	k8sctrl "github.com/talos-systems/talos/internal/app/machined/pkg/controllers/k8s"
 	"github.com/talos-systems/talos/pkg/logging"
@@ -36,7 +36,7 @@ type NodeIPSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -66,8 +66,6 @@ func (suite *NodeIPSuite) startRuntime() {
 }
 
 func (suite *NodeIPSuite) TestReconcileIPv4() {
-	suite.T().Skip("skipping as the code relies on net.IPAddrs")
-
 	cfg := k8s.NewNodeIPConfig(k8s.NamespaceName, k8s.KubeletID)
 
 	cfg.TypedSpec().ValidSubnets = []string{"10.0.0.0/24", "::/0"}
@@ -75,74 +73,87 @@ func (suite *NodeIPSuite) TestReconcileIPv4() {
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
 
-	addresses := network.NewNodeAddress(network.NamespaceName, network.FilteredNodeAddressID(network.NodeAddressCurrentID, k8s.NodeAddressFilterNoK8s))
+	addresses := network.NewNodeAddress(
+		network.NamespaceName,
+		network.FilteredNodeAddressID(network.NodeAddressRoutedID, k8s.NodeAddressFilterNoK8s),
+	)
 
-	addresses.TypedSpec().Addresses = []netaddr.IPPrefix{
-		netaddr.MustParseIPPrefix("10.0.0.2/32"), // excluded explicitly
-		netaddr.MustParseIPPrefix("10.0.0.5/24"),
-		netaddr.MustParseIPPrefix("fdae:41e4:649b:9303::1/64"), // SideroLink IP
+	addresses.TypedSpec().Addresses = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.2/32"), // excluded explicitly
+		netip.MustParsePrefix("10.0.0.5/24"),
 	}
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, addresses))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			NodeIP, err := suite.state.Get(suite.ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodeIPType, k8s.KubeletID, resource.VersionUndefined))
-			if err != nil {
-				if state.IsNotFoundError(err) {
-					return retry.ExpectedError(err)
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				NodeIP, err := suite.state.Get(
+					suite.ctx,
+					resource.NewMetadata(k8s.NamespaceName, k8s.NodeIPType, k8s.KubeletID, resource.VersionUndefined),
+				)
+				if err != nil {
+					if state.IsNotFoundError(err) {
+						return retry.ExpectedError(err)
+					}
+
+					return err
 				}
 
-				return err
-			}
+				spec := NodeIP.(*k8s.NodeIP).TypedSpec()
 
-			spec := NodeIP.(*k8s.NodeIP).TypedSpec()
+				suite.Assert().Equal("[10.0.0.5]", fmt.Sprintf("%s", spec.Addresses))
 
-			suite.Assert().Equal("[10.0.0.5]", fmt.Sprintf("%s", spec.Addresses))
-
-			return nil
-		},
-	))
+				return nil
+			},
+		),
+	)
 }
 
 func (suite *NodeIPSuite) TestReconcileDefaultSubnets() {
-	suite.T().Skip("skipping as the code relies on net.IPAddrs")
-
 	cfg := k8s.NewNodeIPConfig(k8s.NamespaceName, k8s.KubeletID)
 
 	cfg.TypedSpec().ValidSubnets = []string{"0.0.0.0/0", "::/0"}
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, cfg))
 
-	addresses := network.NewNodeAddress(network.NamespaceName, network.FilteredNodeAddressID(network.NodeAddressCurrentID, k8s.NodeAddressFilterNoK8s))
+	addresses := network.NewNodeAddress(
+		network.NamespaceName,
+		network.FilteredNodeAddressID(network.NodeAddressRoutedID, k8s.NodeAddressFilterNoK8s),
+	)
 
-	addresses.TypedSpec().Addresses = []netaddr.IPPrefix{
-		netaddr.MustParseIPPrefix("10.0.0.5/24"),
-		netaddr.MustParseIPPrefix("192.168.1.1/24"),
-		netaddr.MustParseIPPrefix("2001:0db8:85a3:0000:0000:8a2e:0370:7334/64"),
-		netaddr.MustParseIPPrefix("2001:0db8:85a3:0000:0000:8a2e:0370:7335/64"),
+	addresses.TypedSpec().Addresses = []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.5/24"),
+		netip.MustParsePrefix("192.168.1.1/24"),
+		netip.MustParsePrefix("2001:0db8:85a3:0000:0000:8a2e:0370:7334/64"),
+		netip.MustParsePrefix("2001:0db8:85a3:0000:0000:8a2e:0370:7335/64"),
 	}
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, addresses))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			NodeIP, err := suite.state.Get(suite.ctx, resource.NewMetadata(k8s.NamespaceName, k8s.NodeIPType, k8s.KubeletID, resource.VersionUndefined))
-			if err != nil {
-				if state.IsNotFoundError(err) {
-					return retry.ExpectedError(err)
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				NodeIP, err := suite.state.Get(
+					suite.ctx,
+					resource.NewMetadata(k8s.NamespaceName, k8s.NodeIPType, k8s.KubeletID, resource.VersionUndefined),
+				)
+				if err != nil {
+					if state.IsNotFoundError(err) {
+						return retry.ExpectedError(err)
+					}
+
+					return err
 				}
 
-				return err
-			}
+				spec := NodeIP.(*k8s.NodeIP).TypedSpec()
 
-			spec := NodeIP.(*k8s.NodeIP).TypedSpec()
+				suite.Assert().Equal("[10.0.0.5 2001:db8:85a3::8a2e:370:7334]", fmt.Sprintf("%s", spec.Addresses))
 
-			suite.Assert().Equal("[10.0.0.5 2001:db8:85a3::8a2e:370:7334]", fmt.Sprintf("%s", spec.Addresses))
-
-			return nil
-		},
-	))
+				return nil
+			},
+		),
+	)
 }
 
 func (suite *NodeIPSuite) TearDownTest() {

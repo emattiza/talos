@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -65,8 +65,7 @@ type ContainerdSuite struct {
 func (suite *ContainerdSuite) SetupSuite() {
 	var err error
 
-	suite.tmpDir, err = ioutil.TempDir("", "talos")
-	suite.Require().NoError(err)
+	suite.tmpDir = suite.T().TempDir()
 
 	suite.loggingManager = logging.NewFileLoggingManager(suite.tmpDir)
 
@@ -146,8 +145,6 @@ func (suite *ContainerdSuite) TearDownSuite() {
 
 	suite.Require().NoError(suite.containerdRunner.Stop())
 	suite.containerdWg.Wait()
-
-	suite.Require().NoError(os.RemoveAll(suite.tmpDir))
 }
 
 func (suite *ContainerdSuite) getLogContents(filename string) []byte {
@@ -157,7 +154,7 @@ func (suite *ContainerdSuite) getLogContents(filename string) []byte {
 	//nolint:errcheck
 	defer logFile.Close()
 
-	logContents, err := ioutil.ReadAll(logFile)
+	logContents, err := io.ReadAll(logFile)
 	suite.Assert().NoError(err)
 
 	return logContents
@@ -271,7 +268,7 @@ func (suite *ContainerdSuite) TestRunLogs() {
 	//nolint:errcheck
 	defer logFile.Close()
 
-	logContents, err := ioutil.ReadAll(logFile)
+	logContents, err := io.ReadAll(logFile)
 	suite.Assert().NoError(err)
 
 	suite.Assert().Equal([]byte("Test 1\nTest 2\n"), logContents)
@@ -423,7 +420,7 @@ func (suite *ContainerdSuite) TestContainerStdin() {
 	//nolint:errcheck
 	defer logFile.Close()
 
-	logContents, err := ioutil.ReadAll(logFile)
+	logContents, err := io.ReadAll(logFile)
 	suite.Assert().NoError(err)
 
 	suite.Assert().Equal(stdin, logContents)

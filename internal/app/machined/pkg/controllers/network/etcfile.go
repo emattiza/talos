@@ -8,13 +8,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"html/template"
 	"strings"
+	"text/tabwriter"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
@@ -37,25 +37,25 @@ func (ctrl *EtcFileController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.HostnameStatusType,
-			ID:        pointer.ToString(network.HostnameID),
+			ID:        pointer.To(network.HostnameID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.ResolverStatusType,
-			ID:        pointer.ToString(network.ResolverID),
+			ID:        pointer.To(network.ResolverID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.NodeAddressType,
-			ID:        pointer.ToString(network.NodeAddressDefaultID),
+			ID:        pointer.To(network.NodeAddressDefaultID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -129,7 +129,7 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 		if resolverStatus != nil {
 			if err = r.Modify(ctx, files.NewEtcFileSpec(files.NamespaceName, "resolv.conf"),
 				func(r resource.Resource) error {
-					r.(*files.EtcFileSpec).TypedSpec().Contents = ctrl.renderResolvConf(resolverStatus, hostnameStatus)
+					r.(*files.EtcFileSpec).TypedSpec().Contents = ctrl.renderResolvConf(resolverStatus, hostnameStatus, cfgProvider)
 					r.(*files.EtcFileSpec).TypedSpec().Mode = 0o644
 
 					return nil
@@ -152,7 +152,7 @@ func (ctrl *EtcFileController) Run(ctx context.Context, r controller.Runtime, lo
 	}
 }
 
-func (ctrl *EtcFileController) renderResolvConf(resolverStatus *network.ResolverStatusSpec, hostnameStatus *network.HostnameStatusSpec) []byte {
+func (ctrl *EtcFileController) renderResolvConf(resolverStatus *network.ResolverStatusSpec, hostnameStatus *network.HostnameStatusSpec, cfgProvider talosconfig.Provider) []byte {
 	var buf bytes.Buffer
 
 	for i, resolver := range resolverStatus.DNSServers {
@@ -164,49 +164,48 @@ func (ctrl *EtcFileController) renderResolvConf(resolverStatus *network.Resolver
 		fmt.Fprintf(&buf, "nameserver %s\n", resolver)
 	}
 
-	if hostnameStatus != nil && hostnameStatus.Domainname != "" {
+	var disableSearchDomain bool
+	if cfgProvider != nil {
+		disableSearchDomain = cfgProvider.Machine().Network().DisableSearchDomain()
+	}
+
+	if !disableSearchDomain && hostnameStatus != nil && hostnameStatus.Domainname != "" {
 		fmt.Fprintf(&buf, "\nsearch %s\n", hostnameStatus.Domainname)
 	}
 
 	return buf.Bytes()
 }
 
-var hostsTemplate = template.Must(template.New("hosts").Parse(strings.TrimSpace(`
-127.0.0.1       localhost
-{{ .IP }}       {{ .Hostname }} {{ if ne .Hostname .Alias }}{{ .Alias }}{{ end }}
-::1             localhost ip6-localhost ip6-loopback
-ff02::1         ip6-allnodes
-ff02::2         ip6-allrouters
-
-{{- with .ExtraHosts }}
-{{ range . }}
-{{ .IP }} {{ range .Aliases }}{{.}} {{ end -}}
-{{ end -}}
-{{ end -}}
-`)))
-
 func (ctrl *EtcFileController) renderHosts(hostnameStatus *network.HostnameStatusSpec, nodeAddressStatus *network.NodeAddressSpec, cfgProvider talosconfig.Provider) ([]byte, error) {
 	var buf bytes.Buffer
 
-	extraHosts := []talosconfig.ExtraHost{}
+	tabW := tabwriter.NewWriter(&buf, 0, 0, 1, ' ', 0)
+
+	write := func(s string) {
+		tabW.Write([]byte(s)) //nolint:errcheck
+	}
+
+	write("127.0.0.1\tlocalhost\n")
+
+	write(fmt.Sprintf("%s\t%s", nodeAddressStatus.Addresses[0].Addr(), hostnameStatus.FQDN()))
+
+	if hostnameStatus.Hostname != hostnameStatus.FQDN() {
+		write(" " + hostnameStatus.Hostname)
+	}
+
+	write("\n")
+
+	write("::1\tlocalhost ip6-localhost ip6-loopback\n")
+	write("ff02::1\tip6-allnodes\n")
+	write("ff02::2\tip6-allrouters\n")
 
 	if cfgProvider != nil {
-		extraHosts = cfgProvider.Machine().Network().ExtraHosts()
+		for _, extraHost := range cfgProvider.Machine().Network().ExtraHosts() {
+			write(fmt.Sprintf("%s\t%s\n", extraHost.IP(), strings.Join(extraHost.Aliases(), " ")))
+		}
 	}
 
-	data := struct {
-		IP         string
-		Hostname   string
-		Alias      string
-		ExtraHosts []talosconfig.ExtraHost
-	}{
-		IP:         nodeAddressStatus.Addresses[0].IP().String(),
-		Hostname:   hostnameStatus.FQDN(),
-		Alias:      hostnameStatus.Hostname,
-		ExtraHosts: extraHosts,
-	}
-
-	if err := hostsTemplate.Execute(&buf, data); err != nil {
+	if err := tabW.Flush(); err != nil {
 		return nil, err
 	}
 

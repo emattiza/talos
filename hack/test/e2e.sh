@@ -25,12 +25,12 @@ mkdir -p "${TMP}"
 # Talos
 
 export TALOSCONFIG="${TMP}/talosconfig"
-export TALOS_VERSION=v0.14
+export TALOS_VERSION=v1.1
 
 # Kubernetes
 
 export KUBECONFIG="${TMP}/kubeconfig"
-export KUBERNETES_VERSION=${KUBERNETES_VERSION:-1.23.1}
+export KUBERNETES_VERSION=${KUBERNETES_VERSION:-1.26.0-alpha.1}
 
 export NAME_PREFIX="talos-e2e-${SHA}-${PLATFORM}"
 export TIMEOUT=1200
@@ -113,9 +113,9 @@ function create_cluster_capi {
 
   # Verify that we have an HA controlplane
   timeout=$(($(date +%s) + ${TIMEOUT}))
-  until ${KUBECTL} get nodes -l node-role.kubernetes.io/master='' -o go-template='{{ len .items }}' | grep 3 > /dev/null; do
+  until ${KUBECTL} get nodes -l node-role.kubernetes.io/control-plane='' -o go-template='{{ len .items }}' | grep 3 > /dev/null; do
     [[ $(date +%s) -gt $timeout ]] && exit 1
-    ${KUBECTL} get nodes -l node-role.kubernetes.io/master='' && :
+    ${KUBECTL} get nodes -l node-role.kubernetes.io/control-plane='' && :
     sleep 10
   done
 }
@@ -210,4 +210,35 @@ function build_registry_mirrors {
     # use the value from the environment, if present
     REGISTRY_MIRROR_FLAGS=${REGISTRY_MIRROR_FLAGS:-}
   fi
+}
+
+function run_extensions_test {
+  echo "Testing gVsisor..."
+  ${KUBECTL} apply -f ${PWD}/hack/test/gvisor/manifest.yaml
+  sleep 10
+  ${KUBECTL} wait --for=condition=ready pod nginx-gvisor --timeout=1m
+
+  echo "Testing firmware extension..."
+  ${TALOSCTL} ls -lr /lib/firmware | grep intel-ucode
+
+  echo "Testing extension service..."
+  curl http://172.20.1.2/ | grep Hello
+}
+
+function run_csi_tests {
+  ${HELM} repo add rook-release https://charts.rook.io/release
+  ${HELM} repo update
+  ${HELM} upgrade --install --version=v1.8.2 --set=pspEnable=false --create-namespace --namespace rook-ceph rook-ceph rook-release/rook-ceph
+  ${HELM} upgrade --install --version=v1.8.2 --set=pspEnable=false --create-namespace --namespace rook-ceph rook-ceph-cluster rook-release/rook-ceph-cluster
+
+  ${KUBECTL} label ns rook-ceph pod-security.kubernetes.io/enforce=privileged
+  # wait for the controller to populate the status field
+  sleep 30
+  ${KUBECTL} --namespace rook-ceph wait --timeout=900s --for=jsonpath='{.status.phase}=Ready' cephclusters.ceph.rook.io/rook-ceph
+  ${KUBECTL} --namespace rook-ceph wait --timeout=900s --for=jsonpath='{.status.state}=Created' cephclusters.ceph.rook.io/rook-ceph
+  # .status.ceph is populated later only
+  sleep 60
+  ${KUBECTL} --namespace rook-ceph wait --timeout=900s --for=jsonpath='{.status.ceph.health}=HEALTH_OK' cephclusters.ceph.rook.io/rook-ceph
+  # hack until https://github.com/kastenhq/kubestr/issues/101 is addressed
+  KUBERNETES_SERVICE_HOST= KUBECONFIG="${TMP}/kubeconfig" ${KUBESTR} fio --storageclass ceph-block --size 10G
 }

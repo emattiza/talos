@@ -7,25 +7,32 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
+	"time"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/hashicorp/go-multierror"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/component-base/config/v1alpha1"
 	kubeletconfig "k8s.io/kubelet/config/v1beta1"
 
+	v1alpha1runtime "github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/pkg/argsbuilder"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/kubelet"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 )
 
 // KubeletSpecController renders manifests based on templates and config/secrets.
-type KubeletSpecController struct{}
+type KubeletSpecController struct {
+	V1Alpha1Mode v1alpha1runtime.Mode
+}
 
 // Name implements controller.Controller interface.
 func (ctrl *KubeletSpecController) Name() string {
@@ -38,19 +45,19 @@ func (ctrl *KubeletSpecController) Inputs() []controller.Input {
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.KubeletConfigType,
-			ID:        pointer.ToString(k8s.KubeletID),
+			ID:        pointer.To(k8s.KubeletID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodenameType,
-			ID:        pointer.ToString(k8s.NodenameID),
+			ID:        pointer.To(k8s.NodenameID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodeIPType,
-			ID:        pointer.ToString(k8s.KubeletID),
+			ID:        pointer.To(k8s.KubeletID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -99,16 +106,21 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 
 		nodenameSpec := nodename.(*k8s.Nodename).TypedSpec()
 
+		expectedNodename := nodenameSpec.Nodename
+
 		args := argsbuilder.Args{
-			"bootstrap-kubeconfig":       constants.KubeletBootstrapKubeconfig,
-			"kubeconfig":                 constants.KubeletKubeconfig,
 			"container-runtime":          "remote",
 			"container-runtime-endpoint": "unix://" + constants.CRIContainerdAddress,
 			"config":                     "/etc/kubernetes/kubelet.yaml",
 
 			"cert-dir": constants.KubeletPKIDir,
 
-			"hostname-override": nodenameSpec.Nodename,
+			"hostname-override": expectedNodename,
+		}
+
+		if !cfgSpec.SkipNodeRegistration {
+			args["bootstrap-kubeconfig"] = constants.KubeletBootstrapKubeconfig
+			args["kubeconfig"] = constants.KubeletKubeconfig
 		}
 
 		if cfgSpec.CloudProviderExternal {
@@ -116,6 +128,11 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 		}
 
 		extraArgs := argsbuilder.Args(cfgSpec.ExtraArgs)
+
+		// if the user supplied a hostname override, we do not manage it anymore
+		if extraArgs.Contains("hostname-override") {
+			expectedNodename = ""
+		}
 
 		// if the user supplied node-ip via extra args, no need to pick automatically
 		if !extraArgs.Contains("node-ip") {
@@ -132,12 +149,7 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 
 			nodeIPSpec := nodeIP.(*k8s.NodeIP).TypedSpec()
 
-			nodeIPsString := make([]string, len(nodeIPSpec.Addresses))
-
-			for i := range nodeIPSpec.Addresses {
-				nodeIPsString[i] = nodeIPSpec.Addresses[i].String()
-			}
-
+			nodeIPsString := slices.Map(nodeIPSpec.Addresses, netip.Addr.String)
 			args["node-ip"] = strings.Join(nodeIPsString, ",")
 		}
 
@@ -154,7 +166,17 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 			return fmt.Errorf("error merging arguments: %w", err)
 		}
 
-		kubeletConfig := newKubeletConfiguration(cfgSpec.ClusterDNS, cfgSpec.ClusterDomain)
+		kubeletConfig, err := NewKubeletConfiguration(cfgSpec)
+		if err != nil {
+			return fmt.Errorf("error creating kubelet configuration: %w", err)
+		}
+
+		// If our platform is container, we cannot rely on the ability to change kernel parameters.
+		// Therefore, we need to NOT attempt to enforce the kernel parameter checking done by the kubelet
+		// when the `ProtectKernelDefaults` setting is enabled.
+		if ctrl.V1Alpha1Mode == v1alpha1runtime.ModeContainer {
+			kubeletConfig.ProtectKernelDefaults = false
+		}
 
 		unstructuredConfig, err := runtime.DefaultUnstructuredConverter.ToUnstructured(kubeletConfig)
 		if err != nil {
@@ -171,6 +193,7 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 				kubeletSpec.ExtraMounts = cfgSpec.ExtraMounts
 				kubeletSpec.Args = args.Args()
 				kubeletSpec.Config = unstructuredConfig
+				kubeletSpec.ExpectedNodename = expectedNodename
 
 				return nil
 			},
@@ -180,46 +203,140 @@ func (ctrl *KubeletSpecController) Run(ctx context.Context, r controller.Runtime
 	}
 }
 
-func newKubeletConfiguration(clusterDNS []string, dnsDomain string) *kubeletconfig.KubeletConfiguration {
-	return &kubeletconfig.KubeletConfiguration{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "kubelet.config.k8s.io/v1beta1",
-			Kind:       "KubeletConfiguration",
+func prepareExtraConfig(extraConfig map[string]interface{}) (*kubeletconfig.KubeletConfiguration, error) {
+	// check for fields that can't be overridden via extraConfig
+	var multiErr *multierror.Error
+
+	for _, field := range kubelet.ProtectedConfigurationFields {
+		if _, exists := extraConfig[field]; exists {
+			multiErr = multierror.Append(multiErr, fmt.Errorf("field %q can't be overridden", field))
+		}
+	}
+
+	if err := multiErr.ErrorOrNil(); err != nil {
+		return nil, err
+	}
+
+	var config kubeletconfig.KubeletConfiguration
+
+	// unmarshal extra config into the config structure
+	// as unmarshalling zeroes the missing fields, we can't do that after setting the defaults
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(extraConfig, &config, true); err != nil {
+		return nil, fmt.Errorf("error unmarshalling extra kubelet configuration: %w", err)
+	}
+
+	return &config, nil
+}
+
+// NewKubeletConfiguration builds kubelet configuration with defaults and overrides from extraConfig.
+//
+//nolint:gocyclo,cyclop
+func NewKubeletConfiguration(cfgSpec *k8s.KubeletConfigSpec) (*kubeletconfig.KubeletConfiguration, error) {
+	config, err := prepareExtraConfig(cfgSpec.ExtraConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// required fields (always set)
+	config.TypeMeta = metav1.TypeMeta{
+		APIVersion: kubeletconfig.SchemeGroupVersion.String(),
+		Kind:       "KubeletConfiguration",
+	}
+	config.StaticPodPath = constants.ManifestsDirectory
+	config.Port = constants.KubeletPort
+	config.Authentication = kubeletconfig.KubeletAuthentication{
+		X509: kubeletconfig.KubeletX509Authentication{
+			ClientCAFile: constants.KubernetesCACert,
 		},
-		StaticPodPath:      constants.ManifestsDirectory,
-		Address:            "0.0.0.0",
-		Port:               constants.KubeletPort,
-		OOMScoreAdj:        pointer.ToInt32(constants.KubeletOOMScoreAdj),
-		RotateCertificates: true,
-		Authentication: kubeletconfig.KubeletAuthentication{
-			X509: kubeletconfig.KubeletX509Authentication{
-				ClientCAFile: constants.KubernetesCACert,
-			},
-			Webhook: kubeletconfig.KubeletWebhookAuthentication{
-				Enabled: pointer.ToBool(true),
-			},
-			Anonymous: kubeletconfig.KubeletAnonymousAuthentication{
-				Enabled: pointer.ToBool(false),
-			},
+		Webhook: kubeletconfig.KubeletWebhookAuthentication{
+			Enabled: pointer.To(true),
 		},
-		Authorization: kubeletconfig.KubeletAuthorization{
-			Mode: kubeletconfig.KubeletAuthorizationModeWebhook,
+		Anonymous: kubeletconfig.KubeletAnonymousAuthentication{
+			Enabled: pointer.To(false),
 		},
-		ClusterDomain:       dnsDomain,
-		ClusterDNS:          clusterDNS,
-		SerializeImagePulls: pointer.ToBool(false),
-		FailSwapOn:          pointer.ToBool(false),
-		CgroupRoot:          "/",
-		SystemCgroups:       constants.CgroupSystem,
-		SystemReserved: map[string]string{
+	}
+	config.Authorization = kubeletconfig.KubeletAuthorization{
+		Mode: kubeletconfig.KubeletAuthorizationModeWebhook,
+	}
+	config.CgroupRoot = "/"
+	config.SystemCgroups = constants.CgroupSystem
+	config.KubeletCgroups = constants.CgroupKubelet
+	config.RotateCertificates = true
+	config.ProtectKernelDefaults = true
+
+	if cfgSpec.DefaultRuntimeSeccompEnabled {
+		config.SeccompDefault = pointer.To(true)
+		if config.FeatureGates != nil {
+			if defaultRuntimeSeccompProfileEnabled, overridden := config.FeatureGates["SeccompDefault"]; overridden && !defaultRuntimeSeccompProfileEnabled {
+				config.FeatureGates["SeccompDefault"] = true
+			}
+		} else {
+			config.FeatureGates = map[string]bool{
+				"SeccompDefault": true,
+			}
+		}
+	}
+
+	if cfgSpec.SkipNodeRegistration {
+		config.Authentication.Webhook.Enabled = pointer.To(false)
+		config.Authorization.Mode = kubeletconfig.KubeletAuthorizationModeAlwaysAllow
+	}
+
+	// fields which can be overridden
+	if config.Address == "" {
+		config.Address = "0.0.0.0"
+	}
+
+	if config.OOMScoreAdj == nil {
+		config.OOMScoreAdj = pointer.To[int32](constants.KubeletOOMScoreAdj)
+	}
+
+	if config.ClusterDomain == "" {
+		config.ClusterDomain = cfgSpec.ClusterDomain
+	}
+
+	if len(config.ClusterDNS) == 0 {
+		config.ClusterDNS = cfgSpec.ClusterDNS
+	}
+
+	if config.SerializeImagePulls == nil {
+		config.SerializeImagePulls = pointer.To(false)
+	}
+
+	if config.FailSwapOn == nil {
+		config.FailSwapOn = pointer.To(false)
+	}
+
+	if len(config.SystemReserved) == 0 {
+		config.SystemReserved = map[string]string{
 			"cpu":               constants.KubeletSystemReservedCPU,
 			"memory":            constants.KubeletSystemReservedMemory,
 			"pid":               constants.KubeletSystemReservedPid,
 			"ephemeral-storage": constants.KubeletSystemReservedEphemeralStorage,
-		},
-		KubeletCgroups: constants.CgroupKubelet,
-		Logging: v1alpha1.LoggingConfiguration{
-			Format: "json",
-		},
+		}
 	}
+
+	if config.Logging.Format == "" {
+		config.Logging.Format = "json"
+	}
+
+	extraConfig := cfgSpec.ExtraConfig
+
+	if _, overridden := extraConfig["shutdownGracePeriod"]; !overridden && config.ShutdownGracePeriod.Duration == 0 {
+		config.ShutdownGracePeriod = metav1.Duration{Duration: constants.KubeletShutdownGracePeriod}
+	}
+
+	if _, overridden := extraConfig["shutdownGracePeriodCriticalPods"]; !overridden && config.ShutdownGracePeriodCriticalPods.Duration == 0 {
+		config.ShutdownGracePeriodCriticalPods = metav1.Duration{Duration: constants.KubeletShutdownGracePeriodCriticalPods}
+	}
+
+	if config.StreamingConnectionIdleTimeout.Duration == 0 {
+		config.StreamingConnectionIdleTimeout = metav1.Duration{Duration: 5 * time.Minute}
+	}
+
+	if config.TLSMinVersion == "" {
+		config.TLSMinVersion = "VersionTLS13"
+	}
+
+	return config, nil
 }

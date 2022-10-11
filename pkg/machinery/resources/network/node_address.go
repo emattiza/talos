@@ -6,20 +6,22 @@ package network
 
 import (
 	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/gen/slices"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // NodeAddressType is type of NodeAddress resource.
 const NodeAddressType = resource.Type("NodeAddresses.net.talos.dev")
 
 // NodeAddress resource holds physical network link status.
-type NodeAddress struct {
-	md   resource.Metadata
-	spec NodeAddressSpec
-}
+type NodeAddress = typed.Resource[NodeAddressSpec, NodeAddressRD]
 
 // NodeAddress well-known IDs.
 const (
@@ -35,51 +37,34 @@ const (
 	//
 	// If some address is no longer present, it will be still kept in the accumulative list.
 	NodeAddressAccumulativeID = "accumulative"
+	// Routed current node addresses (as seen at the moment).
+	//
+	// This is current addresses minus 'external' IPs, and SideroLink IPs.
+	//
+	// This list is used to pick advertised/listen addresses for different services.
+	NodeAddressRoutedID = "routed"
 )
 
 // NodeAddressSpec describes a set of node addresses.
+//
+//gotagsrewrite:gen
 type NodeAddressSpec struct {
-	Addresses []netaddr.IPPrefix `yaml:"addresses"`
+	Addresses []netip.Prefix `yaml:"addresses" protobuf:"1"`
 }
 
 // NewNodeAddress initializes a NodeAddress resource.
 func NewNodeAddress(namespace resource.Namespace, id resource.ID) *NodeAddress {
-	r := &NodeAddress{
-		md:   resource.NewMetadata(namespace, NodeAddressType, id, resource.VersionUndefined),
-		spec: NodeAddressSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[NodeAddressSpec, NodeAddressRD](
+		resource.NewMetadata(namespace, NodeAddressType, id, resource.VersionUndefined),
+		NodeAddressSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *NodeAddress) Metadata() *resource.Metadata {
-	return &r.md
-}
+// NodeAddressRD provides auxiliary methods for NodeAddress.
+type NodeAddressRD struct{}
 
-// Spec implements resource.Resource.
-func (r *NodeAddress) Spec() interface{} {
-	return r.spec
-}
-
-func (r *NodeAddress) String() string {
-	return fmt.Sprintf("network.NodeAddress(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *NodeAddress) DeepCopy() resource.Resource {
-	return &NodeAddress{
-		md: r.md,
-		spec: NodeAddressSpec{
-			Addresses: append([]netaddr.IPPrefix(nil), r.spec.Addresses...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *NodeAddress) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (NodeAddressRD) ResourceDefinition(resource.Metadata, NodeAddressSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             NodeAddressType,
 		Aliases:          []resource.Type{},
@@ -93,23 +78,21 @@ func (r *NodeAddress) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *NodeAddress) TypedSpec() *NodeAddressSpec {
-	return &r.spec
-}
-
 // IPs returns IP without prefix.
-func (spec *NodeAddressSpec) IPs() []netaddr.IP {
-	result := make([]netaddr.IP, len(spec.Addresses))
-
-	for i := range spec.Addresses {
-		result[i] = spec.Addresses[i].IP()
-	}
-
-	return result
+func (spec *NodeAddressSpec) IPs() []netip.Addr {
+	return slices.Map(spec.Addresses, netip.Prefix.Addr)
 }
 
 // FilteredNodeAddressID returns resource ID for node addresses with filter applied.
 func FilteredNodeAddressID(kind resource.ID, filterID string) resource.ID {
 	return fmt.Sprintf("%s-%s", kind, filterID)
+}
+
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[NodeAddressSpec](NodeAddressType, &NodeAddress{})
+	if err != nil {
+		panic(err)
+	}
 }

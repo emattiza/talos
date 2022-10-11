@@ -15,9 +15,9 @@ import (
 	"path/filepath"
 
 	"github.com/dustin/go-humanize"
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
-	"github.com/talos-systems/go-blockdevice/blockdevice/util"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/go-blockdevice/blockdevice/util"
 	"golang.org/x/sys/unix"
 
 	"github.com/talos-systems/talos/internal/pkg/mount"
@@ -287,6 +287,11 @@ func (t *Target) Save() (err error) {
 	}
 
 	return nil
+}
+
+// GetLabel returns the underlaying partition label.
+func (t *Target) GetLabel() string {
+	return t.Label
 }
 
 func withTemporaryMounted(partPath string, flags uintptr, fileSystemType partition.FileSystemType, label string, f func(mountPath string) error) error {

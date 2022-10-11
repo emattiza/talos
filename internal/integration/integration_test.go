@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration
-// +build integration
 
 // Package integration_test contains core runners for integration tests
 package integration_test
@@ -11,6 +10,7 @@ package integration_test
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +23,7 @@ import (
 	"github.com/talos-systems/talos/internal/integration/k8s"
 	provision_test "github.com/talos-systems/talos/internal/integration/provision"
 	clientconfig "github.com/talos-systems/talos/pkg/machinery/client/config"
+	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/provision"
 	"github.com/talos-systems/talos/pkg/provision/providers"
 	"github.com/talos-systems/talos/pkg/version"
@@ -33,17 +34,18 @@ var allSuites []suite.TestingSuite
 
 // Flag values.
 var (
-	failFast         bool
-	crashdumpEnabled bool
-	talosConfig      string
-	endpoint         string
-	k8sEndpoint      string
-	expectedVersion  string
-	talosctlPath     string
-	kubectlPath      string
-	provisionerName  string
-	clusterName      string
-	stateDir         string
+	failFast          bool
+	crashdumpEnabled  bool
+	talosConfig       string
+	endpoint          string
+	k8sEndpoint       string
+	expectedVersion   string
+	expectedGoVersion string
+	talosctlPath      string
+	kubectlPath       string
+	provisionerName   string
+	clusterName       string
+	stateDir          string
 )
 
 // TestIntegration ...
@@ -88,6 +90,7 @@ func TestIntegration(t *testing.T) {
 				Cluster:      cluster,
 				TalosConfig:  talosConfig,
 				Version:      expectedVersion,
+				GoVersion:    expectedGoVersion,
 				TalosctlPath: talosctlPath,
 				KubectlPath:  kubectlPath,
 			})
@@ -117,7 +120,7 @@ func TestIntegration(t *testing.T) {
 }
 
 func init() {
-	defaultTalosConfig, _ := clientconfig.GetDefaultPath() //nolint:errcheck
+	defaultTalosConfigs, _ := clientconfig.GetDefaultPaths() //nolint:errcheck
 
 	defaultStateDir, err := clientconfig.GetTalosDirectory()
 	if err == nil {
@@ -127,13 +130,23 @@ func init() {
 	flag.BoolVar(&failFast, "talos.failfast", false, "fail the test run on the first failed test")
 	flag.BoolVar(&crashdumpEnabled, "talos.crashdump", true, "print crashdump on test failure (only if provisioner is enabled)")
 
-	flag.StringVar(&talosConfig, "talos.config", defaultTalosConfig, "The path to the Talos configuration file")
+	flag.StringVar(
+		&talosConfig,
+		"talos.config",
+		defaultTalosConfigs[0].Path,
+		fmt.Sprintf("The path to the Talos configuration file. Defaults to '%s' env variable if set, otherwise '%s' and '%s' in order.",
+			constants.TalosConfigEnvVar,
+			filepath.Join("$HOME", constants.TalosDir, constants.TalosconfigFilename),
+			filepath.Join(constants.ServiceAccountMountPath, constants.TalosconfigFilename),
+		),
+	)
 	flag.StringVar(&endpoint, "talos.endpoint", "", "endpoint to use (overrides config)")
 	flag.StringVar(&k8sEndpoint, "talos.k8sendpoint", "", "Kubernetes endpoint to use (overrides kubeconfig)")
 	flag.StringVar(&provisionerName, "talos.provisioner", "", "Talos cluster provisioner to use, if not set cluster state is disabled")
 	flag.StringVar(&stateDir, "talos.state", defaultStateDir, "directory path to store cluster state")
 	flag.StringVar(&clusterName, "talos.name", "talos-default", "the name of the cluster")
 	flag.StringVar(&expectedVersion, "talos.version", version.Tag, "expected Talos version")
+	flag.StringVar(&expectedGoVersion, "talos.go.version", constants.GoVersion, "expected Talos version")
 	flag.StringVar(&talosctlPath, "talos.talosctlpath", "talosctl", "The path to 'talosctl' binary")
 	flag.StringVar(&kubectlPath, "talos.kubectlpath", "kubectl", "The path to 'kubectl' binary")
 

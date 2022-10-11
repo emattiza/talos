@@ -3,14 +3,12 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
 import (
 	"context"
 	"io"
-	"io/ioutil"
 	"time"
 
 	"github.com/talos-systems/talos/internal/integration/base"
@@ -22,7 +20,7 @@ import (
 type DmesgSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -56,7 +54,7 @@ func (suite *DmesgSuite) TestNodeHasDmesg() {
 	logReader, errCh, err := client.ReadStream(dmesgStream)
 	suite.Require().NoError(err)
 
-	n, err := io.Copy(ioutil.Discard, logReader)
+	n, err := io.Copy(io.Discard, logReader)
 	suite.Require().NoError(err)
 
 	suite.Require().NoError(<-errCh)
@@ -121,7 +119,7 @@ DrainLoop:
 
 // TestClusterHasDmesg verifies that all the cluster nodes have dmesg.
 func (suite *DmesgSuite) TestClusterHasDmesg() {
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 	suite.Require().NotEmpty(nodes)
 
 	ctx := client.WithNodes(suite.ctx, nodes...)

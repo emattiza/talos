@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration
-// +build integration
 
 // Package base provides shared definition of base suites for tests
 package base
@@ -28,6 +27,8 @@ type TalosSuite struct {
 	TalosConfig string
 	// Version is the (expected) version of Talos tests are running against
 	Version string
+	// GoVersion is the (expected) version of Go compiler.
+	GoVersion string
 	// TalosctlPath is a path to talosctl binary
 	TalosctlPath string
 	// KubectlPath is a path to kubectl binary
@@ -39,7 +40,7 @@ type TalosSuite struct {
 // DiscoverNodes provides basic functionality to discover cluster nodes via test settings.
 //
 // This method is overridden in specific suites to allow for specific discovery.
-func (talosSuite *TalosSuite) DiscoverNodes(ctx context.Context) cluster.Info {
+func (talosSuite *TalosSuite) DiscoverNodes(_ context.Context) cluster.Info {
 	if talosSuite.discoveredNodes == nil {
 		if talosSuite.Cluster != nil {
 			talosSuite.discoveredNodes = access.NewAdapter(talosSuite.Cluster).Info

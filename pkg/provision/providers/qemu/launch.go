@@ -20,7 +20,8 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containernetworking/plugins/pkg/testutils"
 	"github.com/google/uuid"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
 	talosnet "github.com/talos-systems/net"
 
 	"github.com/talos-systems/talos/pkg/provision"
@@ -110,10 +111,7 @@ func withCNI(ctx context.Context, config *LaunchConfig, f func(config *LaunchCon
 		ips[j] = talosnet.FormatCIDR(config.IPs[j], config.CIDRs[j])
 	}
 
-	gatewayAddrs := make([]string, len(config.GatewayAddrs))
-	for j := range gatewayAddrs {
-		gatewayAddrs[j] = config.GatewayAddrs[j].String()
-	}
+	gatewayAddrs := slices.Map(config.GatewayAddrs, net.IP.String)
 
 	runtimeConf := libcni.RuntimeConf{
 		ContainerID: containerID,
@@ -253,7 +251,7 @@ func launchVM(config *LaunchConfig) error {
 	}
 
 	for _, disk := range config.DiskPaths {
-		args = append(args, "-drive", fmt.Sprintf("format=raw,if=virtio,file=%s", disk))
+		args = append(args, "-drive", fmt.Sprintf("format=raw,if=virtio,file=%s,cache=unsafe", disk))
 	}
 
 	machineArg := config.MachineType

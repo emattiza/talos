@@ -7,33 +7,50 @@ package basic
 import (
 	"context"
 	"fmt"
-	"log"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 )
 
+// TokenGetterFunc is the function to dynamically retrieve the token.
+type TokenGetterFunc func(context.Context) (string, error)
+
 // TokenCredentials implements credentials.PerRPCCredentials. It uses a basic
 // token lookup to authenticate users.
 type TokenCredentials struct {
-	Token string
+	tokenGetter TokenGetterFunc
 }
 
 // NewTokenCredentials initializes ClientCredentials with the token.
 func NewTokenCredentials(token string) (creds Credentials) {
 	creds = &TokenCredentials{
-		Token: token,
+		tokenGetter: func(context.Context) (string, error) {
+			return token, nil
+		},
+	}
+
+	return creds
+}
+
+// NewTokenCredentialsDynamic initializes ClientCredentials with the dynamic token token.
+func NewTokenCredentialsDynamic(f TokenGetterFunc) (creds Credentials) {
+	creds = &TokenCredentials{
+		tokenGetter: f,
 	}
 
 	return creds
 }
 
 // GetRequestMetadata sets the value for the "token" key.
-func (b *TokenCredentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
+func (b *TokenCredentials) GetRequestMetadata(ctx context.Context, s ...string) (map[string]string, error) {
+	token, err := b.tokenGetter(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	return map[string]string{
-		"token": b.Token,
+		"token": token,
 	}, nil
 }
 
@@ -44,8 +61,13 @@ func (b *TokenCredentials) RequireTransportSecurity() bool {
 }
 
 func (b *TokenCredentials) authenticate(ctx context.Context) error {
+	token, err := b.tokenGetter(ctx)
+	if err != nil {
+		return err
+	}
+
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if len(md["token"]) > 0 && md["token"][0] == b.Token {
+		if len(md["token"]) > 0 && md["token"][0] == token {
 			return nil
 		}
 	}
@@ -57,20 +79,10 @@ func (b *TokenCredentials) authenticate(ctx context.Context) error {
 // basic authentication.
 func (b *TokenCredentials) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		start := time.Now()
-
 		if err := b.authenticate(ctx); err != nil {
 			return nil, err
 		}
 
-		h, err := handler(ctx, req)
-
-		log.Printf("request - Method:%s\tDuration:%s\tError:%v\n",
-			info.FullMethod,
-			time.Since(start),
-			err,
-		)
-
-		return h, err
+		return handler(ctx, req)
 	}
 }

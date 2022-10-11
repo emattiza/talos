@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/grpc/gen"
@@ -43,13 +43,13 @@ func (ctrl *APIController) Inputs() []controller.Input {
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.StatusType,
-			ID:        pointer.ToString(network.StatusID),
+			ID:        pointer.To(network.StatusID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineTypeType,
-			ID:        pointer.ToString(config.MachineTypeID),
+			ID:        pointer.To(config.MachineTypeID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -129,25 +129,25 @@ func (ctrl *APIController) Run(ctx context.Context, r controller.Runtime, logger
 	}
 }
 
-//nolint:gocyclo,cyclop
+//nolint:gocyclo,cyclop,dupl
 func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, logger *zap.Logger, isControlplane bool) error {
 	inputs := []controller.Input{
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.OSRootType,
-			ID:        pointer.ToString(secrets.OSRootID),
+			ID:        pointer.To(secrets.OSRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.CertSANType,
-			ID:        pointer.ToString(secrets.CertSANAPIID),
+			ID:        pointer.To(secrets.CertSANAPIID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineTypeType,
-			ID:        pointer.ToString(config.MachineTypeID),
+			ID:        pointer.To(config.MachineTypeID),
 			Kind:      controller.InputWeak,
 		},
 		// time status isn't fetched, but the fact that it is in dependencies means
@@ -155,7 +155,7 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 		{
 			Namespace: v1alpha1.NamespaceName,
 			Type:      timeresource.StatusType,
-			ID:        pointer.ToString(timeresource.StatusID),
+			ID:        pointer.To(timeresource.StatusID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -265,7 +265,7 @@ func (ctrl *APIController) reconcile(ctx context.Context, r controller.Runtime, 
 				return err
 			}
 		} else {
-			if err := ctrl.generateJoin(ctx, r, logger, rootSpec, endpointsStr, certSANs); err != nil {
+			if err := ctrl.generateWorker(ctx, r, logger, rootSpec, endpointsStr, certSANs); err != nil {
 				return err
 			}
 		}
@@ -283,7 +283,7 @@ func (ctrl *APIController) generateControlPlane(ctx context.Context, r controlle
 		x509.DNSNames(certSANs.DNSNames),
 		x509.CommonName(certSANs.FQDN),
 		x509.NotAfter(time.Now().Add(x509.DefaultCertificateValidityDuration)),
-		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature|stdlibx509.KeyUsageKeyEncipherment),
+		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature),
 		x509.ExtKeyUsage([]stdlibx509.ExtKeyUsage{
 			stdlibx509.ExtKeyUsageServerAuth,
 		}),
@@ -296,7 +296,7 @@ func (ctrl *APIController) generateControlPlane(ctx context.Context, r controlle
 		x509.CommonName(certSANs.FQDN),
 		x509.Organization(string(role.Impersonator)),
 		x509.NotAfter(time.Now().Add(x509.DefaultCertificateValidityDuration)),
-		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature|stdlibx509.KeyUsageKeyEncipherment),
+		x509.KeyUsage(stdlibx509.KeyUsageDigitalSignature),
 		x509.ExtKeyUsage([]stdlibx509.ExtKeyUsage{
 			stdlibx509.ExtKeyUsageClientAuth,
 		}),
@@ -331,8 +331,9 @@ func (ctrl *APIController) generateControlPlane(ctx context.Context, r controlle
 	return nil
 }
 
-func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtime, logger *zap.Logger,
-	rootSpec *secrets.OSRootSpec, endpointsStr []string, certSANs *secrets.CertSANSpec) error {
+func (ctrl *APIController) generateWorker(ctx context.Context, r controller.Runtime, logger *zap.Logger,
+	rootSpec *secrets.OSRootSpec, endpointsStr []string, certSANs *secrets.CertSANSpec,
+) error {
 	remoteGen, err := gen.NewRemoteGenerator(rootSpec.Token, endpointsStr, rootSpec.CA)
 	if err != nil {
 		return fmt.Errorf("failed creating trustd client: %w", err)
@@ -349,27 +350,13 @@ func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtim
 		return fmt.Errorf("failed to generate API server CSR: %w", err)
 	}
 
+	logger.Debug("sending CSR", zap.Strings("endpoints", endpointsStr))
+
 	var ca []byte
 
 	ca, serverCert.Crt, err = remoteGen.IdentityContext(ctx, serverCSR)
 	if err != nil {
 		return fmt.Errorf("failed to sign API server CSR: %w", err)
-	}
-
-	clientCSR, clientCert, err := x509.NewEd25519CSRAndIdentity(
-		x509.CommonName(certSANs.FQDN),
-		x509.Organization(string(role.Impersonator)),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to generate API client CSR: %w", err)
-	}
-
-	logger.Debug("sending CSR", zap.Strings("endpoints", endpointsStr))
-
-	// TODO: add keyusage: trustd should accept key usage as additional params
-	_, clientCert.Crt, err = remoteGen.IdentityContext(ctx, clientCSR)
-	if err != nil {
-		return fmt.Errorf("failed to sign API client CSR: %w", err)
 	}
 
 	if err := r.Modify(ctx, secrets.NewAPI(),
@@ -380,18 +367,15 @@ func (ctrl *APIController) generateJoin(ctx context.Context, r controller.Runtim
 				Crt: ca,
 			}
 			apiSecrets.Server = serverCert
-			apiSecrets.Client = clientCert
 
 			return nil
 		}); err != nil {
 		return fmt.Errorf("error modifying resource: %w", err)
 	}
 
-	clientFingerprint, _ := x509.SPKIFingerprintFromPEM(clientCert.Crt) //nolint:errcheck
 	serverFingerprint, _ := x509.SPKIFingerprintFromPEM(serverCert.Crt) //nolint:errcheck
 
 	logger.Debug("generated new certificates",
-		zap.Stringer("client", clientFingerprint),
 		zap.Stringer("server", serverFingerprint),
 	)
 
@@ -403,8 +387,6 @@ func (ctrl *APIController) teardownAll(ctx context.Context, r controller.Runtime
 	if err != nil {
 		return err
 	}
-
-	// TODO: change this to proper teardown sequence
 
 	for _, res := range list.Items {
 		if err = r.Destroy(ctx, res.Metadata()); err != nil {

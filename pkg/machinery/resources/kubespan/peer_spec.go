@@ -5,11 +5,14 @@
 package kubespan
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // PeerSpecType is type of PeerSpec resource.
@@ -18,60 +21,31 @@ const PeerSpecType = resource.Type("KubeSpanPeerSpecs.kubespan.talos.dev")
 // PeerSpec is produced from cluster.Affiliate which has KubeSpan information attached.
 //
 // PeerSpec is identified by the public key.
-type PeerSpec struct {
-	md   resource.Metadata
-	spec PeerSpecSpec
-}
+type PeerSpec = typed.Resource[PeerSpecSpec, PeerSpecRD]
 
 // PeerSpecSpec describes PeerSpec state.
+//
+//gotagsrewrite:gen
 type PeerSpecSpec struct {
-	Address    netaddr.IP         `yaml:"address"`
-	AllowedIPs []netaddr.IPPrefix `yaml:"allowedIPs"`
-	Endpoints  []netaddr.IPPort   `yaml:"endpoints"`
-	Label      string             `yaml:"label"`
+	Address    netip.Addr       `yaml:"address" protobuf:"1"`
+	AllowedIPs []netip.Prefix   `yaml:"allowedIPs" protobuf:"2"`
+	Endpoints  []netip.AddrPort `yaml:"endpoints" protobuf:"3"`
+	Label      string           `yaml:"label" protobuf:"4"`
 }
 
 // NewPeerSpec initializes a PeerSpec resource.
 func NewPeerSpec(namespace resource.Namespace, id resource.ID) *PeerSpec {
-	r := &PeerSpec{
-		md:   resource.NewMetadata(namespace, PeerSpecType, id, resource.VersionUndefined),
-		spec: PeerSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[PeerSpecSpec, PeerSpecRD](
+		resource.NewMetadata(namespace, PeerSpecType, id, resource.VersionUndefined),
+		PeerSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *PeerSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// PeerSpecRD provides auxiliary methods for PeerSpec.
+type PeerSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *PeerSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *PeerSpec) String() string {
-	return fmt.Sprintf("kubespan.PeerSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *PeerSpec) DeepCopy() resource.Resource {
-	return &PeerSpec{
-		md: r.md,
-		spec: PeerSpecSpec{
-			Address:    r.spec.Address,
-			AllowedIPs: append([]netaddr.IPPrefix(nil), r.spec.AllowedIPs...),
-			Endpoints:  append([]netaddr.IPPort(nil), r.spec.Endpoints...),
-			Label:      r.spec.Label,
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *PeerSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (PeerSpecRD) ResourceDefinition(resource.Metadata, PeerSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             PeerSpecType,
 		Aliases:          []resource.Type{},
@@ -89,7 +63,11 @@ func (r *PeerSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *PeerSpec) TypedSpec() *PeerSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[PeerSpecSpec](PeerSpecType, &PeerSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

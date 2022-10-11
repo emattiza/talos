@@ -7,13 +7,14 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/safe"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
@@ -38,25 +39,25 @@ func (ctrl *LocalAffiliateController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      cluster.ConfigType,
-			ID:        pointer.ToString(cluster.ConfigID),
+			ID:        pointer.To(cluster.ConfigID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: cluster.NamespaceName,
 			Type:      cluster.IdentityType,
-			ID:        pointer.ToString(cluster.LocalIdentity),
+			ID:        pointer.To(cluster.LocalIdentity),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.HostnameStatusType,
-			ID:        pointer.ToString(network.HostnameID),
+			ID:        pointer.To(network.HostnameID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodenameType,
-			ID:        pointer.ToString(k8s.NodenameID),
+			ID:        pointer.To(k8s.NodenameID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -67,13 +68,19 @@ func (ctrl *LocalAffiliateController) Inputs() []controller.Input {
 		{
 			Namespace: kubespan.NamespaceName,
 			Type:      kubespan.IdentityType,
-			ID:        pointer.ToString(kubespan.LocalIdentity),
+			ID:        pointer.To(kubespan.LocalIdentity),
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: config.NamespaceName,
+			Type:      kubespan.ConfigType,
+			ID:        pointer.To(kubespan.ConfigID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineTypeType,
-			ID:        pointer.ToString(config.MachineTypeID),
+			ID:        pointer.To(config.MachineTypeID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -160,6 +167,11 @@ func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runt
 				return fmt.Errorf("error getting kubespan identity: %w", err)
 			}
 
+			kubespanConfig, err := safe.ReaderGet[*kubespan.Config](ctx, r, resource.NewMetadata(config.NamespaceName, kubespan.ConfigType, kubespan.ConfigID, resource.VersionUndefined))
+			if err != nil && !state.IsNotFoundError(err) {
+				return fmt.Errorf("error getting kubespan config: %w", err)
+			}
+
 			ksAdditionalAddresses, err := r.Get(ctx,
 				resource.NewMetadata(network.NamespaceName, network.NodeAddressType, network.FilteredNodeAddressID(network.NodeAddressCurrentID, k8s.NodeAddressFilterOnlyK8s), resource.VersionUndefined))
 			if err != nil && !state.IsNotFoundError(err) {
@@ -175,29 +187,50 @@ func (ctrl *LocalAffiliateController) Run(ctx context.Context, r controller.Runt
 					spec := res.(*cluster.Affiliate).TypedSpec()
 
 					spec.NodeID = localID
-					spec.Addresses = append([]netaddr.IP(nil), addresses.(*network.NodeAddress).TypedSpec().IPs()...)
 					spec.Hostname = hostname.(*network.HostnameStatus).TypedSpec().FQDN()
 					spec.Nodename = nodename.(*k8s.Nodename).TypedSpec().Nodename
 					spec.MachineType = machineType.(*config.MachineType).MachineType()
 					spec.OperatingSystem = fmt.Sprintf("%s (%s)", version.Name, version.Tag)
 
+					nodeIPs := addresses.(*network.NodeAddress).TypedSpec().IPs()
+
+					spec.Addresses = make([]netip.Addr, 0, len(nodeIPs))
+
+					for _, ip := range nodeIPs {
+						if network.IsULA(ip, network.ULASideroLink) {
+							// ignore SideroLink addresses, as they are point-to-point addresses
+							continue
+						}
+
+						spec.Addresses = append(spec.Addresses, ip)
+					}
+
 					spec.KubeSpan = cluster.KubeSpanAffiliateSpec{}
 
-					if kubespanIdentity != nil {
-						spec.KubeSpan.Address = kubespanIdentity.(*kubespan.Identity).TypedSpec().Address.IP()
+					if kubespanIdentity != nil && kubespanConfig != nil {
+						spec.KubeSpan.Address = kubespanIdentity.(*kubespan.Identity).TypedSpec().Address.Addr()
 						spec.KubeSpan.PublicKey = kubespanIdentity.(*kubespan.Identity).TypedSpec().PublicKey
-						spec.KubeSpan.AdditionalAddresses = append([]netaddr.IPPrefix(nil), ksAdditionalAddresses.(*network.NodeAddress).TypedSpec().Addresses...)
 
-						nodeIPs := addresses.(*network.NodeAddress).TypedSpec().IPs()
-						endpoints := make([]netaddr.IPPort, 0, len(nodeIPs))
+						if kubespanConfig.TypedSpec().AdvertiseKubernetesNetworks {
+							spec.KubeSpan.AdditionalAddresses = append([]netip.Prefix(nil), ksAdditionalAddresses.(*network.NodeAddress).TypedSpec().Addresses...)
+						} else {
+							spec.KubeSpan.AdditionalAddresses = nil
+						}
 
-						for i := range nodeIPs {
-							if nodeIPs[i] == spec.KubeSpan.Address {
+						endpoints := make([]netip.AddrPort, 0, len(nodeIPs))
+
+						for _, ip := range nodeIPs {
+							if ip == spec.KubeSpan.Address {
 								// skip kubespan local address
 								continue
 							}
 
-							endpoints = append(endpoints, netaddr.IPPortFrom(nodeIPs[i], constants.KubeSpanDefaultPort))
+							if network.IsULA(ip, network.ULASideroLink) {
+								// ignore SideroLink addresses, as they are point-to-point addresses
+								continue
+							}
+
+							endpoints = append(endpoints, netip.AddrPortFrom(ip, constants.KubeSpanDefaultPort))
 						}
 
 						spec.KubeSpan.Endpoints = endpoints

@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package base
 
@@ -41,22 +40,23 @@ func (cliSuite *CLISuite) DiscoverNodes(ctx context.Context) cluster.Info {
 		return discoveredNodes
 	}
 
-	discoveredNodes = cliSuite.discoverKubectl()
-	if discoveredNodes != nil {
-		return discoveredNodes
-	}
-
-	// still no nodes, skip the test
-	cliSuite.T().Skip("no nodes were discovered")
-
-	return nil
+	return cliSuite.discoverKubectl()
 }
 
-// RandomDiscoveredNode returns a random node of the specified type (or any type if no types are specified).
-func (cliSuite *CLISuite) RandomDiscoveredNode(types ...machine.Type) string {
+// DiscoverNodeInternalIPs provides list of Talos node internal IPs in the cluster.
+func (cliSuite *CLISuite) DiscoverNodeInternalIPs(ctx context.Context) []string {
+	nodes := cliSuite.DiscoverNodes(ctx)
+
+	return mapNodeInfosToInternalIPs(nodes.Nodes())
+}
+
+// RandomDiscoveredNodeInternalIP returns the internal IP a random node of the specified type (or any type if no types are specified).
+//
+//nolint:dupl
+func (cliSuite *CLISuite) RandomDiscoveredNodeInternalIP(types ...machine.Type) string {
 	nodeInfo := cliSuite.DiscoverNodes(context.TODO())
 
-	var nodes []string
+	var nodes []cluster.NodeInfo
 
 	if len(types) == 0 {
 		nodes = nodeInfo.Nodes()
@@ -68,7 +68,7 @@ func (cliSuite *CLISuite) RandomDiscoveredNode(types ...machine.Type) string {
 
 	cliSuite.Require().NotEmpty(nodes)
 
-	return nodes[rand.Intn(len(nodes))]
+	return nodes[rand.Intn(len(nodes))].InternalIP.String()
 }
 
 func (cliSuite *CLISuite) discoverKubectl() cluster.Info {
@@ -79,17 +79,20 @@ func (cliSuite *CLISuite) discoverKubectl() cluster.Info {
 	cliSuite.RunCLI([]string{"kubeconfig", tempDir}, StdoutEmpty())
 
 	masterNodes, err := cmd.Run(cliSuite.KubectlPath, "--kubeconfig", filepath.Join(tempDir, "kubeconfig"), "get", "nodes",
-		"-o", "jsonpath={.items[*].status.addresses[?(@.type==\"InternalIP\")].address}", fmt.Sprintf("--selector=%s", constants.LabelNodeRoleMaster))
+		"-o", "jsonpath={.items[*].status.addresses[?(@.type==\"InternalIP\")].address}", fmt.Sprintf("--selector=%s", constants.LabelNodeRoleControlPlane))
 	cliSuite.Require().NoError(err)
 
 	workerNodes, err := cmd.Run(cliSuite.KubectlPath, "--kubeconfig", filepath.Join(tempDir, "kubeconfig"), "get", "nodes",
-		"-o", "jsonpath={.items[*].status.addresses[?(@.type==\"InternalIP\")].address}", fmt.Sprintf("--selector=!%s", constants.LabelNodeRoleMaster))
+		"-o", "jsonpath={.items[*].status.addresses[?(@.type==\"InternalIP\")].address}", fmt.Sprintf("--selector=!%s", constants.LabelNodeRoleControlPlane))
 	cliSuite.Require().NoError(err)
 
-	return &infoWrapper{
-		masterNodes: strings.Fields(strings.TrimSpace(masterNodes)),
-		workerNodes: strings.Fields(strings.TrimSpace(workerNodes)),
-	}
+	nodeInfo, err := newNodeInfo(
+		strings.Fields(strings.TrimSpace(masterNodes)),
+		strings.Fields(strings.TrimSpace(workerNodes)),
+	)
+	cliSuite.Require().NoError(err)
+
+	return nodeInfo
 }
 
 // buildCLICmd builds exec.Cmd from TalosSuite and args.
@@ -105,8 +108,8 @@ func (cliSuite *CLISuite) buildCLICmd(args []string) *exec.Cmd {
 }
 
 // RunCLI runs talosctl binary with the options provided.
-func (cliSuite *CLISuite) RunCLI(args []string, options ...RunOption) (stdout string) {
-	return run(&cliSuite.Suite, cliSuite.buildCLICmd(args), options...)
+func (cliSuite *CLISuite) RunCLI(args []string, options ...RunOption) (stdout, stderr string) {
+	return run(&cliSuite.Suite, func() *exec.Cmd { return cliSuite.buildCLICmd(args) }, options...)
 }
 
 // RunAndWaitForMatch retries command until output matches.

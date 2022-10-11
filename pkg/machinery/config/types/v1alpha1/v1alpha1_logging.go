@@ -9,6 +9,7 @@ import (
 	"net/url"
 
 	"github.com/hashicorp/go-multierror"
+	"github.com/siderolabs/gen/slices"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
@@ -49,12 +50,7 @@ func (lc *LoggingConfig) Validate() error {
 
 // Destinations implements config.Logging interface.
 func (lc *LoggingConfig) Destinations() []config.LoggingDestination {
-	res := make([]config.LoggingDestination, len(lc.LoggingDestinations))
-	for i, ld := range lc.LoggingDestinations {
-		res[i] = config.LoggingDestination(ld)
-	}
-
-	return res
+	return slices.Map(lc.LoggingDestinations, func(ld LoggingDestination) config.LoggingDestination { return ld })
 }
 
 // Endpoint implements config.LoggingDestination interface.

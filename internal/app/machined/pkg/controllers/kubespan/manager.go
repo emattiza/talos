@@ -8,17 +8,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"time"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/value"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
+	"go4.org/netipx"
 	"golang.zx2c4.com/wireguard/wgctrl"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
-	"inet.af/netaddr"
 
 	kubespanadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/kubespan"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
@@ -56,10 +58,10 @@ type WireguardClient interface {
 }
 
 // RulesManagerFactory allows mocking RulesManager.
-type RulesManagerFactory func(targetTable, internalMark int) RulesManager
+type RulesManagerFactory func(targetTable, internalMark, markMask int) RulesManager
 
 // NfTablesManagerFactory allows mocking NfTablesManager.
-type NfTablesManagerFactory func(externalMark, internalMark uint32) NfTablesManager
+type NfTablesManagerFactory func(externalMark, internalMark, markMask uint32) NfTablesManager
 
 // Inputs implements controller.Controller interface.
 func (ctrl *ManagerController) Inputs() []controller.Input {
@@ -67,7 +69,7 @@ func (ctrl *ManagerController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      kubespan.ConfigType,
-			ID:        pointer.ToString(kubespan.ConfigID),
+			ID:        pointer.To(kubespan.ConfigID),
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -78,7 +80,7 @@ func (ctrl *ManagerController) Inputs() []controller.Input {
 		{
 			Namespace: kubespan.NamespaceName,
 			Type:      kubespan.IdentityType,
-			ID:        pointer.ToString(kubespan.LocalIdentity),
+			ID:        pointer.To(kubespan.LocalIdentity),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -133,12 +135,13 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 		ctrl.PeerReconcileInterval = DefaultPeerReconcileInterval
 	}
 
-	wgClient, err := ctrl.WireguardClientFactory()
-	if err != nil {
-		return fmt.Errorf("error creating wireguard client: %w", err)
-	}
+	var wgClient WireguardClient
 
-	defer wgClient.Close() //nolint:errcheck
+	defer func() {
+		if wgClient != nil {
+			wgClient.Close() //nolint:errcheck
+		}
+	}()
 
 	var rulesMgr RulesManager
 
@@ -207,13 +210,20 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 			continue
 		}
 
+		if wgClient == nil {
+			wgClient, err = ctrl.WireguardClientFactory()
+			if err != nil {
+				return fmt.Errorf("error creating wireguard client: %w", err)
+			}
+		}
+
 		if ticker == nil {
 			ticker = time.NewTicker(ctrl.PeerReconcileInterval)
 			tickerC = ticker.C
 		}
 
 		if rulesMgr == nil {
-			rulesMgr = ctrl.RulesManagerFactory(constants.KubeSpanDefaultRoutingTable, constants.KubeSpanDefaultForceFirewallMark)
+			rulesMgr = ctrl.RulesManagerFactory(constants.KubeSpanDefaultRoutingTable, constants.KubeSpanDefaultForceFirewallMark, constants.KubeSpanDefaultFirewallMask)
 
 			if err = rulesMgr.Install(); err != nil {
 				return fmt.Errorf("failed setting up routing rules: %w", err)
@@ -221,7 +231,7 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 		}
 
 		if nfTablesMgr == nil {
-			nfTablesMgr = ctrl.NfTablesManagerFactory(constants.KubeSpanDefaultFirewallMark, constants.KubeSpanDefaultForceFirewallMark)
+			nfTablesMgr = ctrl.NfTablesManagerFactory(constants.KubeSpanDefaultFirewallMark, constants.KubeSpanDefaultForceFirewallMark, constants.KubeSpanDefaultFirewallMask)
 		}
 
 		cfgSpec := cfg.(*kubespan.Config).TypedSpec()
@@ -310,7 +320,7 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 			if kubespanadapter.PeerStatusSpec(peerStatus).ShouldChangeEndpoint() {
 				newEndpoint := kubespanadapter.PeerStatusSpec(peerStatus).PickNewEndpoint(peerSpec.Endpoints)
 
-				if !newEndpoint.IsZero() {
+				if !value.IsZero(newEndpoint) {
 					logger.Debug("updating endpoint for the peer", zap.String("peer", pubKey), zap.String("label", peerSpec.Label), zap.Stringer("endpoint", newEndpoint))
 
 					endpoint = newEndpoint.String()
@@ -321,7 +331,7 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 			}
 
 			// re-establish the endpoint if it wasn't applied to the Wireguard config completely
-			if !peerStatus.LastUsedEndpoint.IsZero() && (peerStatus.Endpoint.IsZero() || peerStatus.Endpoint == peerStatus.LastUsedEndpoint) {
+			if !value.IsZero(peerStatus.LastUsedEndpoint) && (value.IsZero(peerStatus.Endpoint) || peerStatus.Endpoint == peerStatus.LastUsedEndpoint) {
 				endpoint = peerStatus.LastUsedEndpoint.String()
 				peerStatus.Endpoint = peerStatus.LastUsedEndpoint
 
@@ -333,12 +343,12 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 				PresharedKey:                cfgSpec.SharedSecret,
 				Endpoint:                    endpoint,
 				PersistentKeepaliveInterval: constants.KubeSpanDefaultPeerKeepalive,
-				AllowedIPs:                  append([]netaddr.IPPrefix(nil), peerSpec.AllowedIPs...),
+				AllowedIPs:                  append([]netip.Prefix(nil), peerSpec.AllowedIPs...),
 			})
 		}
 
 		// build full allowedIPs set
-		var allowedIPsBuilder netaddr.IPSetBuilder
+		var allowedIPsBuilder netipx.IPSetBuilder
 
 		for pubKey, peerSpec := range peerSpecs {
 			// list of statuses and specs should be in sync at this point
@@ -390,7 +400,7 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 			func(r resource.Resource) error {
 				spec := r.(*network.AddressSpec).TypedSpec()
 
-				spec.Address = netaddr.IPPrefixFrom(localSpec.Address.IP(), localSpec.Subnet.Bits())
+				spec.Address = netip.PrefixFrom(localSpec.Address.Addr(), localSpec.Subnet.Bits())
 				spec.ConfigLayer = network.ConfigOperator
 				spec.Family = nethelpers.FamilyInet6
 				spec.Flags = nethelpers.AddressFlags(nethelpers.AddressPermanent)
@@ -406,9 +416,9 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 		for _, spec := range []network.RouteSpecSpec{
 			{
 				Family:      nethelpers.FamilyInet4,
-				Destination: netaddr.IPPrefix{},
-				Source:      netaddr.IP{},
-				Gateway:     netaddr.IP{},
+				Destination: netip.Prefix{},
+				Source:      netip.Addr{},
+				Gateway:     netip.Addr{},
 				OutLinkName: constants.KubeSpanLinkName,
 				Table:       nethelpers.RoutingTable(constants.KubeSpanDefaultRoutingTable),
 				Priority:    1,
@@ -420,9 +430,9 @@ func (ctrl *ManagerController) Run(ctx context.Context, r controller.Runtime, lo
 			},
 			{
 				Family:      nethelpers.FamilyInet6,
-				Destination: netaddr.IPPrefix{},
-				Source:      netaddr.IP{},
-				Gateway:     netaddr.IP{},
+				Destination: netip.Prefix{},
+				Source:      netip.Addr{},
+				Gateway:     netip.Addr{},
 				OutLinkName: constants.KubeSpanLinkName,
 				Table:       nethelpers.RoutingTable(constants.KubeSpanDefaultRoutingTable),
 				Priority:    1,

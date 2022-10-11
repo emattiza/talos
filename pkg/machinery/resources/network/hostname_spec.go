@@ -10,25 +10,28 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // HostnameSpecType is type of HostnameSpec resource.
 const HostnameSpecType = resource.Type("HostnameSpecs.net.talos.dev")
 
 // HostnameSpec resource holds node hostname.
-type HostnameSpec struct {
-	md   resource.Metadata
-	spec HostnameSpecSpec
-}
+type HostnameSpec = typed.Resource[HostnameSpecSpec, HostnameSpecRD]
 
 // HostnameID is the ID of the singleton instance.
 const HostnameID resource.ID = "hostname"
 
 // HostnameSpecSpec describes node nostname.
+//
+//gotagsrewrite:gen
 type HostnameSpecSpec struct {
-	Hostname    string      `yaml:"hostname"`
-	Domainname  string      `yaml:"domainname"`
-	ConfigLayer ConfigLayer `yaml:"layer"`
+	Hostname    string      `yaml:"hostname" protobuf:"1"`
+	Domainname  string      `yaml:"domainname" protobuf:"2"`
+	ConfigLayer ConfigLayer `yaml:"layer" protobuf:"3"`
 }
 
 // Validate the hostname.
@@ -70,40 +73,17 @@ func (spec *HostnameSpecSpec) ParseFQDN(fqdn string) error {
 
 // NewHostnameSpec initializes a HostnameSpec resource.
 func NewHostnameSpec(namespace resource.Namespace, id resource.ID) *HostnameSpec {
-	r := &HostnameSpec{
-		md:   resource.NewMetadata(namespace, HostnameSpecType, id, resource.VersionUndefined),
-		spec: HostnameSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[HostnameSpecSpec, HostnameSpecRD](
+		resource.NewMetadata(namespace, HostnameSpecType, id, resource.VersionUndefined),
+		HostnameSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *HostnameSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// HostnameSpecRD provides auxiliary methods for HostnameSpec.
+type HostnameSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *HostnameSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *HostnameSpec) String() string {
-	return fmt.Sprintf("network.HostnameSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *HostnameSpec) DeepCopy() resource.Resource {
-	return &HostnameSpec{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *HostnameSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (HostnameSpecRD) ResourceDefinition(resource.Metadata, HostnameSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             HostnameSpecType,
 		Aliases:          []resource.Type{},
@@ -112,7 +92,11 @@ func (r *HostnameSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *HostnameSpec) TypedSpec() *HostnameSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[HostnameSpecSpec](HostnameSpecType, &HostnameSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

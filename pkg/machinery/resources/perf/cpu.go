@@ -5,11 +5,16 @@
 package perf
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
+
+//nolint:lll
+//go:generate deep-copy -type CPUSpec -type MemorySpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
 
 // CPUType is type of Etcd resource.
 const CPUType = resource.Type("CPUStats.perf.talos.dev")
@@ -18,72 +23,51 @@ const CPUType = resource.Type("CPUStats.perf.talos.dev")
 const CPUID = resource.ID("latest")
 
 // CPU represents the last CPU stats snapshot.
-type CPU struct {
-	md   resource.Metadata
-	spec CPUSpec
-}
+type CPU = typed.Resource[CPUSpec, CPURD]
 
 // CPUSpec represents the last CPU stats snapshot.
+//
+//gotagsrewrite:gen
 type CPUSpec struct {
-	CPU             []CPUStat `yaml:"cpu"`
-	CPUTotal        CPUStat   `yaml:"cpuTotal"`
-	IRQTotal        uint64    `yaml:"irqTotal"`
-	ContextSwitches uint64    `yaml:"contextSwitches"`
-	ProcessCreated  uint64    `yaml:"processCreated"`
-	ProcessRunning  uint64    `yaml:"processRunning"`
-	ProcessBlocked  uint64    `yaml:"processBlocked"`
-	SoftIrqTotal    uint64    `yaml:"softIrqTotal"`
+	CPU             []CPUStat `yaml:"cpu" protobuf:"1"`
+	CPUTotal        CPUStat   `yaml:"cpuTotal" protobuf:"2"`
+	IRQTotal        uint64    `yaml:"irqTotal" protobuf:"3"`
+	ContextSwitches uint64    `yaml:"contextSwitches" protobuf:"4"`
+	ProcessCreated  uint64    `yaml:"processCreated" protobuf:"5"`
+	ProcessRunning  uint64    `yaml:"processRunning" protobuf:"6"`
+	ProcessBlocked  uint64    `yaml:"processBlocked" protobuf:"7"`
+	SoftIrqTotal    uint64    `yaml:"softIrqTotal" protobuf:"8"`
 }
 
 // CPUStat represents a single cpu stat.
+//
+//gotagsrewrite:gen
 type CPUStat struct {
-	User      float64 `yaml:"user"`
-	Nice      float64 `yaml:"nice"`
-	System    float64 `yaml:"system"`
-	Idle      float64 `yaml:"idle"`
-	Iowait    float64 `yaml:"iowait"`
-	Irq       float64 `yaml:"irq"`
-	SoftIrq   float64 `yaml:"softIrq"`
-	Steal     float64 `yaml:"steal"`
-	Guest     float64 `yaml:"guest"`
-	GuestNice float64 `yaml:"guestNice"`
+	User      float64 `yaml:"user" protobuf:"1"`
+	Nice      float64 `yaml:"nice" protobuf:"2"`
+	System    float64 `yaml:"system" protobuf:"3"`
+	Idle      float64 `yaml:"idle" protobuf:"4"`
+	Iowait    float64 `yaml:"iowait" protobuf:"5"`
+	Irq       float64 `yaml:"irq" protobuf:"6"`
+	SoftIrq   float64 `yaml:"softIrq" protobuf:"7"`
+	Steal     float64 `yaml:"steal" protobuf:"8"`
+	Guest     float64 `yaml:"guest" protobuf:"9"`
+	GuestNice float64 `yaml:"guestNice" protobuf:"10"`
 }
 
 // NewCPU creates new default CPU stats object.
 func NewCPU() *CPU {
-	r := &CPU{
-		md: resource.NewMetadata(NamespaceName, CPUType, CPUID, resource.VersionUndefined),
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[CPUSpec, CPURD](
+		resource.NewMetadata(NamespaceName, CPUType, CPUID, resource.VersionUndefined),
+		CPUSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *CPU) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *CPU) Spec() interface{} {
-	return &r.spec
-}
-
-func (r *CPU) String() string {
-	return fmt.Sprintf("secrets.CPUSecrets(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *CPU) DeepCopy() resource.Resource {
-	return &CPU{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// CPURD is an auxiliary type for CPU resource.
+type CPURD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *CPU) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (CPURD) ResourceDefinition(resource.Metadata, CPUSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             CPUType,
 		Aliases:          []resource.Type{},
@@ -101,7 +85,11 @@ func (r *CPU) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *CPU) TypedSpec() *CPUSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[CPUSpec](CPUType, &CPU{})
+	if err != nil {
+		panic(err)
+	}
 }

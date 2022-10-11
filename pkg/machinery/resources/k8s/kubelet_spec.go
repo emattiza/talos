@@ -5,77 +5,45 @@
 package k8s
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 	"github.com/opencontainers/runtime-spec/specs-go"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // KubeletSpecType is type of KubeletSpec resource.
 const KubeletSpecType = resource.Type("KubeletSpecs.kubernetes.talos.dev")
 
 // KubeletSpec resource holds final definition of kubelet runtime configuration.
-type KubeletSpec struct {
-	md   resource.Metadata
-	spec *KubeletSpecSpec
-}
+type KubeletSpec = typed.Resource[KubeletSpecSpec, KubeletSpecRD]
 
 // KubeletSpecSpec holds the source of kubelet configuration.
+//
+//gotagsrewrite:gen
 type KubeletSpecSpec struct {
-	Image       string                 `yaml:"image"`
-	Args        []string               `yaml:"args,omitempty"`
-	ExtraMounts []specs.Mount          `yaml:"extraMounts,omitempty"`
-	Config      map[string]interface{} `yaml:"config"`
+	Image            string                 `yaml:"image" protobuf:"1"`
+	Args             []string               `yaml:"args,omitempty" protobuf:"2"`
+	ExtraMounts      []specs.Mount          `yaml:"extraMounts,omitempty" protobuf:"3"`
+	ExpectedNodename string                 `yaml:"expectedNodename,omitempty" protobuf:"4"`
+	Config           map[string]interface{} `yaml:"config" protobuf:"5"`
 }
 
 // NewKubeletSpec initializes an empty KubeletSpec resource.
 func NewKubeletSpec(namespace resource.Namespace, id resource.ID) *KubeletSpec {
-	r := &KubeletSpec{
-		md:   resource.NewMetadata(namespace, KubeletSpecType, id, resource.VersionUndefined),
-		spec: &KubeletSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[KubeletSpecSpec, KubeletSpecRD](
+		resource.NewMetadata(namespace, KubeletSpecType, id, resource.VersionUndefined),
+		KubeletSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *KubeletSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// KubeletSpecRD provides auxiliary methods for KubeletSpec.
+type KubeletSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *KubeletSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *KubeletSpec) String() string {
-	return fmt.Sprintf("k8s.KubeletSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *KubeletSpec) DeepCopy() resource.Resource {
-	config := make(map[string]interface{}, len(r.spec.Config))
-
-	for k, v := range r.spec.Config {
-		config[k] = v
-	}
-
-	return &KubeletSpec{
-		md: r.md,
-		spec: &KubeletSpecSpec{
-			Image:       r.spec.Image,
-			Args:        append([]string(nil), r.spec.Args...),
-			ExtraMounts: append([]specs.Mount(nil), r.spec.ExtraMounts...),
-			Config:      config,
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *KubeletSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (KubeletSpecRD) ResourceDefinition(resource.Metadata, KubeletSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             KubeletSpecType,
 		Aliases:          []resource.Type{},
@@ -83,7 +51,11 @@ func (r *KubeletSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *KubeletSpec) TypedSpec() *KubeletSpecSpec {
-	return r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[KubeletSpecSpec](KubeletSpecType, &KubeletSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

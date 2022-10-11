@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -73,7 +72,7 @@ func parseLine(line string) (*duInfo, error) {
 // TestSuccess runs comand with success.
 func (suite *DiskUsageSuite) TestSuccess() {
 	folder := "/etc"
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 
 	var folderSize int64 = 4096
 
@@ -95,7 +94,7 @@ func (suite *DiskUsageSuite) TestSuccess() {
 		}))
 
 	// check total calculation
-	suite.RunCLI([]string{"usage", "--nodes", node, folder, "-d2", "--all"},
+	suite.RunCLI([]string{"usage", "--nodes", node, folder, "-d1", "--all"},
 		base.StdoutMatchFunc(func(stdout string) error {
 			lines := strings.Split(strings.TrimSpace(stdout), "\n")
 			if len(lines) == 1 {
@@ -129,9 +128,14 @@ func (suite *DiskUsageSuite) TestSuccess() {
 
 // TestError runs comand with error.
 func (suite *DiskUsageSuite) TestError() {
-	suite.RunCLI([]string{"usage", "--nodes", suite.RandomDiscoveredNode(), "/no/such/folder/here/just/for/sure"},
+	suite.RunCLI([]string{
+		"usage", "--nodes",
+		suite.RandomDiscoveredNodeInternalIP(), "/no/such/folder/here/just/for/sure",
+	},
+		base.ShouldFail(),
 		base.StderrNotEmpty(),
-		base.StdoutEmpty())
+		base.StdoutEmpty(),
+	)
 }
 
 func init() {

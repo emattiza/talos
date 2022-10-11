@@ -5,64 +5,40 @@
 package network
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // TimeServerStatusType is type of TimeServerStatus resource.
 const TimeServerStatusType = resource.Type("TimeServerStatuses.net.talos.dev")
 
 // TimeServerStatus resource holds NTP server info.
-type TimeServerStatus struct {
-	md   resource.Metadata
-	spec TimeServerStatusSpec
-}
+type TimeServerStatus = typed.Resource[TimeServerStatusSpec, TimeServerStatusRD]
 
 // TimeServerStatusSpec describes NTP servers.
+//
+//gotagsrewrite:gen
 type TimeServerStatusSpec struct {
-	NTPServers []string `yaml:"timeServers"`
+	NTPServers []string `yaml:"timeServers" protobuf:"1"`
 }
 
 // NewTimeServerStatus initializes a TimeServerStatus resource.
 func NewTimeServerStatus(namespace resource.Namespace, id resource.ID) *TimeServerStatus {
-	r := &TimeServerStatus{
-		md:   resource.NewMetadata(namespace, TimeServerStatusType, id, resource.VersionUndefined),
-		spec: TimeServerStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[TimeServerStatusSpec, TimeServerStatusRD](
+		resource.NewMetadata(namespace, TimeServerStatusType, id, resource.VersionUndefined),
+		TimeServerStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *TimeServerStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// TimeServerStatusRD provides auxiliary methods for TimeServerStatus.
+type TimeServerStatusRD struct{}
 
-// Spec implements resource.Resource.
-func (r *TimeServerStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *TimeServerStatus) String() string {
-	return fmt.Sprintf("network.TimeServerStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *TimeServerStatus) DeepCopy() resource.Resource {
-	return &TimeServerStatus{
-		md: r.md,
-		spec: TimeServerStatusSpec{
-			NTPServers: append([]string(nil), r.spec.NTPServers...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *TimeServerStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (TimeServerStatusRD) ResourceDefinition(resource.Metadata, TimeServerStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             TimeServerStatusType,
 		Aliases:          []resource.Type{"timeserver", "timeservers"},
@@ -76,7 +52,11 @@ func (r *TimeServerStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *TimeServerStatus) TypedSpec() *TimeServerStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[TimeServerStatusSpec](TimeServerStatusType, &TimeServerStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

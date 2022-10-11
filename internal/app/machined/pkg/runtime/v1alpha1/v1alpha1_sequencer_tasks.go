@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -25,12 +24,16 @@ import (
 
 	"github.com/containerd/cgroups"
 	cgroupsv2 "github.com/containerd/cgroups/v2"
+	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/state"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/talos-systems/go-blockdevice/blockdevice"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
-	"github.com/talos-systems/go-blockdevice/blockdevice/util"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/go-blockdevice/blockdevice/util"
+	"github.com/siderolabs/go-pointer"
 	"github.com/talos-systems/go-cmd/pkg/cmd"
+	"github.com/talos-systems/go-cmd/pkg/cmd/proc"
 	"github.com/talos-systems/go-kmsg"
 	"github.com/talos-systems/go-procfs/procfs"
 	"github.com/talos-systems/go-retry/retry"
@@ -40,19 +43,19 @@ import (
 	"kernel.org/pub/linux/libs/security/libcap/cap"
 
 	installer "github.com/talos-systems/talos/cmd/installer/pkg/install"
-	"github.com/talos-systems/talos/internal/app/machined/internal/install"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/adv"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/grub"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform"
 	perrors "github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/platform/errors"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/services"
 	"github.com/talos-systems/talos/internal/app/maintenance"
-	"github.com/talos-systems/talos/internal/pkg/containers/cri/containerd"
 	"github.com/talos-systems/talos/internal/pkg/cri"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
+	"github.com/talos-systems/talos/internal/pkg/install"
 	"github.com/talos-systems/talos/internal/pkg/mount"
 	"github.com/talos-systems/talos/internal/pkg/partition"
 	"github.com/talos-systems/talos/pkg/conditions"
@@ -67,6 +70,7 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/kernel"
+	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
 	resourceruntime "github.com/talos-systems/talos/pkg/machinery/resources/runtime"
 	"github.com/talos-systems/talos/pkg/version"
 )
@@ -90,7 +94,7 @@ func SetupLogger(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionF
 		// disable ratelimiting for kmsg, otherwise logs might be not visible.
 		// this should be set via kernel arg, but in case it's not set, try to force it.
 		if err = krnl.WriteParam(&kernel.Param{
-			Key:   "kernel.printk_devkmsg",
+			Key:   "proc.sys.kernel.printk_devkmsg",
 			Value: "on\n",
 		}); err != nil {
 			var serr syscall.Errno
@@ -152,32 +156,78 @@ func CreateSystemCgroups(seq runtime.Sequence, data interface{}) (runtime.TaskEx
 			}
 		}
 
-		groups := []string{
-			constants.CgroupInit,
-			constants.CgroupRuntime,
-			constants.CgroupPodRuntime,
-			constants.CgroupKubelet,
+		groups := []struct {
+			name      string
+			resources *cgroupsv2.Resources
+		}{
+			{
+				name: constants.CgroupInit,
+				resources: &cgroupsv2.Resources{
+					Memory: &cgroupsv2.Memory{
+						Min: pointer.To[int64](constants.CgroupInitReservedMemory),
+						Low: pointer.To[int64](constants.CgroupInitReservedMemory * 2),
+					},
+				},
+			},
+			{
+				name: constants.CgroupSystem,
+				resources: &cgroupsv2.Resources{
+					Memory: &cgroupsv2.Memory{
+						Min: pointer.To[int64](constants.CgroupSystemReservedMemory),
+						Low: pointer.To[int64](constants.CgroupSystemReservedMemory * 2),
+					},
+				},
+			},
+			{
+				name:      constants.CgroupSystemRuntime,
+				resources: &cgroupsv2.Resources{},
+			},
+			{
+				name: constants.CgroupPodRuntime,
+				resources: &cgroupsv2.Resources{
+					Memory: &cgroupsv2.Memory{
+						Min: pointer.To[int64](constants.CgroupPodRuntimeReservedMemory),
+						Low: pointer.To[int64](constants.CgroupPodRuntimeReservedMemory * 2),
+					},
+				},
+			},
+			{
+				name: constants.CgroupKubelet,
+				resources: &cgroupsv2.Resources{
+					Memory: &cgroupsv2.Memory{
+						Min: pointer.To[int64](constants.CgroupKubeletReservedMemory),
+						Low: pointer.To[int64](constants.CgroupKubeletReservedMemory * 2),
+					},
+				},
+			},
 		}
 
 		for _, c := range groups {
 			if cgroups.Mode() == cgroups.Unified {
-				cg, err := cgroupsv2.NewManager(constants.CgroupMountPath, c, &cgroupsv2.Resources{})
+				resources := c.resources
+
+				if r.State().Platform().Mode() == runtime.ModeContainer {
+					// don't attempt to set resources in container mode, as they might conflict with the parent cgroup tree
+					resources = &cgroupsv2.Resources{}
+				}
+
+				cg, err := cgroupsv2.NewManager(constants.CgroupMountPath, c.name, resources)
 				if err != nil {
 					return fmt.Errorf("failed to create cgroup: %w", err)
 				}
 
-				if c == constants.CgroupInit {
+				if c.name == constants.CgroupInit {
 					if err := cg.AddProc(uint64(os.Getpid())); err != nil {
 						return fmt.Errorf("failed to move init process to cgroup: %w", err)
 					}
 				}
 			} else {
-				cg, err := cgroups.New(cgroups.V1, cgroups.StaticPath(c), &specs.LinuxResources{})
+				cg, err := cgroups.New(cgroups.V1, cgroups.StaticPath(c.name), &specs.LinuxResources{})
 				if err != nil {
 					return fmt.Errorf("failed to create cgroup: %w", err)
 				}
 
-				if c == constants.CgroupInit {
+				if c.name == constants.CgroupInit {
 					if err := cg.Add(cgroups.Process{
 						Pid: os.Getpid(),
 					}); err != nil {
@@ -244,7 +294,7 @@ func SetRLimit(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFun
 // DropCapabilities drops some capabilities so that they can't be restored by child processes.
 func DropCapabilities(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
-		prop, err := krnl.ReadParam(&kernel.Param{Key: "kernel.kexec_load_disabled"})
+		prop, err := krnl.ReadParam(&kernel.Param{Key: "proc.sys.kernel.kexec_load_disabled"})
 		if v := strings.TrimSpace(string(prop)); err == nil && v != "0" {
 			logger.Printf("kernel.kexec_load_disabled is %v, skipping dropping capabilities", v)
 
@@ -376,7 +426,7 @@ func OSRelease() (err error) {
 		return err
 	}
 
-	return ioutil.WriteFile(filepath.Join(constants.SystemEtcPath, "os-release"), writer.Bytes(), 0o644)
+	return os.WriteFile(filepath.Join(constants.SystemEtcPath, "os-release"), writer.Bytes(), 0o644)
 }
 
 // createBindMount creates a common way to create a writable source file with a
@@ -421,6 +471,18 @@ func LoadConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 			if errors.Is(e, perrors.ErrNoConfigSource) {
 				logger.Println("machine configuration not found; starting maintenance service")
 
+				// nb: we treat maintenance mode as an "activate"
+				// event b/c the user is expected to be able to
+				// interact with the system at this point.
+				platform.FireEvent(
+					ctx,
+					r.State().Platform(),
+					platform.Event{
+						Type:    platform.EventTypeActivate,
+						Message: "Talos booted into maintenance mode. Ready for user interaction.",
+					},
+				)
+
 				b, e = receiveConfigViaMaintenanceService(ctx, logger, r)
 				if e != nil {
 					return fmt.Errorf("failed to receive config via maintenance service: %w", e)
@@ -428,9 +490,18 @@ func LoadConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 			}
 
 			if e != nil {
-				r.Events().Publish(&machineapi.ConfigLoadErrorEvent{
-					Error: err.Error(),
+				r.Events().Publish(ctx, &machineapi.ConfigLoadErrorEvent{
+					Error: e.Error(),
 				})
+
+				platform.FireEvent(
+					ctx,
+					r.State().Platform(),
+					platform.Event{
+						Type:    platform.EventTypeFailure,
+						Message: "Error fetching Talos machine config.",
+					},
+				)
 
 				return e
 			}
@@ -439,12 +510,30 @@ func LoadConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 
 			cfg, e := r.LoadAndValidateConfig(b)
 			if e != nil {
-				r.Events().Publish(&machineapi.ConfigLoadErrorEvent{
-					Error: err.Error(),
+				r.Events().Publish(ctx, &machineapi.ConfigLoadErrorEvent{
+					Error: e.Error(),
 				})
+
+				platform.FireEvent(
+					ctx,
+					r.State().Platform(),
+					platform.Event{
+						Type:    platform.EventTypeFailure,
+						Message: "Error loading and validating Talos machine config.",
+					},
+				)
 
 				return e
 			}
+
+			platform.FireEvent(
+				ctx,
+				r.State().Platform(),
+				platform.Event{
+					Type:    platform.EventTypeConfigLoaded,
+					Message: "Talos machine config loaded successfully.",
+				},
+			)
 
 			return r.SetConfig(cfg)
 		}
@@ -464,6 +553,15 @@ func LoadConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 
 		logger.Printf("persistence is enabled, using existing config on disk")
 
+		platform.FireEvent(
+			ctx,
+			r.State().Platform(),
+			platform.Event{
+				Type:    platform.EventTypeConfigLoaded,
+				Message: "Talos machine config loaded successfully.",
+			},
+		)
+
 		return r.SetConfig(cfg)
 	}, "loadConfig"
 }
@@ -471,15 +569,6 @@ func LoadConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 // SaveConfig represents the SaveConfig task.
 func SaveConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		if err = r.Config().ApplyDynamicConfig(ctx, r.State().Platform()); err != nil {
-			return err
-		}
-
-		err = r.State().V1Alpha2().SetConfig(r.Config())
-		if err != nil {
-			return err
-		}
-
 		var b []byte
 
 		b, err = r.Config().Bytes()
@@ -487,14 +576,14 @@ func SaveConfig(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 			return err
 		}
 
-		return ioutil.WriteFile(constants.ConfigPath, b, 0o600)
+		return os.WriteFile(constants.ConfigPath, b, 0o600)
 	}, "saveConfig"
 }
 
 func fetchConfig(ctx context.Context, r runtime.Runtime) (out []byte, err error) {
 	var b []byte
 
-	if b, err = r.State().Platform().Configuration(ctx); err != nil {
+	if b, err = r.State().Platform().Configuration(ctx, r.State().V1Alpha2().Resources()); err != nil {
 		return nil, err
 	}
 
@@ -513,7 +602,7 @@ func fetchConfig(ctx context.Context, r runtime.Runtime) (out []byte, err error)
 
 		var unzippedData []byte
 
-		unzippedData, err = ioutil.ReadAll(gzipReader)
+		unzippedData, err = io.ReadAll(gzipReader)
 		if err != nil {
 			return nil, fmt.Errorf("error unzipping machine config: %w", err)
 		}
@@ -525,7 +614,18 @@ func fetchConfig(ctx context.Context, r runtime.Runtime) (out []byte, err error)
 }
 
 func receiveConfigViaMaintenanceService(ctx context.Context, logger *log.Logger, r runtime.Runtime) ([]byte, error) {
-	cfgBytes, err := maintenance.Run(ctx, logger, r)
+	// add "fake" events to signal when Talos enters and leaves maintenance mode
+	r.Events().Publish(ctx, &machineapi.TaskEvent{
+		Action: machineapi.TaskEvent_START,
+		Task:   "runningMaintenance",
+	})
+
+	defer r.Events().Publish(ctx, &machineapi.TaskEvent{
+		Action: machineapi.TaskEvent_STOP,
+		Task:   "runningMaintenance",
+	})
+
+	cfgBytes, err := maintenance.Run(ctx, logger)
 	if err != nil {
 		return nil, fmt.Errorf("maintenance service failed: %w", err)
 	}
@@ -596,10 +696,6 @@ func WriteUdevRules(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
 		rules := r.Config().Machine().Udev().Rules()
 
-		if len(rules) == 0 {
-			return nil
-		}
-
 		var content strings.Builder
 
 		for _, rule := range rules {
@@ -607,7 +703,7 @@ func WriteUdevRules(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 			content.WriteByte('\n')
 		}
 
-		if err = ioutil.WriteFile(constants.UdevRulesPath, []byte(content.String()), 0o644); err != nil {
+		if err = os.WriteFile(constants.UdevRulesPath, []byte(content.String()), 0o644); err != nil {
 			return fmt.Errorf("failed writing custom udev rules: %w", err)
 		}
 
@@ -632,21 +728,38 @@ func StartUdevd(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFu
 // StartAllServices represents the task to start the system services.
 func StartAllServices(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
+		// nb: Treating the beginning of "service starts" as the activate event for a normal
+		// non-maintenance mode boot. At this point, we'd expect the user to
+		// start interacting with the system for troubleshooting at least.
+		platform.FireEvent(
+			ctx,
+			r.State().Platform(),
+			platform.Event{
+				Type:    platform.EventTypeActivate,
+				Message: "Talos is ready for user interaction.",
+			},
+		)
+
 		svcs := system.Services(r)
 
+		// load the kubelet service, but don't start it;
+		// KubeletServiceController will start it once it's ready.
 		svcs.Load(
-			&services.APID{},
-			&services.CRI{},
+			&services.Kubelet{},
 		)
+
+		serviceList := []system.Service{
+			&services.CRI{},
+		}
 
 		switch t := r.Config().Machine().Type(); t {
 		case machine.TypeInit:
-			svcs.Load(
+			serviceList = append(serviceList,
 				&services.Trustd{},
 				&services.Etcd{Bootstrap: true},
 			)
 		case machine.TypeControlPlane:
-			svcs.Load(
+			serviceList = append(serviceList,
 				&services.Trustd{},
 				&services.Etcd{},
 			)
@@ -658,7 +771,7 @@ func StartAllServices(seq runtime.Sequence, data interface{}) (runtime.TaskExecu
 			panic(fmt.Sprintf("unexpected machine type %v", t))
 		}
 
-		system.Services(r).StartAll()
+		svcs.LoadAndStart(serviceList...)
 
 		all := []conditions.Condition{}
 
@@ -672,14 +785,34 @@ func StartAllServices(seq runtime.Sequence, data interface{}) (runtime.TaskExecu
 		ctx, cancel := context.WithTimeout(ctx, constants.BootTimeout)
 		defer cancel()
 
-		return conditions.WaitForAll(all...).Wait(ctx)
+		aggregateCondition := conditions.WaitForAll(all...)
+
+		errChan := make(chan error)
+
+		go func() {
+			errChan <- aggregateCondition.Wait(ctx)
+		}()
+
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			logger.Printf("%s", aggregateCondition.String())
+
+			select {
+			case err := <-errChan:
+				return err
+			case <-ticker.C:
+			}
+		}
 	}, "startAllServices"
 }
 
-// StopServicesForUpgrade represents the StopServicesForUpgrade task.
-func StopServicesForUpgrade(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+// StopServicesEphemeral represents the StopServicesEphemeral task.
+func StopServicesEphemeral(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		return system.Services(nil).StopWithRevDepenencies(ctx, "cri", "etcd", "kubelet", "udevd")
+		// stopping 'cri' service stops everything which depends on it (kubelet, etcd, ...)
+		return system.Services(nil).StopWithRevDepenencies(ctx, "cri", "udevd", "trustd")
 	}, "stopServicesForUpgrade"
 }
 
@@ -690,37 +823,6 @@ func StopAllServices(seq runtime.Sequence, data interface{}) (runtime.TaskExecut
 
 		return nil
 	}, "stopAllServices"
-}
-
-// VerifyInstallation represents the VerifyInstallation task.
-func VerifyInstallation(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
-	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		var (
-			current string
-			next    string
-			disk    string
-		)
-
-		disk, err = r.Config().Machine().Install().Disk()
-		if err != nil {
-			return err
-		}
-
-		grub := &grub.Grub{
-			BootDisk: disk,
-		}
-
-		current, next, err = grub.Labels()
-		if err != nil {
-			return err
-		}
-
-		if current == "" && next == "" {
-			return fmt.Errorf("bootloader is not configured")
-		}
-
-		return err
-	}, "verifyInstallation"
 }
 
 // MountOverlayFilesystems represents the MountOverlayFilesystems task.
@@ -740,7 +842,7 @@ func MountOverlayFilesystems(seq runtime.Sequence, data interface{}) (runtime.Ta
 // SetupSharedFilesystems represents the SetupSharedFilesystems task.
 func SetupSharedFilesystems(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		targets := []string{"/", "/var/lib/kubelet", "/etc/cni", "/run"}
+		targets := []string{"/", "/var", "/etc/cni", "/run"}
 		for _, t := range targets {
 			if err = unix.Mount("", t, "", unix.MS_SHARED|unix.MS_REC, ""); err != nil {
 				return err
@@ -754,9 +856,20 @@ func SetupSharedFilesystems(seq runtime.Sequence, data interface{}) (runtime.Tas
 // SetupVarDirectory represents the SetupVarDirectory task.
 func SetupVarDirectory(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		for _, p := range []string{"/var/log/containers", "/var/log/pods", "/var/lib/kubelet", "/var/run/lock"} {
+		for _, p := range []string{"/var/log/audit", "/var/log/containers", "/var/log/pods", "/var/lib/kubelet", "/var/run/lock", constants.SeccompProfilesDirectory} {
 			if err = os.MkdirAll(p, 0o700); err != nil {
 				return err
+			}
+		}
+
+		// Handle Kubernetes directories which need different ownership
+		for _, p := range []string{constants.KubernetesAuditLogDir} {
+			if err = os.MkdirAll(p, 0o700); err != nil {
+				return err
+			}
+
+			if err = os.Chown(p, constants.KubernetesAPIServerRunUser, constants.KubernetesAPIServerRunGroup); err != nil {
+				return fmt.Errorf("failed to chown %s: %w", p, err)
 			}
 		}
 
@@ -902,13 +1015,6 @@ func WriteUserFiles(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 			return fmt.Errorf("error generating extra files: %w", err)
 		}
 
-		extra, err := containerd.GenerateRegistriesConfig(r.Config().Machine().Registries())
-		if err != nil {
-			return err
-		}
-
-		files = append(files, extra...)
-
 		for _, f := range files {
 			content := f.Content()
 
@@ -930,7 +1036,7 @@ func WriteUserFiles(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 
 				var existingFileContents []byte
 
-				existingFileContents, err = ioutil.ReadFile(f.Path())
+				existingFileContents, err = os.ReadFile(f.Path())
 				if err != nil {
 					result = multierror.Append(result, err)
 
@@ -945,7 +1051,7 @@ func WriteUserFiles(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 			}
 
 			if filepath.Dir(f.Path()) == constants.ManifestsDirectory {
-				if err = ioutil.WriteFile(f.Path(), []byte(content), f.Permissions()); err != nil {
+				if err = os.WriteFile(f.Path(), []byte(content), f.Permissions()); err != nil {
 					result = multierror.Append(result, err)
 
 					continue
@@ -986,7 +1092,7 @@ func WriteUserFiles(seq runtime.Sequence, data interface{}) (runtime.TaskExecuti
 				continue
 			}
 
-			if err = ioutil.WriteFile(p, []byte(content), f.Permissions()); err != nil {
+			if err = os.WriteFile(p, []byte(content), f.Permissions()); err != nil {
 				result = multierror.Append(result, err)
 
 				continue
@@ -1068,7 +1174,7 @@ func UnmountPodMounts(seq runtime.Sequence, data interface{}) (runtime.TaskExecu
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
 		var b []byte
 
-		if b, err = ioutil.ReadFile("/proc/self/mounts"); err != nil {
+		if b, err = os.ReadFile("/proc/self/mounts"); err != nil {
 			return err
 		}
 
@@ -1144,6 +1250,15 @@ func UnmountSystemDiskBindMounts(seq runtime.Sequence, data interface{}) (runtim
 // k8s.io namespace.
 func CordonAndDrainNode(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
+		// skip not exist error as it means that the node hasn't fully joined yet
+		if _, err = os.Stat("/var/lib/kubelet/pki/kubelet-client-current.pem"); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+
+			return err
+		}
+
 		var nodename string
 
 		if nodename, err = r.NodeName(); err != nil {
@@ -1195,9 +1310,48 @@ func UncordonNode(seq runtime.Sequence, data interface{}) (runtime.TaskExecution
 }
 
 // LeaveEtcd represents the task for removing a control plane node from etcd.
+//
+//nolint:gocyclo
 func LeaveEtcd(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		client, err := etcd.NewClientFromControlPlaneIPs(ctx, r.Config().Cluster().CA(), r.Config().Cluster().Endpoint())
+		_, err = os.Stat(filepath.Join(constants.EtcdDataPath, "/member"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+
+			return err
+		}
+
+		etcdID := (&services.Etcd{}).ID(r)
+
+		services := system.Services(r).List()
+
+		shouldLeaveEtcd := false
+
+		for _, service := range services {
+			if service.AsProto().Id != etcdID {
+				continue
+			}
+
+			//nolint:exhaustive
+			switch service.GetState() {
+			case events.StateRunning:
+				fallthrough
+			case events.StateStopping:
+				fallthrough
+			case events.StateFailed:
+				shouldLeaveEtcd = true
+			}
+
+			break
+		}
+
+		if !shouldLeaveEtcd {
+			return nil
+		}
+
+		client, err := etcd.NewClientFromControlPlaneIPs(ctx, r.State().V1Alpha2().Resources())
 		if err != nil {
 			return fmt.Errorf("failed to create etcd client: %w", err)
 		}
@@ -1225,8 +1379,48 @@ func StopAllPods(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionF
 	return stopAndRemoveAllPods(cri.StopOnly), "stopAllPods"
 }
 
+func waitForKubeletLifecycleFinalizers(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+	logger.Printf("waiting for kubelet lifecycle finalizers")
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	lifecycle := resource.NewMetadata(k8s.NamespaceName, k8s.KubeletLifecycleType, k8s.KubeletLifecycleID, resource.VersionUndefined)
+
+	for {
+		ok, err := r.State().V1Alpha2().Resources().Teardown(ctx, lifecycle)
+		if err != nil {
+			return err
+		}
+
+		if ok {
+			break
+		}
+
+		_, err = r.State().V1Alpha2().Resources().WatchFor(ctx, lifecycle, state.WithFinalizerEmpty())
+		if err != nil {
+			return err
+		}
+	}
+
+	return r.State().V1Alpha2().Resources().Destroy(ctx, lifecycle)
+}
+
 func stopAndRemoveAllPods(stopAction cri.StopAction) runtime.TaskExecutionFunc {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
+		if err = waitForKubeletLifecycleFinalizers(ctx, logger, r); err != nil {
+			logger.Printf("failed waiting for kubelet lifecycle finalizers: %s", err)
+		}
+
+		logger.Printf("shutting down kubelet gracefully")
+
+		shutdownCtx, shutdownCtxCancel := context.WithTimeout(ctx, constants.KubeletShutdownGracePeriod*2)
+		defer shutdownCtxCancel()
+
+		if err = r.State().Machine().DBus().WaitShutdown(shutdownCtx); err != nil {
+			logger.Printf("failed waiting for inhibit shutdown lock: %s", err)
+		}
+
 		if err = system.Services(nil).Stop(ctx, "kubelet"); err != nil {
 			return err
 		}
@@ -1238,6 +1432,9 @@ func stopAndRemoveAllPods(stopAction cri.StopAction) runtime.TaskExecutionFunc {
 
 		//nolint:errcheck
 		defer client.Close()
+
+		ctx, cancel := context.WithTimeout(ctx, time.Minute*3)
+		defer cancel()
 
 		// We remove pods with POD network mode first so that the CNI can perform
 		// any cleanup tasks. If we don't do this, we run the risk of killing the
@@ -1374,18 +1571,12 @@ func Upgrade(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc,
 
 		logger.Printf("performing upgrade via %q", in.GetImage())
 
-		configBytes, err := r.Config().Bytes()
-		if err != nil {
-			return fmt.Errorf("error marshaling configuration: %w", err)
-		}
-
 		// We pull the installer image when we receive an upgrade request. No need
 		// to pull it again.
 		err = install.RunInstallerContainer(
 			devname, r.State().Platform().Name(),
 			in.GetImage(),
-			configBytes,
-			r.Config().Machine().Registries(),
+			r.Config(),
 			install.OptionsFromUpgradeRequest(r, in)...,
 		)
 		if err != nil {
@@ -1398,8 +1589,8 @@ func Upgrade(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc,
 	}, "upgrade"
 }
 
-// LabelNodeAsMaster represents the LabelNodeAsMaster task.
-func LabelNodeAsMaster(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+// LabelNodeAsControlPlane represents the LabelNodeAsControlPlane task.
+func LabelNodeAsControlPlane(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
 		h, err := kubernetes.NewTemporaryClientFromPKI(r.Config().Cluster().CA(), r.Config().Cluster().Endpoint())
 		if err != nil {
@@ -1415,7 +1606,7 @@ func LabelNodeAsMaster(seq runtime.Sequence, data interface{}) (runtime.TaskExec
 		}
 
 		err = retry.Constant(constants.NodeReadyTimeout, retry.WithUnits(3*time.Second), retry.WithErrorLogging(true)).RetryWithContext(ctx, func(ctx context.Context) error {
-			if err = h.LabelNodeAsMaster(ctx, nodename, !r.Config().Cluster().ScheduleOnMasters()); err != nil {
+			if err = h.LabelNodeAsControlPlane(ctx, nodename, !r.Config().Cluster().ScheduleOnControlPlanes()); err != nil {
 				return retry.ExpectedError(err)
 			}
 
@@ -1423,11 +1614,11 @@ func LabelNodeAsMaster(seq runtime.Sequence, data interface{}) (runtime.TaskExec
 		})
 
 		if err != nil {
-			return fmt.Errorf("failed to label node as master: %w", err)
+			return fmt.Errorf("failed to label node as control-plane: %w", err)
 		}
 
 		return nil
-	}, "labelNodeAsMaster"
+	}, "labelNodeAsControlPlane"
 }
 
 // UpdateBootloader represents the UpdateBootloader task.
@@ -1461,9 +1652,18 @@ func Reboot(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, 
 			rebootCmd = unix.LINUX_REBOOT_CMD_KEXEC
 		}
 
-		r.Events().Publish(&machineapi.RestartEvent{
+		r.Events().Publish(ctx, &machineapi.RestartEvent{
 			Cmd: int64(rebootCmd),
 		})
+
+		platform.FireEvent(
+			ctx,
+			r.State().Platform(),
+			platform.Event{
+				Type:    platform.EventTypeRebooted,
+				Message: "Talos rebooted.",
+			},
+		)
 
 		return runtime.RebootError{Cmd: rebootCmd}
 	}, "reboot"
@@ -1480,7 +1680,7 @@ func Shutdown(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc
 			}
 		}
 
-		r.Events().Publish(&machineapi.RestartEvent{
+		r.Events().Publish(ctx, &machineapi.RestartEvent{
 			Cmd: int64(cmd),
 		})
 
@@ -1621,11 +1821,6 @@ func UnmountEphemeralPartition(seq runtime.Sequence, data interface{}) (runtime.
 // Install mounts or installs the system partitions.
 func Install(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
 	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		configBytes, err := r.Config().Bytes()
-		if err != nil {
-			return fmt.Errorf("error marshaling configuration: %w", err)
-		}
-
 		switch {
 		case !r.State().Machine().Installed():
 			installerImage := r.Config().Machine().Install().Image()
@@ -1644,15 +1839,32 @@ func Install(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc,
 				disk,
 				r.State().Platform().Name(),
 				installerImage,
-				configBytes,
-				r.Config().Machine().Registries(),
+				r.Config(),
 				install.WithForce(true),
 				install.WithZero(r.Config().Machine().Install().Zero()),
 				install.WithExtraKernelArgs(r.Config().Machine().Install().ExtraKernelArgs()),
 			)
 			if err != nil {
+				platform.FireEvent(
+					ctx,
+					r.State().Platform(),
+					platform.Event{
+						Type:    platform.EventTypeFailure,
+						Message: "Talos install failed.",
+					},
+				)
+
 				return err
 			}
+
+			platform.FireEvent(
+				ctx,
+				r.State().Platform(),
+				platform.Event{
+					Type:    platform.EventTypeInstalled,
+					Message: "Talos installed successfully.",
+				},
+			)
 
 			logger.Println("install successful")
 
@@ -1670,13 +1882,33 @@ func Install(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc,
 			err = install.RunInstallerContainer(
 				devname, r.State().Platform().Name(),
 				r.State().Machine().StagedInstallImageRef(),
-				configBytes,
-				r.Config().Machine().Registries(),
+				r.Config(),
 				install.WithOptions(options),
 			)
 			if err != nil {
+				platform.FireEvent(
+					ctx,
+					r.State().Platform(),
+					platform.Event{
+						Type:    platform.EventTypeFailure,
+						Message: "Talos install failed.",
+					},
+				)
+
 				return err
 			}
+
+			// nb: we don't fire an "activate" event after this one
+			// b/c we'd only ever get here if Talos was already
+			// installed I believe.
+			platform.FireEvent(
+				ctx,
+				r.State().Platform(),
+				platform.Event{
+					Type:    platform.EventTypeUpgraded,
+					Message: "Talos staged upgrade successful.",
+				},
+			)
 
 			logger.Println("staged upgrade successful")
 
@@ -1686,55 +1918,6 @@ func Install(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc,
 
 		return nil
 	}, "install"
-}
-
-// BootstrapEtcd represents the task for bootstrapping etcd.
-func BootstrapEtcd(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
-	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) (err error) {
-		req, ok := data.(*machineapi.BootstrapRequest)
-		if !ok {
-			return fmt.Errorf("failed to typecast boostrap request")
-		}
-
-		if err = system.Services(r).Stop(ctx, "etcd"); err != nil {
-			return fmt.Errorf("failed to stop etcd: %w", err)
-		}
-
-		// This is hack. We need to fake a finished state so that we can get the
-		// wait in the boot sequence to unblock.
-		for _, svc := range system.Services(r).List() {
-			if svc.AsProto().GetId() == "etcd" {
-				svc.UpdateState(events.StateFinished, "Bootstrap requested")
-
-				break
-			}
-		}
-
-		if entries, _ := os.ReadDir(constants.EtcdDataPath); len(entries) > 0 { //nolint:errcheck
-			return fmt.Errorf("etcd data directory is not empty")
-		}
-
-		svc := &services.Etcd{
-			Bootstrap:            true,
-			RecoverFromSnapshot:  req.RecoverEtcd,
-			RecoverSkipHashCheck: req.RecoverSkipHashCheck,
-		}
-
-		if err = system.Services(r).Unload(ctx, svc.ID(r)); err != nil {
-			return err
-		}
-
-		system.Services(r).Load(svc)
-
-		if err = system.Services(r).Start(svc.ID(r)); err != nil {
-			return fmt.Errorf("error starting etcd in bootstrap mode: %w", err)
-		}
-
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
-
-		return system.WaitForService(system.StateEventUp, svc.ID(r)).Wait(ctx)
-	}, "bootstrapEtcd"
 }
 
 // ActivateLogicalVolumes represents the task for activating logical volumes.
@@ -1765,26 +1948,22 @@ func KexecPrepare(seq runtime.Sequence, data interface{}) (runtime.TaskExecution
 			return nil
 		}
 
-		disk, err := r.Config().Machine().Install().Disk()
+		conf, err := grub.Read(grub.ConfigPath)
 		if err != nil {
 			return err
 		}
 
-		grub := &grub.Grub{
-			BootDisk: disk,
-		}
-
-		entry, err := grub.GetCurrentEntry()
-		if err != nil {
-			return err
-		}
-
-		if entry == nil {
+		if conf == nil {
 			return nil
 		}
 
-		kernelPath := filepath.Join(constants.BootMountPoint, entry.Linux)
-		initrdPath := filepath.Join(constants.BootMountPoint, entry.Initrd)
+		defaultEntry, ok := conf.Entries[conf.Default]
+		if !ok {
+			return nil
+		}
+
+		kernelPath := filepath.Join(constants.BootMountPoint, defaultEntry.Linux)
+		initrdPath := filepath.Join(constants.BootMountPoint, defaultEntry.Initrd)
 
 		kernel, err := os.Open(kernelPath)
 		if err != nil {
@@ -1800,7 +1979,7 @@ func KexecPrepare(seq runtime.Sequence, data interface{}) (runtime.TaskExecution
 
 		defer initrd.Close() //nolint:errcheck
 
-		cmdline := strings.TrimSpace(entry.Cmdline)
+		cmdline := strings.TrimSpace(defaultEntry.Cmdline)
 
 		if err = unix.KexecFileLoad(int(kernel.Fd()), int(initrd.Fd()), cmdline, 0); err != nil {
 			switch {
@@ -1827,4 +2006,93 @@ func KexecPrepare(seq runtime.Sequence, data interface{}) (runtime.TaskExecution
 
 		return nil
 	}, "kexecPrepare"
+}
+
+// StartDBus starts the D-Bus mock.
+func StartDBus(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+		return r.State().Machine().DBus().Start()
+	}, "startDBus"
+}
+
+// StopDBus stops the D-Bus mock.
+func StopDBus(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+		if err := r.State().Machine().DBus().Stop(); err != nil {
+			logger.Printf("error stopping D-Bus: %s, ignored", err)
+		}
+
+		return nil
+	}, "stopDBus"
+}
+
+// ForceCleanup kills remaining procs and forces partitions unmount.
+func ForceCleanup(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+	return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+		if err := proc.KillAll(); err != nil {
+			logger.Printf("error killing all procs: %s", err)
+		}
+
+		if err := mount.UnmountAll(); err != nil {
+			logger.Printf("error unmounting: %s", err)
+		}
+
+		return nil
+	}, "forceCleanup"
+}
+
+func pauseOnFailure(callback func(runtime.Sequence, interface{}) (runtime.TaskExecutionFunc, string),
+	timeout time.Duration,
+) func(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+	return func(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+		f, name := callback(seq, data)
+
+		return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+			err := f(ctx, logger, r)
+			if err != nil {
+				logger.Printf("%s failed, rebooting in %.0f minutes. You can use talosctl apply-config or talosctl edit mc to fix the issues, error:\n%s", name, timeout.Minutes(), err)
+
+				timer := time.NewTimer(time.Minute * 5)
+				defer timer.Stop()
+
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+				}
+			}
+
+			return err
+		}, name
+	}
+}
+
+func taskErrorHandler(handler func(error, *log.Logger) error, task runtime.TaskSetupFunc) runtime.TaskSetupFunc {
+	return func(seq runtime.Sequence, data interface{}) (runtime.TaskExecutionFunc, string) {
+		f, name := task(seq, data)
+
+		return func(ctx context.Context, logger *log.Logger, r runtime.Runtime) error {
+			err := f(ctx, logger, r)
+			if err != nil {
+				return handler(err, logger)
+			}
+
+			return nil
+		}, name
+	}
+}
+
+func phaseListErrorHandler(handler func(error, *log.Logger) error, phases ...runtime.Phase) PhaseList {
+	for _, phase := range phases {
+		for i, task := range phase.Tasks {
+			phase.Tasks[i] = taskErrorHandler(handler, task)
+		}
+	}
+
+	return phases
+}
+
+func logError(err error, logger *log.Logger) error {
+	logger.Printf("WARNING: task failed: %s", err)
+
+	return nil
 }

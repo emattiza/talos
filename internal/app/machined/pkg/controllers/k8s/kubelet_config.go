@@ -9,10 +9,11 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
@@ -33,7 +34,7 @@ func (ctrl *KubeletConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -87,17 +88,16 @@ func (ctrl *KubeletConfigController) Run(ctx context.Context, r controller.Runti
 						return fmt.Errorf("error building DNS service IPs: %w", err)
 					}
 
-					kubeletConfig.ClusterDNS = make([]string, 0, len(addrs))
-
-					for _, addr := range addrs {
-						kubeletConfig.ClusterDNS = append(kubeletConfig.ClusterDNS, addr.String())
-					}
+					kubeletConfig.ClusterDNS = slices.Map(addrs, net.IP.String)
 				}
 
 				kubeletConfig.ClusterDomain = cfgProvider.Cluster().Network().DNSDomain()
 				kubeletConfig.ExtraArgs = cfgProvider.Machine().Kubelet().ExtraArgs()
 				kubeletConfig.ExtraMounts = cfgProvider.Machine().Kubelet().ExtraMounts()
+				kubeletConfig.ExtraConfig = cfgProvider.Machine().Kubelet().ExtraConfig()
 				kubeletConfig.CloudProviderExternal = cfgProvider.Cluster().ExternalCloudProvider().Enabled()
+				kubeletConfig.DefaultRuntimeSeccompEnabled = cfgProvider.Machine().Kubelet().DefaultRuntimeSeccompProfileEnabled()
+				kubeletConfig.SkipNodeRegistration = cfgProvider.Machine().Kubelet().SkipNodeRegistration()
 
 				return nil
 			},

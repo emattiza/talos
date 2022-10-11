@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -18,13 +17,14 @@ import (
 
 	"github.com/talos-systems/talos/internal/integration/base"
 	"github.com/talos-systems/talos/pkg/machinery/client"
+	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 )
 
 // RebootSuite ...
 type RebootSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -56,16 +56,63 @@ func (suite *RebootSuite) TestRebootNodeByNode() {
 		suite.T().Skip("cluster doesn't support reboots")
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 	suite.Require().NotEmpty(nodes)
 
 	for _, node := range nodes {
 		suite.T().Log("rebooting node", node)
 
-		suite.AssertRebooted(suite.ctx, node, func(nodeCtx context.Context) error {
-			return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
-		}, 10*time.Minute)
+		suite.AssertRebooted(
+			suite.ctx, node, func(nodeCtx context.Context) error {
+				return base.IgnoreGRPCUnavailable(suite.Client.Reboot(nodeCtx))
+			}, 10*time.Minute,
+		)
 	}
+}
+
+// TestRebootMultiple reboots a node, issues consequent reboots
+// reboot should cancel boot sequence, and cancel another reboot.
+func (suite *RebootSuite) TestRebootMultiple() {
+	if !suite.Capabilities().SupportsReboot {
+		suite.T().Skip("cluster doesn't support reboots")
+	}
+
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeWorker)
+	nodeCtx := client.WithNodes(suite.ctx, node)
+
+	bootID := suite.ReadBootIDWithRetry(nodeCtx, time.Minute*5)
+
+	// Issue reboot.
+	suite.Require().NoError(base.IgnoreGRPCUnavailable(
+		suite.Client.Reboot(nodeCtx),
+	))
+
+	// Issue reboot once again and wait for node to get a new boot id.
+	suite.Require().NoError(base.IgnoreGRPCUnavailable(
+		suite.Client.Reboot(nodeCtx),
+	))
+
+	suite.AssertBootIDChanged(nodeCtx, bootID, node, time.Minute*5)
+
+	bootID = suite.ReadBootIDWithRetry(nodeCtx, time.Minute*5)
+
+	suite.Require().NoError(retry.Constant(time.Second * 5).Retry(func() error {
+		// Issue reboot while the node is still booting.
+		err := suite.Client.Reboot(nodeCtx)
+		if err != nil {
+			return retry.ExpectedError(err)
+		}
+
+		// Reboot again and wait for cluster to become healthy.
+		suite.Require().NoError(base.IgnoreGRPCUnavailable(
+			suite.Client.Reboot(nodeCtx),
+		))
+
+		return nil
+	}))
+
+	suite.AssertBootIDChanged(nodeCtx, bootID, node, time.Minute*5)
+	suite.WaitForBootDone(suite.ctx)
 }
 
 // TestRebootAllNodes reboots all cluster nodes at the same time.
@@ -76,7 +123,7 @@ func (suite *RebootSuite) TestRebootAllNodes() {
 		suite.T().Skip("cluster doesn't support reboots")
 	}
 
-	nodes := suite.DiscoverNodes(suite.ctx).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(suite.ctx)
 	suite.Require().NotEmpty(nodes)
 
 	errCh := make(chan error, len(nodes))
@@ -123,23 +170,32 @@ func (suite *RebootSuite) TestRebootAllNodes() {
 
 				nodeCtx := client.WithNodes(suite.ctx, node)
 
-				return retry.Constant(10 * time.Minute).Retry(func() error {
-					requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, 5*time.Second)
-					defer requestCtxCancel()
+				return retry.Constant(10 * time.Minute).Retry(
+					func() error {
+						requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, 5*time.Second)
+						defer requestCtxCancel()
 
-					bootIDAfter, err := suite.ReadBootID(requestCtx)
-					if err != nil {
-						// API might be unresponsive during reboot
-						return retry.ExpectedError(fmt.Errorf("error reading bootID for node %q: %w", node, err))
-					}
+						bootIDAfter, err := suite.ReadBootID(requestCtx)
+						if err != nil {
+							// API might be unresponsive during reboot
+							return retry.ExpectedError(fmt.Errorf("error reading bootID for node %q: %w", node, err))
+						}
 
-					if bootIDAfter == bootIDBefore {
-						// bootID should be different after reboot
-						return retry.ExpectedError(fmt.Errorf("bootID didn't change for node %q: before %s, after %s", node, bootIDBefore, bootIDAfter))
-					}
+						if bootIDAfter == bootIDBefore {
+							// bootID should be different after reboot
+							return retry.ExpectedError(
+								fmt.Errorf(
+									"bootID didn't change for node %q: before %s, after %s",
+									node,
+									bootIDBefore,
+									bootIDAfter,
+								),
+							)
+						}
 
-					return nil
-				})
+						return nil
+					},
+				)
 			}()
 		}(node)
 	}

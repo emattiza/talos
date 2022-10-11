@@ -5,62 +5,40 @@
 package files
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // EtcFileStatusType is type of EtcFile resource.
 const EtcFileStatusType = resource.Type("EtcFileStatuses.files.talos.dev")
 
 // EtcFileStatus resource holds contents of the file which should be put to `/etc` directory.
-type EtcFileStatus struct {
-	md   resource.Metadata
-	spec EtcFileStatusSpec
-}
+type EtcFileStatus = typed.Resource[EtcFileStatusSpec, EtcFileStatusMD]
 
 // EtcFileStatusSpec describes status of rendered secrets.
+//
+//gotagsrewrite:gen
 type EtcFileStatusSpec struct {
-	SpecVersion string `yaml:"specVersion"`
+	SpecVersion string `yaml:"specVersion" protobuf:"1"`
 }
 
 // NewEtcFileStatus initializes a EtcFileStatus resource.
 func NewEtcFileStatus(namespace resource.Namespace, id resource.ID) *EtcFileStatus {
-	r := &EtcFileStatus{
-		md:   resource.NewMetadata(namespace, EtcFileStatusType, id, resource.VersionUndefined),
-		spec: EtcFileStatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[EtcFileStatusSpec, EtcFileStatusMD](
+		resource.NewMetadata(namespace, EtcFileStatusType, id, resource.VersionUndefined),
+		EtcFileStatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *EtcFileStatus) Metadata() *resource.Metadata {
-	return &r.md
-}
+// EtcFileStatusMD provides auxiliary methods for EtcFileStatus.
+type EtcFileStatusMD struct{}
 
-// Spec implements resource.Resource.
-func (r *EtcFileStatus) Spec() interface{} {
-	return r.spec
-}
-
-func (r *EtcFileStatus) String() string {
-	return fmt.Sprintf("network.EtcFileStatus(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *EtcFileStatus) DeepCopy() resource.Resource {
-	return &EtcFileStatus{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *EtcFileStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (EtcFileStatusMD) ResourceDefinition(resource.Metadata, EtcFileStatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             EtcFileStatusType,
 		Aliases:          []resource.Type{},
@@ -69,7 +47,11 @@ func (r *EtcFileStatus) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *EtcFileStatus) TypedSpec() *EtcFileStatusSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[EtcFileStatusSpec](EtcFileStatusType, &EtcFileStatus{})
+	if err != nil {
+		panic(err)
+	}
 }

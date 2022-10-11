@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/siderolabs/go-pointer"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 
@@ -30,8 +31,8 @@ func (suite *ConfigSuite) TestReconcileConfig() {
 		ConfigVersion: "v1alpha1",
 		MachineConfig: &v1alpha1.MachineConfig{
 			MachineNetwork: &v1alpha1.NetworkConfig{
-				NetworkKubeSpan: v1alpha1.NetworkKubeSpan{
-					KubeSpanEnabled: true,
+				NetworkKubeSpan: &v1alpha1.NetworkKubeSpan{
+					KubeSpanEnabled: pointer.To(true),
 				},
 			},
 		},
@@ -55,6 +56,7 @@ func (suite *ConfigSuite) TestReconcileConfig() {
 				suite.Assert().Equal("8XuV9TZHW08DOk3bVxQjH9ih_TBKjnh-j44tsCLSBzo=", spec.ClusterID)
 				suite.Assert().Equal("I+1In7fLnpcRIjUmEoeugZnSyFoTF6MztLxICL5Yu0s=", spec.SharedSecret)
 				suite.Assert().True(spec.ForceRouting)
+				suite.Assert().False(spec.AdvertiseKubernetesNetworks)
 
 				return nil
 			},

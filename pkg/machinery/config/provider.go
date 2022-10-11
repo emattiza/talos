@@ -5,7 +5,6 @@
 package config
 
 import (
-	"context"
 	"crypto/tls"
 	"net"
 	"net/url"
@@ -13,7 +12,7 @@ import (
 	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 
 	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
@@ -21,16 +20,25 @@ import (
 
 // Provider defines the configuration consumption interface.
 type Provider interface {
+	// Config parts accessor.
 	Version() string
 	Debug() bool
 	Persist() bool
 	Machine() MachineConfig
 	Cluster() ClusterConfig
+
 	// Validate checks configuration and returns warnings and fatal errors (as multierror).
 	Validate(RuntimeMode, ...ValidationOption) ([]string, error)
-	ApplyDynamicConfig(context.Context, DynamicConfigProvider) error
-	String(encoderOptions ...encoder.Option) (string, error)
-	Bytes(encoderOptions ...encoder.Option) ([]byte, error)
+
+	// Bytes returns source YAML representation (if available) or does default encoding.
+	Bytes() ([]byte, error)
+
+	// Encode configuration to YAML using the provided options.
+	EncodeString(encoderOptions ...encoder.Option) (string, error)
+	EncodeBytes(encoderOptions ...encoder.Option) ([]byte, error)
+
+	// Raw returns internal config representation.
+	Raw() interface{}
 }
 
 // MachineConfig defines the requirements for a config that pertains to machine
@@ -45,13 +53,24 @@ type MachineConfig interface {
 	Files() ([]File, error)
 	Type() machine.Type
 	Controlplane() MachineControlPlane
+	Pods() []map[string]interface{}
 	Kubelet() Kubelet
 	Sysctls() map[string]string
+	Sysfs() map[string]string
 	Registries() Registries
 	SystemDiskEncryption() SystemDiskEncryption
 	Features() Features
 	Udev() UdevConfig
 	Logging() Logging
+	Kernel() Kernel
+	SeccompProfiles() []SeccompProfile
+}
+
+// SeccompProfile defines the requirements for a config that pertains to seccomp
+// related options.
+type SeccompProfile interface {
+	Name() string
+	Value() map[string]interface{}
 }
 
 // Disk represents the options available for partitioning, formatting, and
@@ -82,11 +101,17 @@ type File interface {
 // related options.
 type Install interface {
 	Image() string
+	Extensions() []Extension
 	Disk() (string, error)
 	ExtraKernelArgs() []string
 	Zero() bool
 	LegacyBIOSSupport() bool
 	WithBootloader() bool
+}
+
+// Extension defines the system extension.
+type Extension interface {
+	Image() string
 }
 
 // Security defines the requirements for a config that pertains to security
@@ -124,6 +149,7 @@ type MachineNetwork interface {
 	Devices() []Device
 	ExtraHosts() []ExtraHost
 	KubeSpan() KubeSpan
+	DisableSearchDomain() bool
 }
 
 // ExtraHost represents a host entry in /etc/hosts.
@@ -138,6 +164,7 @@ type Device interface {
 	Addresses() []string
 	Routes() []Route
 	Bond() Bond
+	Bridge() Bridge
 	Vlans() []Vlan
 	MTU() int
 	DHCP() bool
@@ -146,6 +173,7 @@ type Device interface {
 	DHCPOptions() DHCPOptions
 	VIPConfig() VIPConfig
 	WireguardConfig() WireguardConfig
+	Selector() NetworkDeviceSelector
 }
 
 // DHCPOptions represents a set of DHCP options.
@@ -153,6 +181,7 @@ type DHCPOptions interface {
 	RouteMetric() uint32
 	IPv4() bool
 	IPv6() bool
+	DUIDv6() string
 }
 
 // VIPConfig contains settings for the Virtual (shared) IP setup.
@@ -220,6 +249,17 @@ type Bond interface {
 	PeerNotifyDelay() uint32
 }
 
+// STP contains the Spanning Tree Protocol settings for a bridge.
+type STP interface {
+	Enabled() bool
+}
+
+// Bridge contains the options for configuring a bridged interface.
+type Bridge interface {
+	Interfaces() []string
+	STP() STP
+}
+
 // Vlan represents vlan settings for a device.
 type Vlan interface {
 	Addresses() []string
@@ -228,6 +268,7 @@ type Vlan interface {
 	ID() uint16
 	MTU() uint32
 	VIPConfig() VIPConfig
+	DHCPOptions() DHCPOptions
 }
 
 // Route represents a network route.
@@ -236,12 +277,22 @@ type Route interface {
 	Gateway() string
 	Source() string
 	Metric() uint32
+	MTU() uint32
 }
 
 // KubeSpan configures KubeSpan feature.
 type KubeSpan interface {
 	Enabled() bool
 	ForceRouting() bool
+	AdvertiseKubernetesNetworks() bool
+}
+
+// NetworkDeviceSelector defines the set of fields that can be used to pick network a device.
+type NetworkDeviceSelector interface {
+	Bus() string
+	HardwareAddress() string
+	PCIID() string
+	KernelDriver() string
 }
 
 // Time defines the requirements for a config that pertains to time related
@@ -259,8 +310,11 @@ type Kubelet interface {
 	ClusterDNS() []string
 	ExtraArgs() map[string]string
 	ExtraMounts() []specs.Mount
+	ExtraConfig() map[string]interface{}
+	DefaultRuntimeSeccompProfileEnabled() bool
 	RegisterWithFQDN() bool
 	NodeIP() KubeletNodeIP
+	SkipNodeRegistration() bool
 }
 
 // KubeletNodeIP defines the way node IPs are selected for the kubelet.
@@ -331,7 +385,7 @@ type ClusterConfig interface {
 	ExtraManifestHeaderMap() map[string]string
 	InlineManifests() []InlineManifest
 	AdminKubeconfig() AdminKubeconfig
-	ScheduleOnMasters() bool
+	ScheduleOnControlPlanes() bool
 	Discovery() Discovery
 }
 
@@ -361,7 +415,16 @@ type APIServer interface {
 	Image() string
 	ExtraArgs() map[string]string
 	ExtraVolumes() []VolumeMount
+	Env() Env
 	DisablePodSecurityPolicy() bool
+	AdmissionControl() []AdmissionPlugin
+	AuditPolicy() map[string]interface{}
+}
+
+// AdmissionPlugin defines the API server Admission Plugin configuration.
+type AdmissionPlugin interface {
+	Name() string
+	Configuration() map[string]interface{}
 }
 
 // ControllerManager defines the requirements for a config that pertains to controller manager related
@@ -370,6 +433,7 @@ type ControllerManager interface {
 	Image() string
 	ExtraArgs() map[string]string
 	ExtraVolumes() []VolumeMount
+	Env() Env
 }
 
 // Proxy defines the requirements for a config that pertains to the kube-proxy
@@ -392,6 +456,7 @@ type Scheduler interface {
 	Image() string
 	ExtraArgs() map[string]string
 	ExtraVolumes() []VolumeMount
+	Env() Env
 }
 
 // Etcd defines the requirements for a config that pertains to etcd related
@@ -400,7 +465,8 @@ type Etcd interface {
 	Image() string
 	CA() *x509.PEMEncodedCertificateAndKey
 	ExtraArgs() map[string]string
-	Subnet() string
+	AdvertisedSubnets() []string
+	ListenSubnets() []string
 }
 
 // Token defines the requirements for a config that pertains to Kubernetes
@@ -427,6 +493,7 @@ type ExternalCloudProvider interface {
 
 // AdminKubeconfig defines settings for admin kubeconfig.
 type AdminKubeconfig interface {
+	CommonName() string
 	CertLifetime() time.Duration
 }
 
@@ -463,6 +530,16 @@ type SystemDiskEncryption interface {
 // Features describe individual Talos features that can be switched on or off.
 type Features interface {
 	RBACEnabled() bool
+	StableHostnameEnabled() bool
+	KubernetesTalosAPIAccess() KubernetesTalosAPIAccess
+	ApidCheckExtKeyUsageEnabled() bool
+}
+
+// KubernetesTalosAPIAccess describes the Kubernetes Talos API access features.
+type KubernetesTalosAPIAccess interface {
+	Enabled() bool
+	AllowedRoles() []string
+	AllowedKubernetesNamespaces() []string
 }
 
 // VolumeMount describes extra volume mount for the static pods.
@@ -516,4 +593,15 @@ type Logging interface {
 type LoggingDestination interface {
 	Endpoint() *url.URL
 	Format() string
+}
+
+// Kernel describes Talos Linux kernel configuration.
+type Kernel interface {
+	Modules() []KernelModule
+}
+
+// KernelModule describes Linux module to load.
+type KernelModule interface {
+	Name() string
+	Parameters() []string
 }

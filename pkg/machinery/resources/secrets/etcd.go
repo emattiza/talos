@@ -5,11 +5,13 @@
 package secrets
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/crypto/x509"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // EtcdType is type of Etcd resource.
@@ -19,57 +21,31 @@ const EtcdType = resource.Type("EtcdSecrets.secrets.talos.dev")
 const EtcdID = resource.ID("etcd")
 
 // Etcd contains etcd generated secrets.
-type Etcd struct {
-	md   resource.Metadata
-	spec *EtcdCertsSpec
-}
+type Etcd = typed.Resource[EtcdCertsSpec, EtcdRD]
 
 // EtcdCertsSpec describes etcd certs secrets.
+//
+//gotagsrewrite:gen
 type EtcdCertsSpec struct {
-	Etcd          *x509.PEMEncodedCertificateAndKey `yaml:"etcd"`
-	EtcdPeer      *x509.PEMEncodedCertificateAndKey `yaml:"etcdPeer"`
-	EtcdAdmin     *x509.PEMEncodedCertificateAndKey `yaml:"etcdAdmin"`
-	EtcdAPIServer *x509.PEMEncodedCertificateAndKey `yaml:"etcdAPIServer"`
+	Etcd          *x509.PEMEncodedCertificateAndKey `yaml:"etcd" protobuf:"1"`
+	EtcdPeer      *x509.PEMEncodedCertificateAndKey `yaml:"etcdPeer" protobuf:"2"`
+	EtcdAdmin     *x509.PEMEncodedCertificateAndKey `yaml:"etcdAdmin" protobuf:"3"`
+	EtcdAPIServer *x509.PEMEncodedCertificateAndKey `yaml:"etcdAPIServer" protobuf:"4"`
 }
 
 // NewEtcd initializes a Etc resource.
 func NewEtcd() *Etcd {
-	r := &Etcd{
-		md:   resource.NewMetadata(NamespaceName, EtcdType, EtcdID, resource.VersionUndefined),
-		spec: &EtcdCertsSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[EtcdCertsSpec, EtcdRD](
+		resource.NewMetadata(NamespaceName, EtcdType, EtcdID, resource.VersionUndefined),
+		EtcdCertsSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Etcd) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *Etcd) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Etcd) String() string {
-	return fmt.Sprintf("secrets.EtcdSecrets(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Etcd) DeepCopy() resource.Resource {
-	specCopy := *r.spec
-
-	return &Etcd{
-		md:   r.md,
-		spec: &specCopy,
-	}
-}
+// EtcdRD provides auxiliary methods for Etcd.
+type EtcdRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Etcd) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (EtcdRD) ResourceDefinition(resource.Metadata, EtcdCertsSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             EtcdType,
 		Aliases:          []resource.Type{},
@@ -78,7 +54,11 @@ func (r *Etcd) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// Certs returns .spec.
-func (r *Etcd) Certs() *EtcdCertsSpec {
-	return r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[EtcdCertsSpec](EtcdType, &Etcd{})
+	if err != nil {
+		panic(err)
+	}
 }

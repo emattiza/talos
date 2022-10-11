@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/events"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/health"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/runner"
@@ -22,9 +23,30 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
 
+var _ system.HealthcheckedService = (*Containerd)(nil)
+
 // Containerd implements the Service interface. It serves as the concrete type with
 // the required methods.
-type Containerd struct{}
+type Containerd struct {
+	// client is a lazy-initialized containerd client. It should be accessed using the Client() method.
+	client *containerd.Client
+}
+
+// Client lazy-initializes the containerd client if needed and returns it.
+func (c *Containerd) Client() (*containerd.Client, error) {
+	if c.client != nil {
+		return c.client, nil
+	}
+
+	client, err := containerd.New(constants.SystemContainerdAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	c.client = client
+
+	return c.client, err
+}
 
 // ID implements the Service interface.
 func (c *Containerd) ID(r runtime.Runtime) string {
@@ -38,6 +60,10 @@ func (c *Containerd) PreFunc(ctx context.Context, r runtime.Runtime) error {
 
 // PostFunc implements the Service interface.
 func (c *Containerd) PostFunc(r runtime.Runtime, state events.ServiceState) (err error) {
+	if c.client != nil {
+		return c.client.Close()
+	}
+
 	return nil
 }
 
@@ -68,17 +94,26 @@ func (c *Containerd) Runner(r runtime.Runtime) (runner.Runner, error) {
 	}
 
 	env := []string{}
-	for key, val := range r.Config().Machine().Env() {
-		env = append(env, fmt.Sprintf("%s=%s", key, val))
+
+	if r.Config() != nil {
+		for key, val := range r.Config().Machine().Env() {
+			env = append(env, fmt.Sprintf("%s=%s", key, val))
+		}
+	}
+
+	debug := false
+
+	if r.Config() != nil {
+		debug = r.Config().Debug()
 	}
 
 	return restart.New(process.NewRunner(
-		r.Config().Debug(),
+		debug,
 		args,
 		runner.WithLoggingManager(r.Logging()),
 		runner.WithEnv(env),
 		runner.WithOOMScoreAdj(-999),
-		runner.WithCgroupPath(constants.CgroupRuntime),
+		runner.WithCgroupPath(constants.CgroupSystemRuntime),
 	),
 		restart.WithType(restart.Forever),
 	), nil
@@ -87,12 +122,10 @@ func (c *Containerd) Runner(r runtime.Runtime) (runner.Runner, error) {
 // HealthFunc implements the HealthcheckedService interface.
 func (c *Containerd) HealthFunc(runtime.Runtime) health.Check {
 	return func(ctx context.Context) error {
-		client, err := containerd.New(constants.SystemContainerdAddress)
+		client, err := c.Client()
 		if err != nil {
 			return err
 		}
-		//nolint:errcheck
-		defer client.Close()
 
 		resp, err := client.HealthService().Check(ctx, &grpc_health_v1.HealthCheckRequest{})
 		if err != nil {

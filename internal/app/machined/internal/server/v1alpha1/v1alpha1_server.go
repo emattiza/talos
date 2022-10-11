@@ -14,27 +14,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/AlekSi/pointer"
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/oci"
-	criconstants "github.com/containerd/cri/pkg/constants"
+	criconstants "github.com/containerd/containerd/pkg/cri/constants"
+	cosiv1alpha1 "github.com/cosi-project/runtime/api/v1alpha1"
+	"github.com/cosi-project/runtime/pkg/safe"
+	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/cosi-project/runtime/pkg/state/protobuf/server"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
+	"github.com/google/uuid"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/prometheus/procfs"
 	"github.com/rs/xid"
-	"github.com/talos-systems/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/gen/slices"
+	"github.com/siderolabs/go-blockdevice/blockdevice/partition/gpt"
+	"github.com/siderolabs/go-pointer"
 	"github.com/talos-systems/go-kmsg"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -42,7 +50,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	installer "github.com/talos-systems/talos/cmd/installer/pkg/install"
-	"github.com/talos-systems/talos/internal/app/machined/internal/install"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/disk"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader"
@@ -55,14 +62,14 @@ import (
 	"github.com/talos-systems/talos/internal/pkg/containers"
 	taloscontainerd "github.com/talos-systems/talos/internal/pkg/containers/containerd"
 	"github.com/talos-systems/talos/internal/pkg/containers/cri"
-	"github.com/talos-systems/talos/internal/pkg/containers/image"
 	"github.com/talos-systems/talos/internal/pkg/etcd"
-	"github.com/talos-systems/talos/internal/pkg/kubeconfig"
+	"github.com/talos-systems/talos/internal/pkg/install"
 	"github.com/talos-systems/talos/internal/pkg/miniprocfs"
 	"github.com/talos-systems/talos/internal/pkg/mount"
 	"github.com/talos-systems/talos/pkg/archiver"
 	"github.com/talos-systems/talos/pkg/chunker"
 	"github.com/talos-systems/talos/pkg/chunker/stream"
+	"github.com/talos-systems/talos/pkg/kubeconfig"
 	"github.com/talos-systems/talos/pkg/machinery/api/cluster"
 	"github.com/talos-systems/talos/pkg/machinery/api/common"
 	"github.com/talos-systems/talos/pkg/machinery/api/inspect"
@@ -71,10 +78,12 @@ import (
 	"github.com/talos-systems/talos/pkg/machinery/api/storage"
 	timeapi "github.com/talos-systems/talos/pkg/machinery/api/time"
 	clientconfig "github.com/talos-systems/talos/pkg/machinery/client/config"
-	"github.com/talos-systems/talos/pkg/machinery/config"
+	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/generate"
 	machinetype "github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
+	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
+	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 	timeresource "github.com/talos-systems/talos/pkg/machinery/resources/time"
 	"github.com/talos-systems/talos/pkg/machinery/role"
 	"github.com/talos-systems/talos/pkg/version"
@@ -96,6 +105,11 @@ type Server struct {
 	machine.UnimplementedMachineServiceServer
 
 	Controller runtime.Controller
+	// breaking the import loop cycle between services/ package and v1alpha1_server.go
+	EtcdBootstrapper func(context.Context, runtime.Runtime, *machine.BootstrapRequest) error
+
+	// ShutdownCtx signals that the server is shutting down.
+	ShutdownCtx context.Context //nolint:containedctx
 
 	server *grpc.Server
 }
@@ -104,19 +118,35 @@ func (s *Server) checkSupported(feature runtime.ModeCapability) error {
 	mode := s.Controller.Runtime().State().Platform().Mode()
 
 	if !mode.Supports(feature) {
-		return fmt.Errorf("method is not supported in %s mode", mode.String())
+		return status.Errorf(codes.FailedPrecondition, "method is not supported in %s mode", mode.String())
 	}
 
 	return nil
+}
+
+func (s *Server) checkControlplane(apiName string) error {
+	switch s.Controller.Runtime().Config().Machine().Type() { //nolint:exhaustive
+	case machinetype.TypeControlPlane:
+		fallthrough
+	case machinetype.TypeInit:
+		return nil
+	}
+
+	return status.Errorf(codes.Unimplemented, "%s is only available on control plane nodes", apiName)
 }
 
 // Register implements the factory.Registrator interface.
 func (s *Server) Register(obj *grpc.Server) {
 	s.server = obj
 
+	// wrap resources with access filter
+	resourceState := s.Controller.Runtime().State().V1Alpha2().Resources()
+	resourceState = state.WrapCore(state.Filter(resourceState, resources.AccessPolicy(resourceState)))
+
 	machine.RegisterMachineServiceServer(obj, s)
 	cluster.RegisterClusterServiceServer(obj, s)
-	resource.RegisterResourceServiceServer(obj, &resources.Server{Resources: s.Controller.Runtime().State().V1Alpha2().Resources()})
+	resource.RegisterResourceServiceServer(obj, &resources.Server{Resources: resourceState}) //nolint:staticcheck
+	cosiv1alpha1.RegisterStateServer(obj, server.NewState(resourceState))
 	inspect.RegisterInspectServiceServer(obj, &InspectServer{server: s})
 	storage.RegisterStorageServiceServer(obj, &storaged.Server{})
 	timeapi.RegisterTimeServiceServer(obj, &TimeServer{ConfigProvider: s.Controller.Runtime()})
@@ -124,60 +154,142 @@ func (s *Server) Register(obj *grpc.Server) {
 
 // ApplyConfiguration implements machine.MachineService.
 //
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (s *Server) ApplyConfiguration(ctx context.Context, in *machine.ApplyConfigurationRequest) (*machine.ApplyConfigurationResponse, error) {
-	log.Printf("apply config request: immediate %v, on reboot %v", in.Immediate, in.OnReboot)
+	mode := in.Mode.String()
+	modeDetails := "Applied configuration with a reboot"
+	modeErr := ""
+
+	// TODO: remove in v1.1
+	switch {
+	case in.Immediate: //nolint:staticcheck
+		in.Mode = machine.ApplyConfigurationRequest_NO_REBOOT
+	case in.OnReboot: //nolint:staticcheck
+		in.Mode = machine.ApplyConfigurationRequest_STAGED
+	}
+
+	if in.Mode != machine.ApplyConfigurationRequest_TRY {
+		s.Controller.Runtime().CancelConfigRollbackTimeout()
+	}
 
 	cfgProvider, err := s.Controller.Runtime().LoadAndValidateConfig(in.GetData())
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	err = cfgProvider.ApplyDynamicConfig(ctx, s.Controller.Runtime().State().Platform())
-	if err != nil {
-		return nil, err
-	}
-
-	// --immediate
-	if in.Immediate {
+	//nolint:exhaustive
+	switch in.Mode {
+	// --mode=try
+	case machine.ApplyConfigurationRequest_TRY:
+		fallthrough
+	// --mode=no-reboot
+	case machine.ApplyConfigurationRequest_NO_REBOOT:
 		if err = s.Controller.Runtime().CanApplyImmediate(cfgProvider); err != nil {
-			return nil, err
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
 		}
+
+		modeDetails = "Applied configuration without a reboot"
+	// --mode=staged
+	case machine.ApplyConfigurationRequest_STAGED:
+		modeDetails = "Staged configuration to be applied after the next reboot"
+	// --mode=auto detect actual update mode
+	case machine.ApplyConfigurationRequest_AUTO:
+		if err = s.Controller.Runtime().CanApplyImmediate(cfgProvider); err != nil {
+			in.Mode = machine.ApplyConfigurationRequest_REBOOT
+			modeDetails = "Applied configuration with a reboot"
+			modeErr = ": " + err.Error()
+		} else {
+			in.Mode = machine.ApplyConfigurationRequest_NO_REBOOT
+			modeDetails = "Applied configuration without a reboot"
+		}
+
+		mode = fmt.Sprintf("%s(%s)", mode, in.Mode)
 	}
+
+	if in.DryRun {
+		var config interface{}
+		if s.Controller.Runtime().Config() != nil {
+			config = s.Controller.Runtime().Config().Raw()
+		}
+
+		diff := cmp.Diff(config, cfgProvider.Raw(), cmp.AllowUnexported(v1alpha1.InstallDiskSizeMatcher{}))
+		if diff == "" {
+			diff = "No changes."
+		}
+
+		return &machine.ApplyConfigurationResponse{
+			Messages: []*machine.ApplyConfiguration{
+				{
+					Mode: in.Mode,
+					ModeDetails: fmt.Sprintf(`Dry run summary:
+%s (skipped in dry-run).
+Config diff:
+%s`, modeDetails, diff),
+				},
+			},
+		}, nil
+	}
+
+	log.Printf("apply config request: mode %s", strings.ToLower(mode))
 
 	cfg, err := cfgProvider.Bytes()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := ioutil.WriteFile(constants.ConfigPath, cfg, 0o600); err != nil {
-		return nil, err
+	if in.Mode != machine.ApplyConfigurationRequest_TRY {
+		if err := os.WriteFile(constants.ConfigPath, cfg, 0o600); err != nil {
+			return nil, err
+		}
 	}
 
-	switch {
-	// --immediate
-	case in.Immediate:
+	//nolint:exhaustive
+	switch in.Mode {
+	// --mode=try
+	case machine.ApplyConfigurationRequest_TRY:
+		oldConfig, err := s.Controller.Runtime().Config().Bytes()
+		if err != nil {
+			return nil, err
+		}
+
+		timeout := constants.ConfigTryTimeout
+		if in.TryModeTimeout != nil {
+			timeout = in.TryModeTimeout.AsDuration()
+		}
+
+		modeDetails += fmt.Sprintf("\nThe config is applied in 'try' mode and will be automatically reverted back in %s", timeout.String())
+
+		if err := s.Controller.Runtime().RollbackToConfigAfter(oldConfig, timeout); err != nil {
+			return nil, err
+		}
+
+		fallthrough
+	// --mode=no-reboot
+	case machine.ApplyConfigurationRequest_NO_REBOOT:
 		if err := s.Controller.Runtime().SetConfig(cfgProvider); err != nil {
 			return nil, err
 		}
-	// default, no `--on-reboot`
-	case !in.OnReboot:
+	// --mode=staged
+	case machine.ApplyConfigurationRequest_STAGED:
+	// --mode=reboot
+	case machine.ApplyConfigurationRequest_REBOOT:
 		go func() {
 			if err := s.Controller.Run(context.Background(), runtime.SequenceReboot, nil, runtime.WithTakeover()); err != nil {
 				if !runtime.IsRebootError(err) {
 					log.Println("apply configuration failed:", err)
 				}
-
-				if err != runtime.ErrLocked {
-					s.server.GracefulStop()
-				}
 			}
 		}()
+	default:
+		return nil, fmt.Errorf("incorrect mode '%s' specified for the apply config call", in.Mode.String())
 	}
 
 	return &machine.ApplyConfigurationResponse{
 		Messages: []*machine.ApplyConfiguration{
-			{},
+			{
+				Mode:        in.Mode,
+				ModeDetails: modeDetails + modeErr,
+			},
 		},
 	}, nil
 }
@@ -195,29 +307,29 @@ func (s *Server) GenerateConfiguration(ctx context.Context, in *machine.Generate
 //
 //nolint:dupl
 func (s *Server) Reboot(ctx context.Context, in *machine.RebootRequest) (reply *machine.RebootResponse, err error) {
-	log.Printf("reboot via API received")
+	actorID := uuid.New().String()
+
+	log.Printf("reboot via API received. actor id: %s", actorID)
 
 	if err := s.checkSupported(runtime.Reboot); err != nil {
 		return nil, err
 	}
 
+	rebootCtx := context.WithValue(context.Background(), runtime.ActorIDCtxKey{}, actorID)
+
 	go func() {
-		if err := s.Controller.Run(context.Background(), runtime.SequenceReboot, in, runtime.WithTakeover()); err != nil {
+		if err := s.Controller.Run(rebootCtx, runtime.SequenceReboot, in); err != nil {
 			if !runtime.IsRebootError(err) {
 				log.Println("reboot failed:", err)
-			}
-
-			if err != runtime.ErrLocked {
-				// NB: We stop the gRPC server since a failed sequence triggers a
-				// reboot.
-				s.server.GracefulStop()
 			}
 		}
 	}()
 
 	reply = &machine.RebootResponse{
 		Messages: []*machine.Reboot{
-			{},
+			{
+				ActorId: actorID,
+			},
 		},
 	}
 
@@ -250,20 +362,27 @@ func (s *Server) Rollback(ctx context.Context, in *machine.RollbackRequest) (*ma
 			return fmt.Errorf("boot disk not found")
 		}
 
-		grub := &grub.Grub{
-			BootDisk: disk.Device().Name(),
-		}
-
-		_, next, err := grub.Labels()
+		conf, err := grub.Read(grub.ConfigPath)
 		if err != nil {
 			return err
 		}
 
-		if _, err = os.Stat(filepath.Join(constants.BootMountPoint, next)); errors.Is(err, os.ErrNotExist) {
+		if conf == nil {
+			return fmt.Errorf("grub configuration not found, nothing to rollback")
+		}
+
+		next, err := grub.FlipBootLabel(conf.Default)
+		if err != nil {
+			return err
+		}
+
+		if _, err = os.Stat(filepath.Join(constants.BootMountPoint, string(next))); errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("cannot rollback to %q, label does not exist", next)
 		}
 
-		if err := grub.Default(next); err != nil {
+		conf.Default = next
+		conf.Fallback = ""
+		if err := conf.Write(grub.ConfigPath); err != nil {
 			return fmt.Errorf("failed to revert bootloader: %v", err)
 		}
 
@@ -273,15 +392,9 @@ func (s *Server) Rollback(ctx context.Context, in *machine.RollbackRequest) (*ma
 	}
 
 	go func() {
-		if err := s.Controller.Run(context.Background(), runtime.SequenceReboot, in, runtime.WithForce(), runtime.WithTakeover()); err != nil {
+		if err := s.Controller.Run(context.Background(), runtime.SequenceReboot, in, runtime.WithTakeover()); err != nil {
 			if !runtime.IsRebootError(err) {
 				log.Println("reboot failed:", err)
-			}
-
-			if err != runtime.ErrLocked {
-				// NB: We stop the gRPC server since a failed sequence triggers a
-				// reboot.
-				s.server.GracefulStop()
 			}
 		}
 	}()
@@ -296,6 +409,10 @@ func (s *Server) Rollback(ctx context.Context, in *machine.RollbackRequest) (*ma
 // Bootstrap implements the machine.MachineServer interface.
 func (s *Server) Bootstrap(ctx context.Context, in *machine.BootstrapRequest) (reply *machine.BootstrapResponse, err error) {
 	log.Printf("bootstrap request received")
+
+	if !s.Controller.Runtime().IsBootstrapAllowed() {
+		return nil, status.Error(codes.FailedPrecondition, "bootstrap is not available yet")
+	}
 
 	if s.Controller.Runtime().Config().Machine().Type() == machinetype.TypeWorker {
 		return nil, status.Error(codes.FailedPrecondition, "bootstrap can only be performed on a control plane node")
@@ -312,17 +429,9 @@ func (s *Server) Bootstrap(ctx context.Context, in *machine.BootstrapRequest) (r
 		return nil, status.Error(codes.AlreadyExists, "etcd data directory is not empty")
 	}
 
-	go func() {
-		if err := s.Controller.Run(context.Background(), runtime.SequenceBootstrap, in); err != nil {
-			log.Println("bootstrap failed:", err)
-
-			if err != runtime.ErrLocked {
-				// NB: We stop the gRPC server since a failed sequence triggers a
-				// reboot.
-				s.server.GracefulStop()
-			}
-		}
-	}()
+	if err := s.EtcdBootstrapper(ctx, s.Controller.Runtime(), in); err != nil {
+		return nil, err
+	}
 
 	reply = &machine.BootstrapResponse{
 		Messages: []*machine.Bootstrap{
@@ -336,30 +445,30 @@ func (s *Server) Bootstrap(ctx context.Context, in *machine.BootstrapRequest) (r
 // Shutdown implements the machine.MachineServer interface.
 //
 //nolint:dupl
-func (s *Server) Shutdown(ctx context.Context, in *emptypb.Empty) (reply *machine.ShutdownResponse, err error) {
-	log.Printf("shutdown via API received")
+func (s *Server) Shutdown(ctx context.Context, in *machine.ShutdownRequest) (reply *machine.ShutdownResponse, err error) {
+	actorID := uuid.New().String()
+
+	log.Printf("shutdown via API received. actor id: %s", actorID)
 
 	if err = s.checkSupported(runtime.Shutdown); err != nil {
 		return nil, err
 	}
 
+	shutdownCtx := context.WithValue(context.Background(), runtime.ActorIDCtxKey{}, actorID)
+
 	go func() {
-		if err := s.Controller.Run(context.Background(), runtime.SequenceShutdown, in, runtime.WithTakeover()); err != nil {
+		if err := s.Controller.Run(shutdownCtx, runtime.SequenceShutdown, in, runtime.WithTakeover()); err != nil {
 			if !runtime.IsRebootError(err) {
 				log.Println("shutdown failed:", err)
-			}
-
-			if err != runtime.ErrLocked {
-				// NB: We stop the gRPC server since a failed sequence triggers a
-				// reboot.
-				s.server.GracefulStop()
 			}
 		}
 	}()
 
 	reply = &machine.ShutdownResponse{
 		Messages: []*machine.Shutdown{
-			{},
+			{
+				ActorId: actorID,
+			},
 		},
 	}
 
@@ -370,7 +479,11 @@ func (s *Server) Shutdown(ctx context.Context, in *emptypb.Empty) (reply *machin
 //
 //nolint:gocyclo,cyclop
 func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply *machine.UpgradeResponse, err error) {
+	actorID := uuid.New().String()
+
 	var mu *concurrency.Mutex
+
+	ctx = context.WithValue(ctx, runtime.ActorIDCtxKey{}, actorID)
 
 	if err = s.checkSupported(runtime.Upgrade); err != nil {
 		return nil, err
@@ -380,12 +493,12 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 
 	log.Printf("validating %q", in.GetImage())
 
-	if err = pullAndValidateInstallerImage(ctx, s.Controller.Runtime().Config().Machine().Registries(), in.GetImage()); err != nil {
+	if err = install.PullAndValidateInstallerImage(ctx, s.Controller.Runtime().Config().Machine().Registries(), in.GetImage()); err != nil {
 		return nil, fmt.Errorf("error validating installer image %q: %w", in.GetImage(), err)
 	}
 
 	if s.Controller.Runtime().Config().Machine().Type() != machinetype.TypeWorker && !in.GetForce() {
-		client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().Config().Cluster().CA(), s.Controller.Runtime().Config().Cluster().Endpoint())
+		client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create etcd client: %w", err)
 		}
@@ -406,7 +519,7 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 		}
 	}
 
-	runCtx := context.Background()
+	runCtx := context.WithValue(context.Background(), runtime.ActorIDCtxKey{}, actorID)
 
 	if in.GetStage() {
 		meta, err := bootloader.NewMeta()
@@ -447,12 +560,6 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 				if !runtime.IsRebootError(err) {
 					log.Println("reboot for staged upgrade failed:", err)
 				}
-
-				if err != runtime.ErrLocked {
-					// NB: We stop the gRPC server since a failed sequence triggers a
-					// reboot.
-					s.server.GracefulStop()
-				}
 			}
 		}()
 	} else {
@@ -465,12 +572,6 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 				if !runtime.IsRebootError(err) {
 					log.Println("upgrade failed:", err)
 				}
-
-				if err != runtime.ErrLocked {
-					// NB: We stop the gRPC server since a failed sequence triggers a
-					// reboot.
-					s.server.GracefulStop()
-				}
 			}
 		}()
 	}
@@ -478,7 +579,8 @@ func (s *Server) Upgrade(ctx context.Context, in *machine.UpgradeRequest) (reply
 	reply = &machine.UpgradeResponse{
 		Messages: []*machine.Upgrade{
 			{
-				Ack: "Upgrade request received",
+				Ack:     "Upgrade request received",
+				ActorId: actorID,
 			},
 		},
 	}
@@ -499,20 +601,16 @@ func (opt *ResetOptions) GetSystemDiskTargets() []runtime.PartitionTarget {
 		return nil
 	}
 
-	result := make([]runtime.PartitionTarget, len(opt.systemDiskTargets))
-
-	for i := range result {
-		result[i] = opt.systemDiskTargets[i]
-	}
-
-	return result
+	return slices.Map(opt.systemDiskTargets, func(t *installer.Target) runtime.PartitionTarget { return t })
 }
 
 // Reset resets the node.
 //
 //nolint:gocyclo
 func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *machine.ResetResponse, err error) {
-	log.Printf("reset request received")
+	actorID := uuid.New().String()
+
+	log.Printf("reset request received. actorID: %s", actorID)
 
 	opts := ResetOptions{
 		ResetRequest: in,
@@ -559,23 +657,21 @@ func (s *Server) Reset(ctx context.Context, in *machine.ResetRequest) (reply *ma
 		}
 	}
 
+	resetCtx := context.WithValue(context.Background(), runtime.ActorIDCtxKey{}, actorID)
+
 	go func() {
-		if err := s.Controller.Run(context.Background(), runtime.SequenceReset, &opts); err != nil {
+		if err := s.Controller.Run(resetCtx, runtime.SequenceReset, &opts); err != nil {
 			if !runtime.IsRebootError(err) {
 				log.Println("reset failed:", err)
-			}
-
-			if err != runtime.ErrLocked {
-				// NB: We stop the gRPC server since a failed sequence triggers a
-				// reboot.
-				s.server.GracefulStop()
 			}
 		}
 	}()
 
 	reply = &machine.ResetResponse{
 		Messages: []*machine.Reset{
-			{},
+			{
+				ActorId: actorID,
+			},
 		},
 	}
 
@@ -589,13 +685,9 @@ func (s *Server) ServiceList(ctx context.Context, in *emptypb.Empty) (result *ma
 	result = &machine.ServiceListResponse{
 		Messages: []*machine.ServiceList{
 			{
-				Services: make([]*machine.ServiceInfo, len(services)),
+				Services: slices.Map(services, (*system.ServiceRunner).AsProto),
 			},
 		},
-	}
-
-	for i := range services {
-		result.Messages[0].Services[i] = services[i].AsProto()
 	}
 
 	return result, nil
@@ -783,6 +875,7 @@ func (s *Server) List(req *machine.ListRequest, obj machine.MachineService_ListS
 }
 
 // DiskUsage implements the machine.MachineServer interface.
+//
 //nolint:cyclop
 func (s *Server) DiskUsage(req *machine.DiskUsageRequest, obj machine.MachineService_DiskUsageServer) error { //nolint:gocyclo
 	if req == nil {
@@ -1064,6 +1157,10 @@ func (s *Server) Version(ctx context.Context, in *emptypb.Empty) (reply *machine
 
 // Kubeconfig implements the machine.MachineServer interface.
 func (s *Server) Kubeconfig(empty *emptypb.Empty, obj machine.MachineService_KubeconfigServer) error {
+	if err := s.checkControlplane("kubeconfig"); err != nil {
+		return err
+	}
+
 	var b bytes.Buffer
 
 	if err := kubeconfig.GenerateAdmin(s.Controller.Runtime().Config().Cluster(), &b); err != nil {
@@ -1228,6 +1325,12 @@ func (s *Server) Read(in *machine.ReadRequest, srv machine.MachineService_ReadSe
 //
 //nolint:gocyclo
 func (s *Server) Events(req *machine.EventsRequest, l machine.MachineService_EventsServer) error {
+	// send an empty (hello) event to indicate to client that streaming has started
+	err := sendEmptyEvent(req, l)
+	if err != nil {
+		return err
+	}
+
 	errCh := make(chan error)
 
 	var opts []runtime.WatchOptionFunc
@@ -1249,10 +1352,16 @@ func (s *Server) Events(req *machine.EventsRequest, l machine.MachineService_Eve
 		opts = append(opts, runtime.WithTailDuration(time.Duration(req.TailSeconds)*time.Second))
 	}
 
+	if req.WithActorId != "" {
+		opts = append(opts, runtime.WithActorID(req.WithActorId))
+	}
+
 	if err := s.Controller.Runtime().Events().Watch(func(events <-chan runtime.EventInfo) {
 		errCh <- func() error {
 			for {
 				select {
+				case <-s.ShutdownCtx.Done():
+					return nil
 				case <-l.Context().Done():
 					return l.Context().Err()
 				case event, ok := <-events:
@@ -1278,74 +1387,13 @@ func (s *Server) Events(req *machine.EventsRequest, l machine.MachineService_Eve
 	return <-errCh
 }
 
-func pullAndValidateInstallerImage(ctx context.Context, reg config.Registries, ref string) error {
-	// Pull down specified installer image early so we can bail if it doesn't exist in the upstream registry
-	containerdctx := namespaces.WithNamespace(ctx, constants.SystemContainerdNamespace)
-
-	client, err := containerd.New(constants.SystemContainerdAddress)
+func sendEmptyEvent(req *machine.EventsRequest, l machine.MachineService_EventsServer) error {
+	emptyEvent, err := pointer.To(runtime.NewEvent(nil, req.WithActorId)).ToMachineEvent()
 	if err != nil {
 		return err
 	}
 
-	img, err := image.Pull(containerdctx, reg, client, ref)
-	if err != nil {
-		return err
-	}
-
-	// Launch the container with a known help command for a simple check to make sure the image is valid
-	args := []string{
-		"/bin/installer",
-		"--help",
-	}
-
-	specOpts := []oci.SpecOpts{
-		oci.WithImageConfig(img),
-		oci.WithProcessArgs(args...),
-	}
-
-	containerOpts := []containerd.NewContainerOpts{
-		containerd.WithImage(img),
-		containerd.WithNewSnapshot("validate", img),
-		containerd.WithNewSpec(specOpts...),
-	}
-
-	container, err := client.NewContainer(containerdctx, "validate", containerOpts...)
-	if err != nil {
-		return err
-	}
-
-	//nolint:errcheck
-	defer container.Delete(containerdctx, containerd.WithSnapshotCleanup)
-
-	task, err := container.NewTask(containerdctx, cio.NullIO)
-	if err != nil {
-		return err
-	}
-
-	//nolint:errcheck
-	defer task.Delete(containerdctx)
-
-	exitStatusC, err := task.Wait(containerdctx)
-	if err != nil {
-		return err
-	}
-
-	if err = task.Start(containerdctx); err != nil {
-		return err
-	}
-
-	status := <-exitStatusC
-
-	code, _, err := status.Result()
-	if err != nil {
-		return err
-	}
-
-	if code != 0 {
-		return fmt.Errorf("installer help returned non-zero exit. assuming invalid installer")
-	}
-
-	return nil
+	return l.Send(emptyEvent)
 }
 
 // Containers implements the machine.MachineServer interface.
@@ -1502,6 +1550,10 @@ func (s *Server) Dmesg(req *machine.DmesgRequest, srv machine.MachineService_Dme
 
 	for {
 		select {
+		case <-s.ShutdownCtx.Done():
+			if err = reader.Close(); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			if err = reader.Close(); err != nil {
 				return err
@@ -1577,54 +1629,54 @@ func (s *Server) Memory(ctx context.Context, in *emptypb.Empty) (reply *machine.
 	}
 
 	meminfo := &machine.MemInfo{
-		Memtotal:          pointer.GetUint64(info.MemTotal),
-		Memfree:           pointer.GetUint64(info.MemFree),
-		Memavailable:      pointer.GetUint64(info.MemAvailable),
-		Buffers:           pointer.GetUint64(info.Buffers),
-		Cached:            pointer.GetUint64(info.Cached),
-		Swapcached:        pointer.GetUint64(info.SwapCached),
-		Active:            pointer.GetUint64(info.Active),
-		Inactive:          pointer.GetUint64(info.Inactive),
-		Activeanon:        pointer.GetUint64(info.ActiveAnon),
-		Inactiveanon:      pointer.GetUint64(info.InactiveAnon),
-		Activefile:        pointer.GetUint64(info.ActiveFile),
-		Inactivefile:      pointer.GetUint64(info.InactiveFile),
-		Unevictable:       pointer.GetUint64(info.Unevictable),
-		Mlocked:           pointer.GetUint64(info.Mlocked),
-		Swaptotal:         pointer.GetUint64(info.SwapTotal),
-		Swapfree:          pointer.GetUint64(info.SwapFree),
-		Dirty:             pointer.GetUint64(info.Dirty),
-		Writeback:         pointer.GetUint64(info.Writeback),
-		Anonpages:         pointer.GetUint64(info.AnonPages),
-		Mapped:            pointer.GetUint64(info.Mapped),
-		Shmem:             pointer.GetUint64(info.Shmem),
-		Slab:              pointer.GetUint64(info.Slab),
-		Sreclaimable:      pointer.GetUint64(info.SReclaimable),
-		Sunreclaim:        pointer.GetUint64(info.SUnreclaim),
-		Kernelstack:       pointer.GetUint64(info.KernelStack),
-		Pagetables:        pointer.GetUint64(info.PageTables),
-		Nfsunstable:       pointer.GetUint64(info.NFSUnstable),
-		Bounce:            pointer.GetUint64(info.Bounce),
-		Writebacktmp:      pointer.GetUint64(info.WritebackTmp),
-		Commitlimit:       pointer.GetUint64(info.CommitLimit),
-		Committedas:       pointer.GetUint64(info.CommittedAS),
-		Vmalloctotal:      pointer.GetUint64(info.VmallocTotal),
-		Vmallocused:       pointer.GetUint64(info.VmallocUsed),
-		Vmallocchunk:      pointer.GetUint64(info.VmallocChunk),
-		Hardwarecorrupted: pointer.GetUint64(info.HardwareCorrupted),
-		Anonhugepages:     pointer.GetUint64(info.AnonHugePages),
-		Shmemhugepages:    pointer.GetUint64(info.ShmemHugePages),
-		Shmempmdmapped:    pointer.GetUint64(info.ShmemPmdMapped),
-		Cmatotal:          pointer.GetUint64(info.CmaTotal),
-		Cmafree:           pointer.GetUint64(info.CmaFree),
-		Hugepagestotal:    pointer.GetUint64(info.HugePagesTotal),
-		Hugepagesfree:     pointer.GetUint64(info.HugePagesFree),
-		Hugepagesrsvd:     pointer.GetUint64(info.HugePagesRsvd),
-		Hugepagessurp:     pointer.GetUint64(info.HugePagesSurp),
-		Hugepagesize:      pointer.GetUint64(info.Hugepagesize),
-		Directmap4K:       pointer.GetUint64(info.DirectMap4k),
-		Directmap2M:       pointer.GetUint64(info.DirectMap2M),
-		Directmap1G:       pointer.GetUint64(info.DirectMap1G),
+		Memtotal:          pointer.SafeDeref(info.MemTotal),
+		Memfree:           pointer.SafeDeref(info.MemFree),
+		Memavailable:      pointer.SafeDeref(info.MemAvailable),
+		Buffers:           pointer.SafeDeref(info.Buffers),
+		Cached:            pointer.SafeDeref(info.Cached),
+		Swapcached:        pointer.SafeDeref(info.SwapCached),
+		Active:            pointer.SafeDeref(info.Active),
+		Inactive:          pointer.SafeDeref(info.Inactive),
+		Activeanon:        pointer.SafeDeref(info.ActiveAnon),
+		Inactiveanon:      pointer.SafeDeref(info.InactiveAnon),
+		Activefile:        pointer.SafeDeref(info.ActiveFile),
+		Inactivefile:      pointer.SafeDeref(info.InactiveFile),
+		Unevictable:       pointer.SafeDeref(info.Unevictable),
+		Mlocked:           pointer.SafeDeref(info.Mlocked),
+		Swaptotal:         pointer.SafeDeref(info.SwapTotal),
+		Swapfree:          pointer.SafeDeref(info.SwapFree),
+		Dirty:             pointer.SafeDeref(info.Dirty),
+		Writeback:         pointer.SafeDeref(info.Writeback),
+		Anonpages:         pointer.SafeDeref(info.AnonPages),
+		Mapped:            pointer.SafeDeref(info.Mapped),
+		Shmem:             pointer.SafeDeref(info.Shmem),
+		Slab:              pointer.SafeDeref(info.Slab),
+		Sreclaimable:      pointer.SafeDeref(info.SReclaimable),
+		Sunreclaim:        pointer.SafeDeref(info.SUnreclaim),
+		Kernelstack:       pointer.SafeDeref(info.KernelStack),
+		Pagetables:        pointer.SafeDeref(info.PageTables),
+		Nfsunstable:       pointer.SafeDeref(info.NFSUnstable),
+		Bounce:            pointer.SafeDeref(info.Bounce),
+		Writebacktmp:      pointer.SafeDeref(info.WritebackTmp),
+		Commitlimit:       pointer.SafeDeref(info.CommitLimit),
+		Committedas:       pointer.SafeDeref(info.CommittedAS),
+		Vmalloctotal:      pointer.SafeDeref(info.VmallocTotal),
+		Vmallocused:       pointer.SafeDeref(info.VmallocUsed),
+		Vmallocchunk:      pointer.SafeDeref(info.VmallocChunk),
+		Hardwarecorrupted: pointer.SafeDeref(info.HardwareCorrupted),
+		Anonhugepages:     pointer.SafeDeref(info.AnonHugePages),
+		Shmemhugepages:    pointer.SafeDeref(info.ShmemHugePages),
+		Shmempmdmapped:    pointer.SafeDeref(info.ShmemPmdMapped),
+		Cmatotal:          pointer.SafeDeref(info.CmaTotal),
+		Cmafree:           pointer.SafeDeref(info.CmaFree),
+		Hugepagestotal:    pointer.SafeDeref(info.HugePagesTotal),
+		Hugepagesfree:     pointer.SafeDeref(info.HugePagesFree),
+		Hugepagesrsvd:     pointer.SafeDeref(info.HugePagesRsvd),
+		Hugepagessurp:     pointer.SafeDeref(info.HugePagesSurp),
+		Hugepagesize:      pointer.SafeDeref(info.Hugepagesize),
+		Directmap4K:       pointer.SafeDeref(info.DirectMap4k),
+		Directmap2M:       pointer.SafeDeref(info.DirectMap2M),
+		Directmap1G:       pointer.SafeDeref(info.DirectMap1G),
 	}
 
 	reply = &machine.MemoryResponse{
@@ -1640,12 +1692,16 @@ func (s *Server) Memory(ctx context.Context, in *emptypb.Empty) (reply *machine.
 
 // EtcdMemberList implements the machine.MachineServer interface.
 func (s *Server) EtcdMemberList(ctx context.Context, in *machine.EtcdMemberListRequest) (reply *machine.EtcdMemberListResponse, err error) {
+	if err = s.checkControlplane("member list"); err != nil {
+		return nil, err
+	}
+
 	var client *etcd.Client
 
 	if in.QueryLocal {
 		client, err = etcd.NewLocalClient()
 	} else {
-		client, err = etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().Config().Cluster().CA(), s.Controller.Runtime().Config().Cluster().Endpoint())
+		client, err = etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 	}
 
 	if err != nil {
@@ -1662,28 +1718,19 @@ func (s *Server) EtcdMemberList(ctx context.Context, in *machine.EtcdMemberListR
 		return nil, err
 	}
 
-	members := make([]*machine.EtcdMember, 0, len(resp.Members))
-	legacyMembers := make([]string, 0, len(resp.Members))
-
-	for _, member := range resp.Members {
-		members = append(members,
-			&machine.EtcdMember{
-				Id:         member.GetID(),
-				Hostname:   member.GetName(),
-				PeerUrls:   member.GetPeerURLs(),
-				ClientUrls: member.GetClientURLs(),
-				IsLearner:  member.GetIsLearner(),
-			},
-		)
-
-		legacyMembers = append(legacyMembers, member.GetName())
-	}
-
 	reply = &machine.EtcdMemberListResponse{
 		Messages: []*machine.EtcdMembers{
 			{
-				LegacyMembers: legacyMembers,
-				Members:       members,
+				LegacyMembers: slices.Map(resp.Members, (*etcdserverpb.Member).GetName),
+				Members: slices.Map(resp.Members, func(member *etcdserverpb.Member) *machine.EtcdMember {
+					return &machine.EtcdMember{
+						Id:         member.GetID(),
+						Hostname:   member.GetName(),
+						PeerUrls:   member.GetPeerURLs(),
+						ClientUrls: member.GetClientURLs(),
+						IsLearner:  member.GetIsLearner(),
+					}
+				}),
 			},
 		},
 	}
@@ -1693,7 +1740,11 @@ func (s *Server) EtcdMemberList(ctx context.Context, in *machine.EtcdMemberListR
 
 // EtcdRemoveMember implements the machine.MachineServer interface.
 func (s *Server) EtcdRemoveMember(ctx context.Context, in *machine.EtcdRemoveMemberRequest) (reply *machine.EtcdRemoveMemberResponse, err error) {
-	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().Config().Cluster().CA(), s.Controller.Runtime().Config().Cluster().Endpoint())
+	if err = s.checkControlplane("etcd remove member"); err != nil {
+		return nil, err
+	}
+
+	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create etcd client: %w", err)
 	}
@@ -1718,7 +1769,11 @@ func (s *Server) EtcdRemoveMember(ctx context.Context, in *machine.EtcdRemoveMem
 
 // EtcdLeaveCluster implements the machine.MachineServer interface.
 func (s *Server) EtcdLeaveCluster(ctx context.Context, in *machine.EtcdLeaveClusterRequest) (reply *machine.EtcdLeaveClusterResponse, err error) {
-	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().Config().Cluster().CA(), s.Controller.Runtime().Config().Cluster().Endpoint())
+	if err = s.checkControlplane("etcd leave"); err != nil {
+		return nil, err
+	}
+
+	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create etcd client: %w", err)
 	}
@@ -1743,7 +1798,11 @@ func (s *Server) EtcdLeaveCluster(ctx context.Context, in *machine.EtcdLeaveClus
 
 // EtcdForfeitLeadership implements the machine.MachineServer interface.
 func (s *Server) EtcdForfeitLeadership(ctx context.Context, in *machine.EtcdForfeitLeadershipRequest) (reply *machine.EtcdForfeitLeadershipResponse, err error) {
-	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().Config().Cluster().CA(), s.Controller.Runtime().Config().Cluster().Endpoint())
+	if err = s.checkControlplane("etcd forfeit leadership"); err != nil {
+		return nil, err
+	}
+
+	client, err := etcd.NewClientFromControlPlaneIPs(ctx, s.Controller.Runtime().State().V1Alpha2().Resources())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create etcd client: %w", err)
 	}
@@ -1771,6 +1830,10 @@ func (s *Server) EtcdForfeitLeadership(ctx context.Context, in *machine.EtcdForf
 
 // EtcdSnapshot implements the machine.MachineServer interface.
 func (s *Server) EtcdSnapshot(in *machine.EtcdSnapshotRequest, srv machine.MachineService_EtcdSnapshotServer) error {
+	if err := s.checkControlplane("etcd snapshot"); err != nil {
+		return err
+	}
+
 	client, err := etcd.NewLocalClient()
 	if err != nil {
 		return fmt.Errorf("failed to create etcd client: %w", err)
@@ -1803,7 +1866,21 @@ func (s *Server) EtcdSnapshot(in *machine.EtcdSnapshotRequest, srv machine.Machi
 }
 
 // EtcdRecover implements the machine.MachineServer interface.
+//
+//nolint:gocyclo
 func (s *Server) EtcdRecover(srv machine.MachineService_EtcdRecoverServer) error {
+	if _, err := os.Stat(filepath.Dir(constants.EtcdRecoverySnapshotPath)); err != nil {
+		if os.IsNotExist(err) {
+			return status.Error(codes.FailedPrecondition, "etcd service is not ready for recovery yet")
+		}
+
+		return err
+	}
+
+	if err := s.checkControlplane("etcd recover"); err != nil {
+		return err
+	}
+
 	snapshot, err := os.OpenFile(constants.EtcdRecoverySnapshotPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
 	if err != nil {
 		return fmt.Errorf("error creating etcd recovery snapshot: %w", err)
@@ -1899,6 +1976,154 @@ func (s *Server) GenerateClientConfiguration(ctx context.Context, in *machine.Ge
 	}
 
 	return reply, nil
+}
+
+// PacketCapture performs packet capture and streams the pcap file.
+//
+//nolint:gocyclo
+func (s *Server) PacketCapture(in *machine.PacketCaptureRequest, srv machine.MachineService_PacketCaptureServer) error {
+	linkInfo, err := safe.StateGetResource(srv.Context(), s.Controller.Runtime().State().V1Alpha2().Resources(), network.NewLinkStatus(network.NamespaceName, in.Interface))
+	if err != nil {
+		if state.IsNotFoundError(err) {
+			return status.Errorf(codes.NotFound, "interface %q not found", in.Interface)
+		}
+
+		return err
+	}
+
+	var linkType layers.LinkType
+
+	switch linkInfo.TypedSpec().Type { //nolint:exhaustive
+	case nethelpers.LinkEther, nethelpers.LinkLoopbck:
+		linkType = layers.LinkTypeEthernet
+	case nethelpers.LinkNone:
+		linkType = layers.LinkTypeRaw
+	default:
+		return status.Errorf(codes.InvalidArgument, "unsupported link type %s", linkInfo.TypedSpec().Type)
+	}
+
+	pr, pw := io.Pipe()
+
+	if in.SnapLen == 0 {
+		in.SnapLen = 65536
+	}
+
+	filter := make([]bpf.RawInstruction, 0, len(in.BpfFilter))
+
+	for _, f := range in.BpfFilter {
+		filter = append(filter, bpf.RawInstruction{
+			Op: uint16(f.Op),
+			Jt: uint8(f.Jt),
+			Jf: uint8(f.Jf),
+			K:  f.K,
+		})
+	}
+
+	handle, err := pcapgo.NewEthernetHandle(in.Interface)
+	if err != nil {
+		return fmt.Errorf("error setting up packet capture on %q: %w", in.Interface, err)
+	}
+
+	if err = handle.SetCaptureLength(int(in.SnapLen)); err != nil {
+		handle.Close() //nolint:errcheck
+
+		return fmt.Errorf("error setting capture length %q: %w", in.SnapLen, err)
+	}
+
+	if len(filter) > 0 {
+		if err = handle.SetBPF(filter); err != nil {
+			handle.Close() //nolint:errcheck
+
+			return fmt.Errorf("error setting BPF filter: %w", err)
+		}
+	}
+
+	if err = handle.SetPromiscuous(in.Promiscuous); err != nil {
+		handle.Close() //nolint:errcheck
+
+		return fmt.Errorf("error setting promiscuous mode %v: %w", in.Promiscuous, err)
+	}
+
+	// start packet capture in a goroutine which writes to a pipe back
+	go capturePackets(pw, handle, in.SnapLen, linkType)
+
+	// main goroutine reads the .pcap from the file and delivers it to the client in chunks
+	defer pr.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(srv.Context())
+	defer cancel()
+
+	chunker := stream.NewChunker(ctx, pr)
+	chunkCh := chunker.Read()
+
+	for data := range chunkCh {
+		if err = srv.SendMsg(&common.Data{Bytes: data}); err != nil {
+			cancel()
+
+			pr.CloseWithError(err) //nolint:errcheck
+		}
+	}
+
+	return nil
+}
+
+//nolint:gocyclo
+func capturePackets(pw *io.PipeWriter, handle *pcapgo.EthernetHandle, snapLen uint32, linkType layers.LinkType) {
+	defer pw.Close() //nolint:errcheck
+	defer handle.Close()
+
+	pcapw := pcapgo.NewWriterNanos(pw)
+
+	if err := pcapw.WriteFileHeader(snapLen, linkType); err != nil {
+		pw.CloseWithError(err) //nolint:errcheck
+
+		return
+	}
+
+	defer func() {
+		stats, err := handle.Stats()
+		if err == nil {
+			log.Printf("pcap: packets captured %d, dropped %d", stats.Packets, stats.Drops)
+		}
+	}()
+
+	pkgsrc := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
+	pkgsrc.Lazy = true
+
+	for {
+		packet, err := pkgsrc.NextPacket()
+		if err == nil {
+			if err = pcapw.WritePacket(packet.Metadata().CaptureInfo, packet.Data()); err != nil {
+				pw.CloseWithError(err) //nolint:errcheck
+
+				return
+			}
+
+			continue
+		}
+
+		// Immediately retry for temporary network errors
+		if nerr, ok := err.(net.Error); ok && nerr.Temporary() { //nolint:staticcheck
+			continue
+		}
+
+		// Immediately retry for EAGAIN
+		if errors.Is(err, syscall.EAGAIN) {
+			continue
+		}
+
+		// Immediately break for known unrecoverable errors
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+			errors.Is(err, io.ErrNoProgress) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.ErrShortBuffer) ||
+			errors.Is(err, syscall.EBADF) ||
+			strings.Contains(err.Error(), "use of closed file") {
+			pw.CloseWithError(err) //nolint:errcheck
+
+			return
+		}
+
+		time.Sleep(5 * time.Millisecond) // short sleep before retrying some errors
+	}
 }
 
 func upgradeMutex(c *etcd.Client) (*concurrency.Mutex, error) {

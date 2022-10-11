@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -27,12 +26,12 @@ func (suite *LogsSuite) SuiteName() string {
 
 // TestServiceLogs verifies that logs are displayed.
 func (suite *LogsSuite) TestServiceLogs() {
-	suite.RunCLI([]string{"logs", "kubelet", "--nodes", suite.RandomDiscoveredNode()}) // default checks for stdout not empty
+	suite.RunCLI([]string{"logs", "kubelet", "--nodes", suite.RandomDiscoveredNodeInternalIP()}) // default checks for stdout not empty
 }
 
 // TestTailLogs verifies that logs can be displayed with tail lines.
 func (suite *LogsSuite) TestTailLogs() {
-	node := suite.RandomDiscoveredNode()
+	node := suite.RandomDiscoveredNodeInternalIP()
 
 	// run some machined API calls to produce enough log lines
 	for i := 0; i < 10; i++ {
@@ -52,10 +51,11 @@ func (suite *LogsSuite) TestTailLogs() {
 
 // TestServiceNotFound verifies that logs displays an error if service is not found.
 func (suite *LogsSuite) TestServiceNotFound() {
-	suite.RunCLI([]string{"logs", "--nodes", suite.RandomDiscoveredNode(), "servicenotfound"},
+	suite.RunCLI([]string{"logs", "--nodes", suite.RandomDiscoveredNodeInternalIP(), "servicenotfound"},
 		base.StdoutEmpty(),
 		base.StderrNotEmpty(),
 		base.StderrShouldMatch(regexp.MustCompile(`ERROR:.+ log "servicenotfound" was not registered`)),
+		base.ShouldFail(),
 	)
 }
 

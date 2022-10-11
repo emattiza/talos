@@ -15,6 +15,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
 	"github.com/hashicorp/go-multierror"
@@ -66,7 +67,7 @@ func (p *provisioner) createNode(ctx context.Context, clusterReq provision.Clust
 	env := []string{"PLATFORM=container"}
 
 	if !nodeReq.SkipInjectingConfig {
-		cfg, err := nodeReq.Config.String()
+		cfg, err := nodeReq.Config.EncodeString()
 		if err != nil {
 			return provision.NodeInfo{}, err
 		}
@@ -84,16 +85,25 @@ func (p *provisioner) createNode(ctx context.Context, clusterReq provision.Clust
 			"talos.cluster.name": clusterReq.Name,
 			"talos.type":         nodeReq.Type.String(),
 		},
-		Volumes: map[string]struct{}{
-			"/var/lib/containerd": {},
-			"/var/lib/kubelet":    {},
-			"/etc/cni":            {},
-			"/run":                {},
-			"/system":             {},
-		},
 	}
 
 	// Create the host config.
+
+	mounts := []mount.Mount{}
+
+	for _, path := range []string{"/run", "/system", "/tmp"} {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeTmpfs,
+			Target: path,
+		})
+	}
+
+	for _, path := range append(constants.Overlays, "/var", "/system/state") {
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeVolume,
+			Target: path,
+		})
+	}
 
 	hostConfig := &container.HostConfig{
 		Privileged:  true,
@@ -102,6 +112,15 @@ func (p *provisioner) createNode(ctx context.Context, clusterReq provision.Clust
 			NanoCPUs: nodeReq.NanoCPUs,
 			Memory:   nodeReq.Memory,
 		},
+		ReadonlyRootfs: true,
+		Mounts:         mounts,
+	}
+
+	if !clusterReq.Network.DockerDisableIPv6 {
+		// enable IPv6
+		hostConfig.Sysctls = map[string]string{
+			"net.ipv6.conf.all.disable_ipv6": "0",
+		}
 	}
 
 	// Ensure that the container is created in the talos network.
@@ -132,10 +151,8 @@ func (p *provisioner) createNode(ctx context.Context, clusterReq provision.Clust
 
 		hostConfig.PortBindings = generatedPortMap.portBindings
 
-		containerConfig.Volumes[constants.EtcdDataPath] = struct{}{}
-
 		if nodeReq.IPs == nil {
-			return provision.NodeInfo{}, errors.New("an IP address must be provided when creating a master node")
+			return provision.NodeInfo{}, errors.New("an IP address must be provided when creating a controlplane node")
 		}
 	}
 

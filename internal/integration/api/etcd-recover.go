@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/talos-systems/go-retry/retry"
+	"google.golang.org/grpc/codes"
 
 	"github.com/talos-systems/talos/internal/integration/base"
 	machineapi "github.com/talos-systems/talos/pkg/machinery/api/machine"
@@ -29,7 +29,7 @@ import (
 type EtcdRecoverSuite struct {
 	base.K8sSuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -68,13 +68,13 @@ func (suite *EtcdRecoverSuite) TestSnapshotRecover() {
 	}
 
 	// 'init' nodes are not compatible with etcd recovery
-	suite.Require().Empty(suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeInit))
+	suite.Require().Empty(suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeInit))
 
-	controlPlaneNodes := suite.DiscoverNodes(suite.ctx).NodesByType(machine.TypeControlPlane)
+	controlPlaneNodes := suite.DiscoverNodeInternalIPsByType(suite.ctx, machine.TypeControlPlane)
 	suite.Require().NotEmpty(controlPlaneNodes)
 
-	snapshotNode := suite.RandomDiscoveredNode(machine.TypeControlPlane)
-	recoverNode := suite.RandomDiscoveredNode(machine.TypeControlPlane)
+	snapshotNode := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
+	recoverNode := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	suite.WaitForBootDone(suite.ctx)
 
@@ -111,39 +111,52 @@ func (suite *EtcdRecoverSuite) TestSnapshotRecover() {
 					return fmt.Errorf("error reading pre-reset boot ID: %w", err)
 				}
 
-				if err = base.IgnoreGRPCUnavailable(suite.Client.ResetGeneric(nodeCtx, &machineapi.ResetRequest{
-					Reboot:   true,
-					Graceful: false,
-					SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
-						{
-							Label: constants.EphemeralPartitionLabel,
-							Wipe:  true,
+				if err = base.IgnoreGRPCUnavailable(
+					suite.Client.ResetGeneric(
+						nodeCtx, &machineapi.ResetRequest{
+							Reboot:   true,
+							Graceful: false,
+							SystemPartitionsToWipe: []*machineapi.ResetPartitionSpec{
+								{
+									Label: constants.EphemeralPartitionLabel,
+									Wipe:  true,
+								},
+							},
 						},
-					},
-				})); err != nil {
+					),
+				); err != nil {
 					return fmt.Errorf("error resetting the node %q: %w", node, err)
 				}
 
 				var bootIDAfter string
 
-				return retry.Constant(5 * time.Minute).Retry(func() error {
-					requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, 5*time.Second)
-					defer requestCtxCancel()
+				return retry.Constant(5 * time.Minute).Retry(
+					func() error {
+						requestCtx, requestCtxCancel := context.WithTimeout(nodeCtx, 5*time.Second)
+						defer requestCtxCancel()
 
-					bootIDAfter, err = suite.ReadBootID(requestCtx)
+						bootIDAfter, err = suite.ReadBootID(requestCtx)
 
-					if err != nil {
-						// API might be unresponsive during reboot
-						return retry.ExpectedError(err)
-					}
+						if err != nil {
+							// API might be unresponsive during reboot
+							return retry.ExpectedError(err)
+						}
 
-					if bootIDAfter == bootIDBefore {
-						// bootID should be different after reboot
-						return retry.ExpectedError(fmt.Errorf("bootID didn't change for node %q: before %s, after %s", node, bootIDBefore, bootIDAfter))
-					}
+						if bootIDAfter == bootIDBefore {
+							// bootID should be different after reboot
+							return retry.ExpectedError(
+								fmt.Errorf(
+									"bootID didn't change for node %q: before %s, after %s",
+									node,
+									bootIDBefore,
+									bootIDAfter,
+								),
+							)
+						}
 
-					return nil
-				})
+						return nil
+					},
+				)
 			}()
 		}()
 	}
@@ -156,7 +169,7 @@ func (suite *EtcdRecoverSuite) TestSnapshotRecover() {
 
 	suite.T().Logf("recovering etcd snapshot at node %q", recoverNode)
 
-	suite.Require().NoError(suite.recoverEtcd(recoverNode, &snapshot))
+	suite.Require().NoError(suite.recoverEtcd(recoverNode, bytes.NewReader(snapshot.Bytes())))
 
 	suite.AssertClusterHealthy(suite.ctx)
 
@@ -197,17 +210,47 @@ func (suite *EtcdRecoverSuite) snapshotEtcd(snapshotNode string, dest io.Writer)
 	return err
 }
 
-func (suite *EtcdRecoverSuite) recoverEtcd(recoverNode string, src io.Reader) error {
+func (suite *EtcdRecoverSuite) recoverEtcd(recoverNode string, src io.ReadSeeker) error {
 	ctx := client.WithNodes(suite.ctx, recoverNode)
 
-	_, err := suite.Client.EtcdRecover(ctx, src)
-	if err != nil {
+	suite.T().Log("uploading the snapshot")
+
+	if err := retry.Constant(time.Minute, retry.WithUnits(time.Millisecond*200)).RetryWithContext(
+		ctx, func(ctx context.Context) error {
+			_, err := src.Seek(0, io.SeekStart)
+			if err != nil {
+				return err
+			}
+
+			_, err = suite.Client.EtcdRecover(ctx, src)
+
+			if client.StatusCode(err) == codes.FailedPrecondition {
+				return retry.ExpectedError(err)
+			}
+
+			return err
+		},
+	); err != nil {
 		return fmt.Errorf("error uploading snapshot: %w", err)
 	}
 
-	return suite.Client.Bootstrap(ctx, &machineapi.BootstrapRequest{
-		RecoverEtcd: true,
-	})
+	suite.T().Log("bootstrapping from the snapshot")
+
+	return retry.Constant(time.Minute, retry.WithUnits(time.Millisecond*200)).RetryWithContext(
+		ctx, func(ctx context.Context) error {
+			err := suite.Client.Bootstrap(
+				ctx, &machineapi.BootstrapRequest{
+					RecoverEtcd: true,
+				},
+			)
+
+			if client.StatusCode(err) == codes.FailedPrecondition || client.StatusCode(err) == codes.DeadlineExceeded {
+				return retry.ExpectedError(err)
+			}
+
+			return err
+		},
+	)
 }
 
 func init() {

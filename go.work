@@ -1,0 +1,9 @@
+go 1.19
+
+use (
+	.
+	./hack/cloud-image-uploader
+	./hack/gotagsrewrite
+	./hack/structprotogen
+	./pkg/machinery
+)

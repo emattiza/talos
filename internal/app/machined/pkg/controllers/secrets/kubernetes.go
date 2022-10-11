@@ -12,14 +12,14 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
-	"github.com/talos-systems/talos/internal/pkg/kubeconfig"
+	"github.com/talos-systems/talos/pkg/kubeconfig"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
@@ -47,7 +47,7 @@ func (ctrl *KubernetesController) Inputs() []controller.Input {
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.StatusType,
-			ID:        pointer.ToString(network.StatusID),
+			ID:        pointer.To(network.StatusID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -96,19 +96,19 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.KubernetesRootType,
-			ID:        pointer.ToString(secrets.KubernetesRootID),
+			ID:        pointer.To(secrets.KubernetesRootID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: v1alpha1.NamespaceName,
 			Type:      timeresource.StatusType,
-			ID:        pointer.ToString(timeresource.StatusID),
+			ID:        pointer.To(timeresource.StatusID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: secrets.NamespaceName,
 			Type:      secrets.CertSANType,
-			ID:        pointer.ToString(secrets.CertSANKubernetesID),
+			ID:        pointer.To(secrets.CertSANKubernetesID),
 			Kind:      controller.InputWeak,
 		},
 	}); err != nil {
@@ -153,7 +153,7 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 			return err
 		}
 
-		if !timeSyncResource.(*timeresource.Status).Status().Synced {
+		if !timeSyncResource.(*timeresource.Status).TypedSpec().Synced {
 			continue
 		}
 
@@ -169,7 +169,7 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 		certSANs := certSANResource.(*secrets.CertSAN).TypedSpec()
 
 		if err = r.Modify(ctx, secrets.NewKubernetes(), func(r resource.Resource) error {
-			return ctrl.updateSecrets(k8sRoot, r.(*secrets.Kubernetes).Certs(), certSANs)
+			return ctrl.updateSecrets(k8sRoot, r.(*secrets.Kubernetes).TypedSpec(), certSANs)
 		}); err != nil {
 			return err
 		}
@@ -177,7 +177,8 @@ func (ctrl *KubernetesController) Run(ctx context.Context, r controller.Runtime,
 }
 
 func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.KubernetesRootSpec, k8sSecrets *secrets.KubernetesCertsSpec,
-	certSANs *secrets.CertSANSpec) error {
+	certSANs *secrets.CertSANSpec,
+) error {
 	ca, err := x509.NewCertificateAuthorityFromCertificateAndKey(k8sRoot.CA)
 	if err != nil {
 		return fmt.Errorf("failed to parse CA certificate: %w", err)
@@ -245,7 +246,7 @@ func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.KubernetesRootS
 		CommonName:   constants.KubernetesControllerManagerOrganization,
 		Organization: constants.KubernetesControllerManagerOrganization,
 
-		Endpoint:    "https://localhost:6443/",
+		Endpoint:    k8sRoot.LocalEndpoint.String(),
 		Username:    constants.KubernetesControllerManagerOrganization,
 		ContextName: "default",
 	}, &buf); err != nil {
@@ -265,7 +266,7 @@ func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.KubernetesRootS
 		CommonName:   constants.KubernetesSchedulerOrganization,
 		Organization: constants.KubernetesSchedulerOrganization,
 
-		Endpoint:    "https://localhost:6443/",
+		Endpoint:    k8sRoot.LocalEndpoint.String(),
 		Username:    constants.KubernetesSchedulerOrganization,
 		ContextName: "default",
 	}, &buf); err != nil {
@@ -276,11 +277,25 @@ func (ctrl *KubernetesController) updateSecrets(k8sRoot *secrets.KubernetesRootS
 
 	buf.Reset()
 
-	if err = kubeconfig.GenerateAdmin(&generateAdminAdapter{k8sRoot: k8sRoot}, &buf); err != nil {
+	if err = kubeconfig.GenerateAdmin(&generateAdminAdapter{
+		k8sRoot:  k8sRoot,
+		endpoint: k8sRoot.Endpoint,
+	}, &buf); err != nil {
 		return fmt.Errorf("failed to generate admin kubeconfig: %w", err)
 	}
 
 	k8sSecrets.AdminKubeconfig = buf.String()
+
+	buf.Reset()
+
+	if err = kubeconfig.GenerateAdmin(&generateAdminAdapter{
+		k8sRoot:  k8sRoot,
+		endpoint: k8sRoot.LocalEndpoint,
+	}, &buf); err != nil {
+		return fmt.Errorf("failed to generate admin kubeconfig: %w", err)
+	}
+
+	k8sSecrets.LocalhostAdminKubeconfig = buf.String()
 
 	return nil
 }
@@ -304,7 +319,8 @@ func (ctrl *KubernetesController) teardownAll(ctx context.Context, r controller.
 
 // generateAdminAdapter allows to translate input config into GenerateAdmin input.
 type generateAdminAdapter struct {
-	k8sRoot *secrets.KubernetesRootSpec
+	k8sRoot  *secrets.KubernetesRootSpec
+	endpoint *url.URL
 }
 
 func (adapter *generateAdminAdapter) Name() string {
@@ -312,9 +328,7 @@ func (adapter *generateAdminAdapter) Name() string {
 }
 
 func (adapter *generateAdminAdapter) Endpoint() *url.URL {
-	u, _ := url.Parse("https://localhost:6443/") //nolint:errcheck
-
-	return u
+	return adapter.endpoint
 }
 
 func (adapter *generateAdminAdapter) CA() *x509.PEMEncodedCertificateAndKey {
@@ -328,4 +342,8 @@ func (adapter *generateAdminAdapter) AdminKubeconfig() config.AdminKubeconfig {
 func (adapter *generateAdminAdapter) CertLifetime() time.Duration {
 	// this certificate is not delivered to the user, it's used only internally by control plane components
 	return KubernetesCertificateValidityDuration
+}
+
+func (adapter *generateAdminAdapter) CommonName() string {
+	return constants.KubernetesTalosAdminCertCommonName
 }

@@ -8,7 +8,6 @@ package installer
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
@@ -41,7 +40,7 @@ type Installer struct {
 	app        *tview.Application
 	wg         sync.WaitGroup
 	err        error
-	ctx        context.Context
+	ctx        context.Context //nolint:containedctx
 	cancel     context.CancelFunc
 	addedPages map[string]bool
 	state      *State
@@ -204,30 +203,32 @@ func (installer *Installer) configure() error {
 	}
 
 	capture := installer.app.GetInputCapture()
-	installer.app.SetInputCapture(func(e *tcell.EventKey) *tcell.EventKey {
-		//nolint:exhaustive
-		switch e.Key() {
-		case tcell.KeyCtrlN:
-			setPage(currentPage + 1)
-		case tcell.KeyCtrlB:
-			setPage(currentPage - 1)
-		}
-
-		// page jump by ctrl/alt + N
-		if e.Rune() >= '1' && e.Rune() < '9' {
-			if e.Modifiers()&(tcell.ModAlt|tcell.ModCtrl) != 0 {
-				setPage(int(e.Rune()) - 49)
-
-				return nil
+	installer.app.SetInputCapture(
+		func(e *tcell.EventKey) *tcell.EventKey {
+			//nolint:exhaustive
+			switch e.Key() {
+			case tcell.KeyCtrlN:
+				setPage(currentPage + 1)
+			case tcell.KeyCtrlB:
+				setPage(currentPage - 1)
 			}
-		}
 
-		if capture != nil {
-			return capture(e)
-		}
+			// page jump by ctrl/alt + N
+			if e.Rune() >= '1' && e.Rune() < '9' {
+				if e.Modifiers()&(tcell.ModAlt|tcell.ModCtrl) != 0 {
+					setPage(int(e.Rune()) - 49)
 
-		return e
-	})
+					return nil
+				}
+			}
+
+			if capture != nil {
+				return capture(e)
+			}
+
+			return e
+		},
+	)
 
 	defer installer.app.SetInputCapture(capture)
 
@@ -240,9 +241,11 @@ func (installer *Installer) configure() error {
 		button.SetInactiveColors(inactiveColor, tcell.ColorIvory)
 
 		func(page int) {
-			button.SetSelectedFunc(func() {
-				setPage(page)
-			})
+			button.SetSelectedFunc(
+				func() {
+					setPage(page)
+				},
+			)
 		}(index)
 
 		menu.AddItem(button, len(name)+4, 1, false)
@@ -267,9 +270,11 @@ func (installer *Installer) configure() error {
 
 			if index > 0 {
 				back := form.AddMenuButton("[::u]B[::-]ack", false)
-				back.SetSelectedFunc(func() {
-					setPage(index - 1)
-				})
+				back.SetSelectedFunc(
+					func() {
+						setPage(index - 1)
+					},
+				)
 			}
 
 			addMenuItem(p.name, index)
@@ -278,15 +283,19 @@ func (installer *Installer) configure() error {
 
 			if index < len(state.pages)-1 {
 				next := form.AddMenuButton("[::u]N[::-]ext", index == 0)
-				next.SetSelectedFunc(func() {
-					setPage(index + 1)
-				})
+				next.SetSelectedFunc(
+					func() {
+						setPage(index + 1)
+					},
+				)
 			} else {
 				install := form.AddMenuButton("Install", false)
 				install.SetBackgroundColor(tcell.ColorGreen)
-				install.SetSelectedFunc(func() {
-					close(done)
-				})
+				install.SetSelectedFunc(
+					func() {
+						close(done)
+					},
+				)
 			}
 
 			installer.addPage(p.name, form, index == 0, menu)
@@ -360,13 +369,49 @@ func (installer *Installer) apply(conn *Connection) error {
 		)
 		s.SetBackgroundColor(color)
 
+		var reply *machineapi.ApplyConfigurationResponse
+
 		// TODO: progress bar, logs?
 		list.AddItem(s, 1, 1, false)
-		_, err = conn.ApplyConfiguration(&machineapi.ApplyConfigurationRequest{
-			Data: config,
-		})
+		reply, err = conn.ApplyConfiguration(
+			&machineapi.ApplyConfigurationRequest{
+				Data:   config,
+				DryRun: conn.dryRun,
+			},
+		)
+
+		if conn.dryRun {
+			err = fmt.Errorf("skipped in dry run")
+		}
 
 		s.Stop(err == nil)
+
+		if conn.dryRun {
+			text := tview.NewTextView()
+			addLines := func(lines ...string) {
+				t := text.GetText(false)
+				t += strings.Join(lines, "\n")
+				text.SetText(t)
+				installer.app.Draw()
+			}
+
+			for _, m := range reply.Messages {
+				addLines("", m.ModeDetails)
+			}
+
+			addLines(
+				"",
+				"Press any key to exit.",
+			)
+
+			text.SetBackgroundColor(color)
+			list.AddItem(text, 0, 1, false)
+			installer.app.Draw()
+
+			installer.awaitKey()
+
+			return nil
+		}
 
 		if err != nil {
 			return err
@@ -381,24 +426,9 @@ func (installer *Installer) apply(conn *Connection) error {
 }
 
 func (installer *Installer) writeTalosconfig(list *tview.Flex, talosconfig *clientconfig.Config) error {
-	path, err := clientconfig.GetDefaultPath()
+	config, err := clientconfig.Open("")
 	if err != nil {
 		return err
-	}
-
-	f, err := os.Open(path)
-
-	var config *clientconfig.Config
-
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	if err == nil {
-		config, err = clientconfig.ReadFrom(f)
-		if err != nil {
-			return err
-		}
 	}
 
 	text := tview.NewTextView()
@@ -411,17 +441,12 @@ func (installer *Installer) writeTalosconfig(list *tview.Flex, talosconfig *clie
 
 	addLines(
 		"",
-		fmt.Sprintf("Merging talosconfig into %s...", path),
+		fmt.Sprintf("Merging talosconfig into %s...", config.Path().Path),
 	)
 	text.SetBackgroundColor(color)
 	list.AddItem(text, 0, 1, false)
 
-	renames := []clientconfig.Rename{}
-	if config != nil {
-		renames = config.Merge(talosconfig)
-	} else {
-		config = talosconfig
-	}
+	renames := config.Merge(talosconfig)
 
 	for _, rename := range renames {
 		addLines(fmt.Sprintf("Renamed %s.", rename.String()))
@@ -435,7 +460,7 @@ func (installer *Installer) writeTalosconfig(list *tview.Flex, talosconfig *clie
 	config.Context = context
 	addLines(fmt.Sprintf("Set current context to %q.", context))
 
-	err = config.Save(path)
+	err = config.Save("")
 	if err != nil {
 		return err
 	}
@@ -453,19 +478,21 @@ func (installer *Installer) writeTalosconfig(list *tview.Flex, talosconfig *clie
 func (installer *Installer) awaitKey(keys ...tcell.Key) {
 	done := make(chan struct{})
 
-	installer.app.SetInputCapture(func(e *tcell.EventKey) *tcell.EventKey {
-		for _, key := range keys {
-			if e.Key() == key {
+	installer.app.SetInputCapture(
+		func(e *tcell.EventKey) *tcell.EventKey {
+			for _, key := range keys {
+				if e.Key() == key {
+					close(done)
+				}
+			}
+
+			if len(keys) == 0 {
 				close(done)
 			}
-		}
 
-		if len(keys) == 0 {
-			close(done)
-		}
-
-		return e
-	})
+			return e
+		},
+	)
 
 	select {
 	case <-done:
@@ -482,10 +509,12 @@ func (installer *Installer) showModal(title, text string, buttons ...string) int
 	modal := tview.NewModal().
 		SetText(text).
 		AddButtons(buttons).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			index = buttonIndex
-			close(done)
-		})
+		SetDoneFunc(
+			func(buttonIndex int, buttonLabel string) {
+				index = buttonIndex
+				close(done)
+			},
+		)
 
 	installer.addPage(title, modal, true, nil)
 	installer.app.SetFocus(modal)
@@ -524,8 +553,10 @@ func (installer *Installer) addPage(name string, primitive tview.Primitive, swit
 		if switchToPage {
 			installer.pages.AddAndSwitchToPage(name, frame, true)
 		} else {
-			installer.pages.AddPage(name,
-				frame, true, false)
+			installer.pages.AddPage(
+				name,
+				frame, true, false,
+			)
 		}
 	} else if switchToPage {
 		installer.pages.SwitchToPage(name)

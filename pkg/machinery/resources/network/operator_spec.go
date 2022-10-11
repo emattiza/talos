@@ -5,102 +5,96 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // OperatorSpecType is type of OperatorSpec resource.
 const OperatorSpecType = resource.Type("OperatorSpecs.net.talos.dev")
 
 // OperatorSpec resource holds DNS resolver info.
-type OperatorSpec struct {
-	md   resource.Metadata
-	spec OperatorSpecSpec
-}
+type OperatorSpec = typed.Resource[OperatorSpecSpec, OperatorSpecRD]
 
 // OperatorSpecSpec describes DNS resolvers.
+//
+//gotagsrewrite:gen
 type OperatorSpecSpec struct {
-	Operator  Operator `yaml:"operator"`
-	LinkName  string   `yaml:"linkName"`
-	RequireUp bool     `yaml:"requireUp"`
+	Operator  Operator `yaml:"operator" protobuf:"1"`
+	LinkName  string   `yaml:"linkName" protobuf:"2"`
+	RequireUp bool     `yaml:"requireUp" protobuf:"3"`
 
-	DHCP4 DHCP4OperatorSpec `yaml:"dhcp4,omitempty"`
-	DHCP6 DHCP6OperatorSpec `yaml:"dhcp6,omitempty"`
-	VIP   VIPOperatorSpec   `yaml:"vip,omitempty"`
+	DHCP4 DHCP4OperatorSpec `yaml:"dhcp4,omitempty" protobuf:"4"`
+	DHCP6 DHCP6OperatorSpec `yaml:"dhcp6,omitempty" protobuf:"5"`
+	VIP   VIPOperatorSpec   `yaml:"vip,omitempty" protobuf:"6"`
+
+	ConfigLayer ConfigLayer `yaml:"layer" protobuf:"7"`
 }
 
 // DHCP4OperatorSpec describes DHCP4 operator options.
+//
+//gotagsrewrite:gen
 type DHCP4OperatorSpec struct {
-	RouteMetric uint32 `yaml:"routeMetric"`
+	RouteMetric         uint32 `yaml:"routeMetric" protobuf:"1"`
+	SkipHostnameRequest bool   `yaml:"skipHostnameRequest,omitempty" protobuf:"2"`
 }
 
 // DHCP6OperatorSpec describes DHCP6 operator options.
+//
+//gotagsrewrite:gen
 type DHCP6OperatorSpec struct {
-	RouteMetric uint32 `yaml:"routeMetric"`
+	DUID                string `yaml:"DUID,omitempty" protobuf:"1"`
+	RouteMetric         uint32 `yaml:"routeMetric" protobuf:"2"`
+	SkipHostnameRequest bool   `yaml:"skipHostnameRequest,omitempty" protobuf:"3"`
 }
 
 // VIPOperatorSpec describes virtual IP operator options.
+//
+//gotagsrewrite:gen
 type VIPOperatorSpec struct {
-	IP            netaddr.IP `yaml:"ip"`
-	GratuitousARP bool       `yaml:"gratuitousARP"`
+	IP            netip.Addr `yaml:"ip" protobuf:"1"`
+	GratuitousARP bool       `yaml:"gratuitousARP" protobuf:"2"`
 
-	EquinixMetal VIPEquinixMetalSpec `yaml:"equinixMetal,omitempty"`
-	HCloud       VIPHCloudSpec       `yaml:"hcloud,omitempty"`
+	EquinixMetal VIPEquinixMetalSpec `yaml:"equinixMetal,omitempty" protobuf:"3"`
+	HCloud       VIPHCloudSpec       `yaml:"hcloud,omitempty" protobuf:"4"`
 }
 
 // VIPEquinixMetalSpec describes virtual (elastic) IP settings for Equinix Metal.
+//
+//gotagsrewrite:gen
 type VIPEquinixMetalSpec struct {
-	ProjectID string `yaml:"projectID"`
-	DeviceID  string `yaml:"deviceID"`
-	APIToken  string `yaml:"apiToken"`
+	ProjectID string `yaml:"projectID" protobuf:"1"`
+	DeviceID  string `yaml:"deviceID" protobuf:"2"`
+	APIToken  string `yaml:"apiToken" protobuf:"3"`
 }
 
 // VIPHCloudSpec describes virtual (elastic) IP settings for Hetzner Cloud.
+//
+//gotagsrewrite:gen
 type VIPHCloudSpec struct {
-	DeviceID  int    `yaml:"deviceID"`
-	NetworkID int    `yaml:"networkID"`
-	APIToken  string `yaml:"apiToken"`
+	DeviceID  int    `yaml:"deviceID" protobuf:"1"`
+	NetworkID int    `yaml:"networkID" protobuf:"2"`
+	APIToken  string `yaml:"apiToken" protobuf:"3"`
 }
 
 // NewOperatorSpec initializes a OperatorSpec resource.
 func NewOperatorSpec(namespace resource.Namespace, id resource.ID) *OperatorSpec {
-	r := &OperatorSpec{
-		md:   resource.NewMetadata(namespace, OperatorSpecType, id, resource.VersionUndefined),
-		spec: OperatorSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[OperatorSpecSpec, OperatorSpecRD](
+		resource.NewMetadata(namespace, OperatorSpecType, id, resource.VersionUndefined),
+		OperatorSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *OperatorSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// OperatorSpecRD provides auxiliary methods for OperatorSpec.
+type OperatorSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *OperatorSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *OperatorSpec) String() string {
-	return fmt.Sprintf("network.OperatorSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *OperatorSpec) DeepCopy() resource.Resource {
-	return &OperatorSpec{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *OperatorSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (OperatorSpecRD) ResourceDefinition(resource.Metadata, OperatorSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             OperatorSpecType,
 		Aliases:          []resource.Type{},
@@ -110,7 +104,11 @@ func (r *OperatorSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *OperatorSpec) TypedSpec() *OperatorSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[OperatorSpecSpec](OperatorSpecType, &OperatorSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

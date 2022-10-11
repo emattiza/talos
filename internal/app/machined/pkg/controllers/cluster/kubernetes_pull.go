@@ -8,10 +8,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/internal/pkg/discovery/registry"
@@ -37,13 +37,13 @@ func (ctrl *KubernetesPullController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      cluster.ConfigType,
-			ID:        pointer.ToString(cluster.ConfigID),
+			ID:        pointer.To(cluster.ConfigID),
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: k8s.NamespaceName,
 			Type:      k8s.NodenameType,
-			ID:        pointer.ToString(k8s.NodenameID),
+			ID:        pointer.To(k8s.NodenameID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -68,11 +68,16 @@ func (ctrl *KubernetesPullController) Run(ctx context.Context, r controller.Runt
 		kubernetesRegistry *registry.Kubernetes
 		watchCtxCancel     context.CancelFunc
 		notifyCh           <-chan struct{}
+		notifyCloser       func()
 	)
 
 	defer func() {
 		if watchCtxCancel != nil {
 			watchCtxCancel()
+		}
+
+		if notifyCloser != nil {
+			notifyCloser()
 		}
 
 		if kubernetesClient != nil {
@@ -134,7 +139,7 @@ func (ctrl *KubernetesPullController) Run(ctx context.Context, r controller.Runt
 			var watchCtx context.Context
 			watchCtx, watchCtxCancel = context.WithCancel(ctx) //nolint:govet
 
-			notifyCh, err = kubernetesRegistry.Watch(watchCtx, logger)
+			notifyCh, notifyCloser, err = kubernetesRegistry.Watch(watchCtx, logger)
 			if err != nil {
 				return fmt.Errorf("error setting up registry watcher: %w", err) //nolint:govet
 			}

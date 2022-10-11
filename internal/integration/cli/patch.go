@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -28,7 +27,7 @@ func (suite *PatchSuite) SuiteName() string {
 
 // TestSuccess successful run.
 func (suite *PatchSuite) TestSuccess() {
-	node := suite.RandomDiscoveredNode(machine.TypeControlPlane)
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	patch := []map[string]interface{}{
 		{
@@ -43,12 +42,13 @@ func (suite *PatchSuite) TestSuccess() {
 	data, err := json.Marshal(patch)
 	suite.Require().NoError(err)
 
-	suite.RunCLI([]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--immediate"})
+	suite.RunCLI([]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot"})
+	suite.RunCLI([]string{"patch", "--nodes", node, "--patch", string(data), "machineconfig", "--mode=no-reboot", "--dry-run"})
 }
 
 // TestError runs comand with error.
 func (suite *PatchSuite) TestError() {
-	node := suite.RandomDiscoveredNode(machine.TypeControlPlane)
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	patch := []map[string]interface{}{
 		{

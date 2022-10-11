@@ -4,7 +4,10 @@
 
 package qemu
 
-import "fmt"
+import (
+	"os/exec"
+	"path/filepath"
+)
 
 // Arch abstracts away differences between different architectures.
 type Arch string
@@ -68,13 +71,18 @@ type PFlash struct {
 }
 
 // PFlash returns settings for parallel flash.
-func (arch Arch) PFlash(uefiEnabled bool) []PFlash {
+func (arch Arch) PFlash(uefiEnabled bool, extraUEFISearchPaths []string) []PFlash {
 	switch arch {
 	case ArchArm64:
+		uefiSourcePaths := []string{"/usr/share/qemu-efi-aarch64/QEMU_EFI.fd", "/usr/share/OVMF/QEMU_EFI.fd"}
+		for _, p := range extraUEFISearchPaths {
+			uefiSourcePaths = append(uefiSourcePaths, filepath.Join(p, "QEMU_EFI.fd"))
+		}
+
 		return []PFlash{
 			{
 				Size:        64 * 1024 * 1024,
-				SourcePaths: []string{"/usr/share/qemu-efi-aarch64/QEMU_EFI.fd", "/usr/share/OVMF/QEMU_EFI.fd"},
+				SourcePaths: uefiSourcePaths,
 			},
 			{
 				Size: 64 * 1024 * 1024,
@@ -85,10 +93,15 @@ func (arch Arch) PFlash(uefiEnabled bool) []PFlash {
 			return nil
 		}
 
+		uefiSourcePaths := []string{"/usr/share/ovmf/OVMF.fd", "/usr/share/OVMF/OVMF.fd", "/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_CODE.secboot.fd"}
+		for _, p := range extraUEFISearchPaths {
+			uefiSourcePaths = append(uefiSourcePaths, filepath.Join(p, "OVMF.fd"))
+		}
+
 		return []PFlash{
 			{
 				Size:        0,
-				SourcePaths: []string{"/usr/share/ovmf/OVMF.fd", "/usr/share/OVMF/OVMF.fd"},
+				SourcePaths: uefiSourcePaths,
 			},
 		}
 	default:
@@ -98,5 +111,17 @@ func (arch Arch) PFlash(uefiEnabled bool) []PFlash {
 
 // QemuExecutable returns name of qemu executable for the arch.
 func (arch Arch) QemuExecutable() string {
-	return fmt.Sprintf("qemu-system-%s", arch.QemuArch())
+	binaries := []string{
+		"qemu-system-" + arch.QemuArch(),
+		"qemu-kvm",
+		"/usr/libexec/qemu-kvm",
+	}
+
+	for _, binary := range binaries {
+		if path, err := exec.LookPath(binary); err == nil {
+			return path
+		}
+	}
+
+	return ""
 }

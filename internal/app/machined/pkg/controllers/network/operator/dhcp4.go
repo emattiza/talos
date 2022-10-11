@@ -9,14 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
+	"github.com/siderolabs/gen/slices"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
+	"go4.org/netipx"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
@@ -27,9 +29,10 @@ import (
 type DHCP4 struct {
 	logger *zap.Logger
 
-	linkName    string
-	routeMetric uint32
-	requestMTU  bool
+	linkName            string
+	routeMetric         uint32
+	skipHostnameRequest bool
+	requestMTU          bool
 
 	offer *dhcpv4.DHCPv4
 
@@ -43,11 +46,12 @@ type DHCP4 struct {
 }
 
 // NewDHCP4 creates DHCPv4 operator.
-func NewDHCP4(logger *zap.Logger, linkName string, routeMetric uint32, platform runtime.Platform) *DHCP4 {
+func NewDHCP4(logger *zap.Logger, linkName string, config network.DHCP4OperatorSpec, platform runtime.Platform) *DHCP4 {
 	return &DHCP4{
-		logger:      logger,
-		linkName:    linkName,
-		routeMetric: routeMetric,
+		logger:              logger,
+		linkName:            linkName,
+		routeMetric:         config.RouteMetric,
+		skipHostnameRequest: config.SkipHostnameRequest,
 		// <3 azure
 		// When including dhcp.OptionInterfaceMTU we don't get a dhcp offer back on azure.
 		// So we'll need to explicitly exclude adding this option for azure.
@@ -153,7 +157,7 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	addr, _ := netaddr.FromStdIPNet(&net.IPNet{
+	addr, _ := netipx.FromStdIPNet(&net.IPNet{
 		IP:   ack.YourIPAddr,
 		Mask: ack.SubnetMask(),
 	})
@@ -189,13 +193,13 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 
 	if len(ack.ClasslessStaticRoute()) > 0 {
 		for _, route := range ack.ClasslessStaticRoute() {
-			gw, _ := netaddr.FromStdIP(route.Router)
-			dst, _ := netaddr.FromStdIPNet(route.Dest)
+			gw, _ := netipx.FromStdIP(route.Router)
+			dst, _ := netipx.FromStdIPNet(route.Dest)
 
 			d.routes = append(d.routes, network.RouteSpecSpec{
 				Family:      nethelpers.FamilyInet4,
 				Destination: dst,
-				Source:      addr.IP(),
+				Source:      addr.Addr(),
 				Gateway:     gw,
 				OutLinkName: d.linkName,
 				Table:       nethelpers.TableMain,
@@ -208,12 +212,12 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 		}
 	} else {
 		for _, router := range ack.Router() {
-			gw, _ := netaddr.FromStdIP(router)
+			gw, _ := netipx.FromStdIP(router)
 
 			d.routes = append(d.routes, network.RouteSpecSpec{
 				Family:      nethelpers.FamilyInet4,
 				Gateway:     gw,
-				Source:      addr.IP(),
+				Source:      addr.Addr(),
 				OutLinkName: d.linkName,
 				Table:       nethelpers.TableMain,
 				Priority:    d.routeMetric,
@@ -227,8 +231,8 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 				// add an interface route for the gateway if it's not in the same network
 				d.routes = append(d.routes, network.RouteSpecSpec{
 					Family:      nethelpers.FamilyInet4,
-					Destination: netaddr.IPPrefixFrom(gw, gw.BitLen()),
-					Source:      addr.IP(),
+					Destination: netip.PrefixFrom(gw, gw.BitLen()),
+					Source:      addr.Addr(),
 					OutLinkName: d.linkName,
 					Table:       nethelpers.TableMain,
 					Priority:    d.routeMetric,
@@ -246,15 +250,15 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 	}
 
 	if len(ack.DNS()) > 0 {
-		dns := make([]netaddr.IP, len(ack.DNS()))
+		convertIP := func(ip net.IP) netip.Addr {
+			result, _ := netipx.FromStdIP(ip)
 
-		for i := range dns {
-			dns[i], _ = netaddr.FromStdIP(ack.DNS()[i])
+			return result
 		}
 
 		d.resolvers = []network.ResolverSpecSpec{
 			{
-				DNSServers:  dns,
+				DNSServers:  slices.Map(ack.DNS(), convertIP),
 				ConfigLayer: network.ConfigOperator,
 			},
 		}
@@ -262,7 +266,7 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 		d.resolvers = nil
 	}
 
-	if ack.HostName() != "" {
+	if ack.HostName() != "" && !d.skipHostnameRequest {
 		spec := network.HostnameSpecSpec{
 			ConfigLayer: network.ConfigOperator,
 		}
@@ -283,16 +287,15 @@ func (d *DHCP4) parseAck(ack *dhcpv4.DHCPv4) {
 	}
 
 	if len(ack.NTPServers()) > 0 {
-		ntp := make([]string, len(ack.NTPServers()))
+		convertIP := func(ip net.IP) string {
+			result, _ := netipx.FromStdIP(ip)
 
-		for i := range ntp {
-			ip, _ := netaddr.FromStdIP(ack.NTPServers()[i])
-			ntp[i] = ip.String()
+			return result.String()
 		}
 
 		d.timeservers = []network.TimeServerSpecSpec{
 			{
-				NTPServers:  ntp,
+				NTPServers:  slices.Map(ack.NTPServers(), convertIP),
 				ConfigLayer: network.ConfigOperator,
 			},
 		}
@@ -306,9 +309,12 @@ func (d *DHCP4) renew(ctx context.Context) (time.Duration, error) {
 		dhcpv4.OptionClasslessStaticRoute,
 		dhcpv4.OptionDomainNameServer,
 		dhcpv4.OptionDNSDomainSearchList,
-		dhcpv4.OptionHostName,
 		dhcpv4.OptionNTPServers,
 		dhcpv4.OptionDomainName,
+	}
+
+	if !d.skipHostnameRequest {
+		opts = append(opts, dhcpv4.OptionHostName)
 	}
 
 	if d.requestMTU {

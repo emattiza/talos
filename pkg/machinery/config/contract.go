@@ -24,6 +24,10 @@ type VersionContract struct {
 // Well-known Talos version contracts.
 var (
 	TalosVersionCurrent = (*VersionContract)(nil)
+	TalosVersion1_3     = &VersionContract{1, 3}
+	TalosVersion1_2     = &VersionContract{1, 2}
+	TalosVersion1_1     = &VersionContract{1, 1}
+	TalosVersion1_0     = &VersionContract{1, 0}
 	TalosVersion0_14    = &VersionContract{0, 14}
 	TalosVersion0_13    = &VersionContract{0, 13}
 	TalosVersion0_12    = &VersionContract{0, 12}
@@ -96,4 +100,50 @@ func (contract *VersionContract) SupportsECDSASHA256() bool {
 // ClusterDiscoveryEnabled returns true if cluster discovery should be enabled by default.
 func (contract *VersionContract) ClusterDiscoveryEnabled() bool {
 	return contract.Greater(TalosVersion0_13)
+}
+
+// PodSecurityPolicyEnabled returns true if pod security policy should be enabled by default.
+func (contract *VersionContract) PodSecurityPolicyEnabled() bool {
+	return !contract.Greater(TalosVersion0_14)
+}
+
+// PodSecurityAdmissionEnabled returns true if pod security admission should be enabled by default.
+func (contract *VersionContract) PodSecurityAdmissionEnabled() bool {
+	return contract.Greater(TalosVersion1_0)
+}
+
+// StableHostnameEnabled returns true if stable hostname generation should be enabled by default.
+func (contract *VersionContract) StableHostnameEnabled() bool {
+	return contract.Greater(TalosVersion1_1)
+}
+
+// KubeletDefaultRuntimeSeccompProfileEnabled returns true if kubelet seccomp profile should be enabled by default.
+func (contract *VersionContract) KubeletDefaultRuntimeSeccompProfileEnabled() bool {
+	return contract.Greater(TalosVersion1_1)
+}
+
+// KubernetesAlternateImageRegistries returns true if alternate image registries should be enabled by default.
+// https://github.com/kubernetes/kubernetes/pull/109938
+func (contract *VersionContract) KubernetesAlternateImageRegistries() bool {
+	return contract.Greater(TalosVersion1_1)
+}
+
+// KubernetesAllowSchedulingOnControlPlanes returns true if scheduling on control planes should be enabled by default.
+func (contract *VersionContract) KubernetesAllowSchedulingOnControlPlanes() bool {
+	return contract.Greater(TalosVersion1_1)
+}
+
+// KubernetesDiscoveryBackendDisabled returns true if Kubernetes cluster discovery backend should be disabled by default.
+func (contract *VersionContract) KubernetesDiscoveryBackendDisabled() bool {
+	return contract.Greater(TalosVersion1_1)
+}
+
+// ApidExtKeyUsageCheckEnabled returns true if apid should check ext key usage of client certificates.
+func (contract *VersionContract) ApidExtKeyUsageCheckEnabled() bool {
+	return contract.Greater(TalosVersion1_2)
+}
+
+// APIServerAuditPolicySupported returns true if kube-apiserver custom audit policy is supported.
+func (contract *VersionContract) APIServerAuditPolicySupported() bool {
+	return contract.Greater(TalosVersion1_2)
 }

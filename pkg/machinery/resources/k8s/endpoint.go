@@ -5,12 +5,16 @@
 package k8s
 
 import (
-	"fmt"
+	"net/netip"
 	"sort"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/gen/slices"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // EndpointType is type of Endpoint resource.
@@ -23,54 +27,28 @@ const ControlPlaneAPIServerEndpointsID = resource.ID("kube-apiserver")
 const ControlPlaneDiscoveredEndpointsID = resource.ID("discovery")
 
 // Endpoint resource holds definition of rendered secrets.
-type Endpoint struct {
-	md   resource.Metadata
-	spec EndpointSpec
-}
+type Endpoint = typed.Resource[EndpointSpec, EndpointRD]
 
 // EndpointSpec describes status of rendered secrets.
+//
+//gotagsrewrite:gen
 type EndpointSpec struct {
-	Addresses []netaddr.IP `yaml:"addresses"`
+	Addresses []netip.Addr `yaml:"addresses" protobuf:"1"`
 }
 
-// NewEndpoint initializes a Endpoint resource.
+// NewEndpoint initializes the Endpoint resource.
 func NewEndpoint(namespace resource.Namespace, id resource.ID) *Endpoint {
-	r := &Endpoint{
-		md:   resource.NewMetadata(namespace, EndpointType, id, resource.VersionUndefined),
-		spec: EndpointSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[EndpointSpec, EndpointRD](
+		resource.NewMetadata(namespace, EndpointType, id, resource.VersionUndefined),
+		EndpointSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Endpoint) Metadata() *resource.Metadata {
-	return &r.md
-}
+// EndpointRD provides auxiliary methods for Endpoint.
+type EndpointRD struct{}
 
-// Spec implements resource.Resource.
-func (r *Endpoint) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Endpoint) String() string {
-	return fmt.Sprintf("k8s.Endpoint(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Endpoint) DeepCopy() resource.Resource {
-	return &Endpoint{
-		md: r.md,
-		spec: EndpointSpec{
-			Addresses: append([]netaddr.IP(nil), r.spec.Addresses...),
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Endpoint) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (EndpointRD) ResourceDefinition(resource.Metadata, EndpointSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             EndpointType,
 		Aliases:          []resource.Type{},
@@ -84,17 +62,12 @@ func (r *Endpoint) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *Endpoint) TypedSpec() *EndpointSpec {
-	return &r.spec
-}
-
 // EndpointList is a flattened list of endpoints.
-type EndpointList []netaddr.IP
+type EndpointList []netip.Addr
 
 // Merge endpoints from multiple Endpoint resources into a single list.
 func (l EndpointList) Merge(endpoint *Endpoint) EndpointList {
-	for _, ip := range endpoint.spec.Addresses {
+	for _, ip := range endpoint.TypedSpec().Addresses {
 		ip := ip
 
 		idx := sort.Search(len(l), func(i int) bool { return !l[i].Less(ip) })
@@ -103,7 +76,7 @@ func (l EndpointList) Merge(endpoint *Endpoint) EndpointList {
 			continue
 		}
 
-		l = append(l[:idx], append([]netaddr.IP{ip}, l[idx:]...)...)
+		l = append(l[:idx], append([]netip.Addr{ip}, l[idx:]...)...)
 	}
 
 	return l
@@ -111,11 +84,14 @@ func (l EndpointList) Merge(endpoint *Endpoint) EndpointList {
 
 // Strings returns a slice of formatted endpoints to string.
 func (l EndpointList) Strings() []string {
-	res := make([]string, len(l))
+	return slices.Map(l, netip.Addr.String)
+}
 
-	for i := range l {
-		res[i] = l[i].String()
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[EndpointSpec](EndpointType, &Endpoint{})
+	if err != nil {
+		panic(err)
 	}
-
-	return res
 }

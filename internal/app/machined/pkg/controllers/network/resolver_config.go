@@ -7,14 +7,14 @@ package network
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/go-pointer"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
@@ -38,7 +38,7 @@ func (ctrl *ResolverConfigController) Inputs() []controller.Input {
 		{
 			Namespace: config.NamespaceName,
 			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			ID:        pointer.To(config.V1Alpha1ID),
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -157,7 +157,7 @@ func (ctrl *ResolverConfigController) apply(ctx context.Context, r controller.Ru
 }
 
 func (ctrl *ResolverConfigController) getDefault() (spec network.ResolverSpecSpec) {
-	spec.DNSServers = []netaddr.IP{netaddr.MustParseIP(constants.DefaultPrimaryResolver), netaddr.MustParseIP(constants.DefaultSecondaryResolver)}
+	spec.DNSServers = []netip.Addr{netip.MustParseAddr(constants.DefaultPrimaryResolver), netip.MustParseAddr(constants.DefaultSecondaryResolver)}
 	spec.ConfigLayer = network.ConfigDefault
 
 	return spec
@@ -193,7 +193,7 @@ func (ctrl *ResolverConfigController) parseMachineConfiguration(logger *zap.Logg
 	}
 
 	for i := range resolvers {
-		server, err := netaddr.ParseIP(resolvers[i])
+		server, err := netip.ParseAddr(resolvers[i])
 		if err != nil {
 			logger.Warn("failed to parse DNS server", zap.String("server", resolvers[i]), zap.Error(err))
 

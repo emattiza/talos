@@ -5,13 +5,17 @@
 package time
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
 
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 	"github.com/talos-systems/talos/pkg/machinery/resources/v1alpha1"
 )
+
+//nolint:lll
+//go:generate deep-copy -type StatusSpec -header-file ../../../../hack/boilerplate.txt -o deep_copy.generated.go .
 
 // StatusType is type of TimeSync resource.
 const StatusType = resource.Type("TimeStatuses.v1alpha1.talos.dev")
@@ -20,59 +24,35 @@ const StatusType = resource.Type("TimeStatuses.v1alpha1.talos.dev")
 const StatusID = resource.ID("node")
 
 // Status describes running current time sync status.
-type Status struct {
-	md   resource.Metadata
-	spec StatusSpec
-}
+type Status = typed.Resource[StatusSpec, StatusRD]
 
 // StatusSpec describes time sync state.
+//
+//gotagsrewrite:gen
 type StatusSpec struct {
 	// Synced indicates whether time is in sync.
-	Synced bool `yaml:"synced"`
+	Synced bool `yaml:"synced" protobuf:"1"`
 
 	// Epoch is incremented every time clock jumps more than 15min.
-	Epoch int `yaml:"epoch"`
+	Epoch int `yaml:"epoch" protobuf:"2"`
 
 	// SyncDisabled indicates if time sync is disabled.
-	SyncDisabled bool `yaml:"syncDisabled"`
+	SyncDisabled bool `yaml:"syncDisabled" protobuf:"3"`
 }
 
 // NewStatus initializes a TimeSync resource.
 func NewStatus() *Status {
-	r := &Status{
-		md:   resource.NewMetadata(v1alpha1.NamespaceName, StatusType, StatusID, resource.VersionUndefined),
-		spec: StatusSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[StatusSpec, StatusRD](
+		resource.NewMetadata(v1alpha1.NamespaceName, StatusType, StatusID, resource.VersionUndefined),
+		StatusSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *Status) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *Status) Spec() interface{} {
-	return r.spec
-}
-
-func (r *Status) String() string {
-	return fmt.Sprintf("time.Status(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *Status) DeepCopy() resource.Resource {
-	return &Status{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// StatusRD provides auxiliary methods for Status.
+type StatusRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *Status) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (r StatusRD) ResourceDefinition(resource.Metadata, StatusSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             StatusType,
 		Aliases:          []resource.Type{},
@@ -86,12 +66,11 @@ func (r *Status) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// SetStatus changes .spec.
-func (r *Status) SetStatus(status StatusSpec) {
-	r.spec = status
-}
+func init() {
+	proto.RegisterDefaultTypes()
 
-// Status returns .spec.
-func (r *Status) Status() StatusSpec {
-	return r.spec
+	err := protobuf.RegisterDynamic[StatusSpec](StatusType, &Status{})
+	if err != nil {
+		panic(err)
+	}
 }

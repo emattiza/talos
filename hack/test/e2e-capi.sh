@@ -1,13 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -eou pipefail
 
 source ./hack/test/e2e.sh
 
-export CAPI_VERSION="${CAPI_VERSION:-1.0.2}"
-export CABPT_VERSION="${CABPT_VERSION:-0.5.0}"
-export CACPPT_VERSION="${CACPPT_VERSION:-0.4.0}"
-export CAPA_VERSION="${CAPA_VERSION:-1.1.0}"
+export CAPI_VERSION="${CAPI_VERSION:-1.1.3}"
+export CAPA_VERSION="${CAPA_VERSION:-1.2.0}"
 export CAPG_VERSION="${CAPG_VERSION:-1.0.0}"
 
 # We need to override this here since e2e.sh will set it to ${TMP}/capi/kubeconfig.
@@ -26,10 +24,11 @@ export AWS_B64ENCODED_CREDENTIALS=${AWS_SVC_ACCT}
 set -x
 
 ${CLUSTERCTL} init \
+    --config hack/test/clusterctl.yaml \
     --core "cluster-api:v${CAPI_VERSION}" \
-    --control-plane "talos:v${CACPPT_VERSION}" \
+    --control-plane "talos" \
     --infrastructure "aws:v${CAPA_VERSION},gcp:v${CAPG_VERSION}" \
-    --bootstrap "talos:v${CABPT_VERSION}"
+    --bootstrap "talos"
 
 # Wait for the talosconfig
 timeout=$(($(date +%s) + ${TIMEOUT}))

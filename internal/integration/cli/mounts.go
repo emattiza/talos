@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -27,7 +26,7 @@ func (suite *MountsSuite) SuiteName() string {
 
 // TestSuccess verifies successful execution.
 func (suite *MountsSuite) TestSuccess() {
-	suite.RunCLI([]string{"mounts", "--nodes", suite.RandomDiscoveredNode()},
+	suite.RunCLI([]string{"mounts", "--nodes", suite.RandomDiscoveredNodeInternalIP()},
 		base.StdoutShouldMatch(regexp.MustCompile(`(?s)FILESYSTEM.*`)))
 }
 
@@ -40,7 +39,7 @@ func (suite *MountsSuite) TestUserDisksMounted() {
 	}
 
 	for _, path := range strings.Split(paths, ",") {
-		suite.RunCLI([]string{"mounts", "--nodes", suite.RandomDiscoveredNode()},
+		suite.RunCLI([]string{"mounts", "--nodes", suite.RandomDiscoveredNodeInternalIP()},
 			base.StdoutShouldMatch(regexp.MustCompile(path)))
 	}
 }

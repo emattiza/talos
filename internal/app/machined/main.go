@@ -9,19 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/talos-systems/go-cmd/pkg/cmd/proc"
 	"github.com/talos-systems/go-cmd/pkg/cmd/proc/reaper"
 	debug "github.com/talos-systems/go-debug"
 	"github.com/talos-systems/go-procfs/procfs"
-	"golang.org/x/net/http/httpproxy"
 	"golang.org/x/sys/unix"
 
 	"github.com/talos-systems/talos/internal/app/apid"
@@ -30,8 +28,11 @@ import (
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/system/services"
+	"github.com/talos-systems/talos/internal/app/maintenance"
+	"github.com/talos-systems/talos/internal/app/poweroff"
 	"github.com/talos-systems/talos/internal/app/trustd"
 	"github.com/talos-systems/talos/internal/pkg/mount"
+	"github.com/talos-systems/talos/pkg/httpdefaults"
 	"github.com/talos-systems/talos/pkg/machinery/api/common"
 	"github.com/talos-systems/talos/pkg/machinery/api/machine"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
@@ -39,25 +40,8 @@ import (
 )
 
 func init() {
-	// Explicitly set the default http client transport to work around proxy.Do
-	// once. This is the http.DefaultTransport with the Proxy func overridden so
-	// that the environment variables with be reread/initialized each time the
-	// http call is made.
-	http.DefaultClient.Transport = &http.Transport{
-		Proxy: func(req *http.Request) (*url.URL, error) {
-			return httpproxy.FromEnvironment().ProxyFunc()(req.URL)
-		},
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
+	// Patch a default HTTP client with updated transport to handle cases when default client is being used.
+	http.DefaultClient.Transport = httpdefaults.PatchTransport(cleanhttp.DefaultPooledTransport())
 }
 
 func recovery() {
@@ -190,6 +174,9 @@ func runDebugServer(ctx context.Context) {
 func run() error {
 	errCh := make(chan error)
 
+	// Limit GOMAXPROCS.
+	startup.LimitMaxProcs(constants.MachinedMaxProcs)
+
 	// Ensure RNG is seeded.
 	if err := startup.RandSeed(); err != nil {
 		return err
@@ -211,11 +198,10 @@ func run() error {
 
 	drainer := runtime.NewDrainer()
 	defer func() {
-		c, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		drainCtx, drainCtxCancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer drainCtxCancel()
 
-		defer cancel()
-
-		if e := drainer.Drain(c); e != nil {
+		if e := drainer.Drain(drainCtx); e != nil {
 			log.Printf("WARNING: failed to drain controllers: %s", e)
 		}
 	}()
@@ -241,44 +227,67 @@ func run() error {
 		log.Printf("controller runtime finished")
 	}()
 
+	// Inject controller into maintenance service.
+	maintenance.InjectController(c)
+
+	initializeCanceled := false
+
 	// Initialize the machine.
 	if err = c.Run(ctx, runtime.SequenceInitialize, nil); err != nil {
-		return err
+		if errors.Is(err, context.Canceled) {
+			initializeCanceled = true
+		} else {
+			return err
+		}
 	}
 
-	// Perform an installation if required.
-	if err = c.Run(ctx, runtime.SequenceInstall, nil); err != nil {
-		return err
-	}
+	// If Initialize sequence was canceled, don't run any other sequence.
+	if !initializeCanceled {
+		// Perform an installation if required.
+		if err = c.Run(ctx, runtime.SequenceInstall, nil); err != nil {
+			return err
+		}
 
-	// Start the machine API.
-	system.Services(c.Runtime()).LoadAndStart(&services.Machined{Controller: c})
+		// Start the machine API.
+		system.Services(c.Runtime()).LoadAndStart(
+			&services.Machined{Controller: c},
+			&services.APID{},
+		)
 
-	// Boot the machine.
-	if err = c.Run(ctx, runtime.SequenceBoot, nil); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+		// Boot the machine.
+		if err = c.Run(ctx, runtime.SequenceBoot, nil); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
 	}
 
 	// Watch and handle runtime events.
-	_ = c.Runtime().Events().Watch(func(events <-chan runtime.EventInfo) { //nolint:errcheck
-		for {
-			for event := range events {
-				switch msg := event.Payload.(type) {
-				case *machine.SequenceEvent:
-					if msg.Error != nil {
-						if msg.Error.GetCode() == common.Code_LOCKED {
-							// ignore sequence lock errors, they're not fatal
-							continue
-						}
+	//nolint:errcheck
+	_ = c.Runtime().Events().Watch(
+		func(events <-chan runtime.EventInfo) {
+			for {
+				for event := range events {
+					switch msg := event.Payload.(type) {
+					case *machine.SequenceEvent:
+						if msg.Error != nil {
+							if msg.Error.GetCode() == common.Code_LOCKED ||
+								msg.Error.GetCode() == common.Code_CANCELED {
+								// ignore sequence lock and canceled errors, they're not fatal
+								continue
+							}
 
-						errCh <- fmt.Errorf("fatal sequencer error in %q sequence: %v", msg.GetSequence(), msg.GetError().String())
+							errCh <- fmt.Errorf(
+								"fatal sequencer error in %q sequence: %v",
+								msg.GetSequence(),
+								msg.GetError().String(),
+							)
+						}
+					case *machine.RestartEvent:
+						errCh <- runtime.RebootError{Cmd: int(msg.Cmd)}
 					}
-				case *machine.RestartEvent:
-					errCh <- runtime.RebootError{Cmd: int(msg.Cmd)}
 				}
 			}
-		}
-	})
+		},
+	)
 
 	return <-errCh
 }
@@ -291,6 +300,11 @@ func main() {
 		return
 	case "/trustd":
 		trustd.Main()
+
+		return
+	// Azure uses the hv_utils kernel module to shutdown the node in hyper-v by calling perform_shutdown which will call orderly_poweroff which will call /sbin/poweroff.
+	case "/sbin/poweroff":
+		poweroff.Main()
 
 		return
 	default:

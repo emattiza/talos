@@ -7,9 +7,8 @@ package install
 import (
 	"fmt"
 	"log"
-	"path/filepath"
 
-	"github.com/talos-systems/go-blockdevice/blockdevice"
+	"github.com/siderolabs/go-blockdevice/blockdevice"
 	"github.com/talos-systems/go-procfs/procfs"
 	"golang.org/x/sys/unix"
 
@@ -55,7 +54,11 @@ func Install(p runtime.Platform, seq runtime.Sequence, opts *Options) (err error
 		return err
 	}
 
-	if err = cmdline.AppendAll(opts.ExtraKernelArgs, procfs.WithOverwriteArgs("console")); err != nil {
+	if err = cmdline.AppendAll(
+		opts.ExtraKernelArgs,
+		procfs.WithOverwriteArgs("console"),
+		procfs.WithOverwriteArgs(constants.KernelParamPlatform),
+	); err != nil {
 		return err
 	}
 
@@ -83,8 +86,8 @@ type Installer struct {
 
 	bootPartitionFound bool
 
-	Current string
-	Next    string
+	Current grub.BootLabel
+	Next    grub.BootLabel
 }
 
 // NewInstaller initializes and returns an Installer.
@@ -92,17 +95,13 @@ func NewInstaller(cmdline *procfs.Cmdline, seq runtime.Sequence, opts *Options) 
 	i = &Installer{
 		cmdline: cmdline,
 		options: opts,
-		bootloader: &grub.Grub{
-			BootDisk: opts.Disk,
-			Arch:     opts.Arch,
-		},
 	}
 
 	if err = i.probeBootPartition(); err != nil {
 		return nil, err
 	}
 
-	i.manifest, err = NewManifest(i.Next, seq, i.bootPartitionFound, i.options)
+	i.manifest, err = NewManifest(string(i.Next), seq, i.bootPartitionFound, i.options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create installation manifest: %w", err)
 	}
@@ -152,10 +151,25 @@ func (i *Installer) probeBootPartition() error {
 		}
 	}
 
-	var err error
+	grubConf, err := grub.Read(grub.ConfigPath)
+	if err != nil {
+		return err
+	}
 
-	// anyways run the Labels() to get the defaults initialized
-	i.Current, i.Next, err = i.bootloader.Labels()
+	next := grub.BootA
+
+	if grubConf != nil {
+		i.Current = grubConf.Default
+
+		next, err = grub.FlipBootLabel(grubConf.Default)
+		if err != nil {
+			return err
+		}
+
+		i.bootloader = grubConf
+	}
+
+	i.Next = next
 
 	return err
 }
@@ -165,6 +179,10 @@ func (i *Installer) probeBootPartition() error {
 //
 //nolint:gocyclo,cyclop
 func (i *Installer) Install(seq runtime.Sequence) (err error) {
+	if err = i.installExtensions(); err != nil {
+		return err
+	}
+
 	if i.options.Board != constants.BoardNone {
 		var b runtime.Board
 
@@ -258,32 +276,27 @@ func (i *Installer) Install(seq runtime.Sequence) (err error) {
 		return nil
 	}
 
-	i.cmdline.Append("initrd", filepath.Join("/", i.Next, constants.InitramfsAsset))
+	var conf *grub.Config
+	if i.bootloader == nil {
+		conf = grub.NewConfig(i.cmdline.String())
+	} else {
+		existingConf, ok := i.bootloader.(*grub.Config)
+		if !ok {
+			return fmt.Errorf("unsupported bootloader type: %T", i.bootloader)
+		}
+		if err = existingConf.Put(i.Next, i.cmdline.String()); err != nil {
+			return err
+		}
+		existingConf.Default = i.Next
+		existingConf.Fallback = i.Current
 
-	grubcfg := &grub.Cfg{
-		Default: i.Next,
-		Labels: []*grub.Label{
-			{
-				Root:   i.Next,
-				Initrd: filepath.Join("/", i.Next, constants.InitramfsAsset),
-				Kernel: filepath.Join("/", i.Next, constants.KernelAsset),
-				Append: i.cmdline.String(),
-			},
-		},
+		conf = existingConf
 	}
 
-	if i.Current != "" {
-		grubcfg.Fallback = i.Current
+	i.bootloader = conf
 
-		grubcfg.Labels = append(grubcfg.Labels, &grub.Label{
-			Root:   i.Current,
-			Initrd: filepath.Join("/", i.Current, constants.InitramfsAsset),
-			Kernel: filepath.Join("/", i.Current, constants.KernelAsset),
-			Append: procfs.ProcCmdline().String(),
-		})
-	}
-
-	if err = i.bootloader.Install(i.Current, grubcfg, seq); err != nil {
+	err = i.bootloader.Install(i.options.Disk, i.options.Arch)
+	if err != nil {
 		return err
 	}
 
@@ -312,7 +325,7 @@ func (i *Installer) Install(seq runtime.Sequence) (err error) {
 		//nolint:errcheck
 		defer meta.Close()
 
-		if ok := meta.LegacyADV.SetTag(adv.Upgrade, i.Current); !ok {
+		if ok := meta.LegacyADV.SetTag(adv.Upgrade, string(i.Current)); !ok {
 			return fmt.Errorf("failed to set upgrade tag: %q", i.Current)
 		}
 

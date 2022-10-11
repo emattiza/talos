@@ -7,12 +7,14 @@ package output
 import (
 	"bytes"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/cosi-project/runtime/pkg/resource/meta"
 	"github.com/cosi-project/runtime/pkg/state"
+	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/util/jsonpath"
 )
 
@@ -27,15 +29,15 @@ type Table struct {
 type dynamicColumn func(value interface{}) (string, error)
 
 // NewTable initializes table resource output.
-func NewTable() *Table {
+func NewTable(writer io.Writer) *Table {
 	output := &Table{}
-	output.w.Init(os.Stdout, 0, 0, 3, ' ', 0)
+	output.w.Init(writer, 0, 0, 3, ' ', 0)
 
 	return output
 }
 
 // WriteHeader implements output.Writer interface.
-func (table *Table) WriteHeader(definition resource.Resource, withEvents bool) error {
+func (table *Table) WriteHeader(definition *meta.ResourceDefinition, withEvents bool) error {
 	table.withEvents = withEvents
 	fields := []string{"NAMESPACE", "TYPE", "ID", "VERSION"}
 
@@ -43,18 +45,15 @@ func (table *Table) WriteHeader(definition resource.Resource, withEvents bool) e
 		fields = append([]string{"*"}, fields...)
 	}
 
-	resourceDefinitionSpec := definition.(*resource.Any).Value().(map[string]interface{}) //nolint:errcheck,forcetypeassert
+	table.displayType = definition.TypedSpec().DisplayType
 
-	table.displayType = resourceDefinitionSpec["displayType"].(string) //nolint:errcheck,forcetypeassert
-
-	for _, col := range resourceDefinitionSpec["printColumns"].([]interface{}) {
-		column := col.(map[string]interface{}) //nolint:errcheck,forcetypeassert
-		name := column["name"].(string)        //nolint:errcheck,forcetypeassert
+	for _, column := range definition.TypedSpec().PrintColumns {
+		name := column.Name
 
 		fields = append(fields, strings.ToUpper(name))
 
 		expr := jsonpath.New(name)
-		if err := expr.Parse(column["jsonPath"].(string)); err != nil {
+		if err := expr.Parse(column.JSONPath); err != nil {
 			return fmt.Errorf("error parsing column %q jsonpath: %w", name, err)
 		}
 
@@ -97,8 +96,21 @@ func (table *Table) WriteResource(node string, r resource.Resource, event state.
 		values = append([]string{label}, values...)
 	}
 
+	yml, err := yaml.Marshal(r.Spec())
+	if err != nil {
+		return err
+	}
+
+	var unstructured interface{}
+
+	if err = yaml.Unmarshal(yml, &unstructured); err != nil {
+		return err
+	}
+
 	for _, dynamicColumn := range table.dynamicColumns {
-		value, err := dynamicColumn(r.(*resource.Any).Value())
+		var value string
+
+		value, err = dynamicColumn(unstructured)
 		if err != nil {
 			return err
 		}
@@ -108,7 +120,7 @@ func (table *Table) WriteResource(node string, r resource.Resource, event state.
 
 	values = append([]string{node}, values...)
 
-	_, err := fmt.Fprintln(&table.w, strings.Join(values, "\t"))
+	_, err = fmt.Fprintln(&table.w, strings.Join(values, "\t"))
 
 	return err
 }

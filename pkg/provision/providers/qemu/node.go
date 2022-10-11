@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"os"
@@ -28,14 +27,14 @@ import (
 	"github.com/talos-systems/talos/pkg/provision/providers/vm"
 )
 
-//nolint:gocyclo
+//nolint:gocyclo,cyclop
 func (p *provisioner) createNode(state *vm.State, clusterReq provision.ClusterRequest, nodeReq provision.NodeRequest, opts *provision.Options) (provision.NodeInfo, error) {
 	arch := Arch(opts.TargetArch)
 	pidPath := state.GetRelativePath(fmt.Sprintf("%s.pid", nodeReq.Name))
 
 	var pflashImages []string
 
-	if pflashSpec := arch.PFlash(opts.UEFIEnabled); pflashSpec != nil {
+	if pflashSpec := arch.PFlash(opts.UEFIEnabled, opts.ExtraUEFISearchPaths); pflashSpec != nil {
 		var err error
 
 		if pflashImages, err = p.createPFlashImages(state, nodeReq.Name, pflashSpec); err != nil {
@@ -94,7 +93,7 @@ func (p *provisioner) createNode(state *vm.State, clusterReq provision.ClusterRe
 	if !nodeReq.SkipInjectingConfig {
 		cmdline.Append("talos.config", "{TALOS_CONFIG_URL}") // to be patched by launcher
 
-		nodeConfig, err = nodeReq.Config.String()
+		nodeConfig, err = nodeReq.Config.EncodeString()
 		if err != nil {
 			return provision.NodeInfo{}, err
 		}
@@ -132,13 +131,16 @@ func (p *provisioner) createNode(state *vm.State, clusterReq provision.ClusterRe
 		CNI:               clusterReq.Network.CNI,
 		CIDRs:             clusterReq.Network.CIDRs,
 		IPs:               nodeReq.IPs,
-		Hostname:          nodeReq.Name,
 		GatewayAddrs:      clusterReq.Network.GatewayAddrs,
 		MTU:               clusterReq.Network.MTU,
 		Nameservers:       clusterReq.Network.Nameservers,
 		TFTPServer:        nodeReq.TFTPServer,
 		IPXEBootFileName:  nodeReq.IPXEBootFilename,
 		APIPort:           apiPort,
+	}
+
+	if !clusterReq.Network.DHCPSkipHostname {
+		launchConfig.Hostname = nodeReq.Name
 	}
 
 	if !nodeReq.PXEBooted {
@@ -179,7 +181,7 @@ func (p *provisioner) createNode(state *vm.State, clusterReq provision.ClusterRe
 		return provision.NodeInfo{}, err
 	}
 
-	if err = ioutil.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), os.ModePerm); err != nil {
+	if err = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), os.ModePerm); err != nil {
 		return provision.NodeInfo{}, fmt.Errorf("error writing PID file: %w", err)
 	}
 

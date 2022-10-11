@@ -5,69 +5,100 @@
 package network
 
 import (
+	"net/netip"
 	"sort"
 	"time"
-
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
 )
 
 // VLANSpec describes VLAN settings if Kind == "vlan".
+//
+//gotagsrewrite:gen
 type VLANSpec struct {
 	// VID is the vlan ID.
-	VID uint16 `yaml:"vlanID"`
+	VID uint16 `yaml:"vlanID" protobuf:"1"`
 
 	// Protocol is the vlan protocol.
-	Protocol nethelpers.VLANProtocol `yaml:"vlanProtocol"`
+	Protocol nethelpers.VLANProtocol `yaml:"vlanProtocol" protobuf:"2"`
 }
 
 // BondMasterSpec describes bond settings if Kind == "bond".
+//
+//gotagsrewrite:gen
 type BondMasterSpec struct {
-	Mode            nethelpers.BondMode           `yaml:"mode"`
-	HashPolicy      nethelpers.BondXmitHashPolicy `yaml:"xmitHashPolicy"`
-	LACPRate        nethelpers.LACPRate           `yaml:"lacpRate"`
-	ARPValidate     nethelpers.ARPValidate        `yaml:"arpValidate"`
-	ARPAllTargets   nethelpers.ARPAllTargets      `yaml:"arpAllTargets"`
-	PrimaryIndex    uint32                        `yaml:"primary,omitempty"`
-	PrimaryReselect nethelpers.PrimaryReselect    `yaml:"primaryReselect"`
-	FailOverMac     nethelpers.FailOverMAC        `yaml:"failOverMac"`
-	ADSelect        nethelpers.ADSelect           `yaml:"adSelect,omitempty"`
-	MIIMon          uint32                        `yaml:"miimon,omitempty"`
-	UpDelay         uint32                        `yaml:"updelay,omitempty"`
-	DownDelay       uint32                        `yaml:"downdelay,omitempty"`
-	ARPInterval     uint32                        `yaml:"arpInterval,omitempty"`
-	ResendIGMP      uint32                        `yaml:"resendIgmp,omitempty"`
-	MinLinks        uint32                        `yaml:"minLinks,omitempty"`
-	LPInterval      uint32                        `yaml:"lpInterval,omitempty"`
-	PacketsPerSlave uint32                        `yaml:"packetsPerSlave,omitempty"`
-	NumPeerNotif    uint8                         `yaml:"numPeerNotif,omitempty"`
-	TLBDynamicLB    uint8                         `yaml:"tlbLogicalLb,omitempty"`
-	AllSlavesActive uint8                         `yaml:"allSlavesActive,omitempty"`
-	UseCarrier      bool                          `yaml:"useCarrier,omitempty"`
-	ADActorSysPrio  uint16                        `yaml:"adActorSysPrio,omitempty"`
-	ADUserPortKey   uint16                        `yaml:"adUserPortKey,omitempty"`
-	PeerNotifyDelay uint32                        `yaml:"peerNotifyDelay,omitempty"`
+	Mode            nethelpers.BondMode           `yaml:"mode" protobuf:"1"`
+	HashPolicy      nethelpers.BondXmitHashPolicy `yaml:"xmitHashPolicy" protobuf:"2"`
+	LACPRate        nethelpers.LACPRate           `yaml:"lacpRate" protobuf:"3"`
+	ARPValidate     nethelpers.ARPValidate        `yaml:"arpValidate" protobuf:"4"`
+	ARPAllTargets   nethelpers.ARPAllTargets      `yaml:"arpAllTargets" protobuf:"5"`
+	PrimaryIndex    uint32                        `yaml:"primary,omitempty" protobuf:"6"`
+	PrimaryReselect nethelpers.PrimaryReselect    `yaml:"primaryReselect" protobuf:"7"`
+	FailOverMac     nethelpers.FailOverMAC        `yaml:"failOverMac" protobuf:"8"`
+	ADSelect        nethelpers.ADSelect           `yaml:"adSelect,omitempty" protobuf:"9"`
+	MIIMon          uint32                        `yaml:"miimon,omitempty" protobuf:"10"`
+	UpDelay         uint32                        `yaml:"updelay,omitempty" protobuf:"11"`
+	DownDelay       uint32                        `yaml:"downdelay,omitempty" protobuf:"12"`
+	ARPInterval     uint32                        `yaml:"arpInterval,omitempty" protobuf:"13"`
+	ResendIGMP      uint32                        `yaml:"resendIgmp,omitempty" protobuf:"14"`
+	MinLinks        uint32                        `yaml:"minLinks,omitempty" protobuf:"15"`
+	LPInterval      uint32                        `yaml:"lpInterval,omitempty" protobuf:"16"`
+	PacketsPerSlave uint32                        `yaml:"packetsPerSlave,omitempty" protobuf:"17"`
+	NumPeerNotif    uint8                         `yaml:"numPeerNotif,omitempty" protobuf:"18"`
+	TLBDynamicLB    uint8                         `yaml:"tlbLogicalLb,omitempty" protobuf:"19"`
+	AllSlavesActive uint8                         `yaml:"allSlavesActive,omitempty" protobuf:"20"`
+	UseCarrier      bool                          `yaml:"useCarrier,omitempty" protobuf:"21"`
+	ADActorSysPrio  uint16                        `yaml:"adActorSysPrio,omitempty" protobuf:"22"`
+	ADUserPortKey   uint16                        `yaml:"adUserPortKey,omitempty" protobuf:"23"`
+	PeerNotifyDelay uint32                        `yaml:"peerNotifyDelay,omitempty" protobuf:"24"`
+}
+
+// BridgeMasterSpec describes bridge settings if Kind == "bridge".
+//
+//gotagsrewrite:gen
+type BridgeMasterSpec struct {
+	STP STPSpec `yaml:"stp,omitempty" protobuf:"1"`
+}
+
+// STPSpec describes Spanning Tree Protocol (STP) settings of a bridge.
+//
+//gotagsrewrite:gen
+type STPSpec struct {
+	Enabled bool `yaml:"enabled" protobuf:"1"`
 }
 
 // WireguardSpec describes Wireguard settings if Kind == "wireguard".
+//
+//gotagsrewrite:gen
 type WireguardSpec struct {
 	// PrivateKey is used to configure the link, present only in the LinkSpec.
-	PrivateKey string `yaml:"privateKey,omitempty"`
+	PrivateKey string `yaml:"privateKey,omitempty" protobuf:"1"`
 	// PublicKey is only used in LinkStatus to show the link status.
-	PublicKey    string          `yaml:"publicKey,omitempty"`
-	ListenPort   int             `yaml:"listenPort"`
-	FirewallMark int             `yaml:"firewallMark"`
-	Peers        []WireguardPeer `yaml:"peers"`
+	PublicKey    string          `yaml:"publicKey,omitempty" protobuf:"2"`
+	ListenPort   int             `yaml:"listenPort" protobuf:"3"`
+	FirewallMark int             `yaml:"firewallMark" protobuf:"4"`
+	Peers        []WireguardPeer `yaml:"peers" protobuf:"5"`
 }
 
 // WireguardPeer describes a single peer.
+//
+//gotagsrewrite:gen
 type WireguardPeer struct {
-	PublicKey                   string             `yaml:"publicKey"`
-	PresharedKey                string             `yaml:"presharedKey"`
-	Endpoint                    string             `yaml:"endpoint"`
-	PersistentKeepaliveInterval time.Duration      `yaml:"persistentKeepaliveInterval"`
-	AllowedIPs                  []netaddr.IPPrefix `yaml:"allowedIPs"`
+	PublicKey                   string         `yaml:"publicKey" protobuf:"1"`
+	PresharedKey                string         `yaml:"presharedKey" protobuf:"2"`
+	Endpoint                    string         `yaml:"endpoint" protobuf:"3"`
+	PersistentKeepaliveInterval time.Duration  `yaml:"persistentKeepaliveInterval" protobuf:"4"`
+	AllowedIPs                  []netip.Prefix `yaml:"allowedIPs" protobuf:"5"`
+}
+
+// ID Returns the VID for type VLANSpec.
+func (vlan VLANSpec) ID() uint16 {
+	return vlan.VID
+}
+
+// MTU Returns MTU=0 for type VLANSpec.
+func (vlan VLANSpec) MTU() uint32 {
+	return 0
 }
 
 // Equal checks two WireguardPeer structs for equality.
@@ -97,7 +128,7 @@ func (peer *WireguardPeer) Equal(other *WireguardPeer) bool {
 	}
 
 	for i := range peer.AllowedIPs {
-		if peer.AllowedIPs[i].IP().Compare(other.AllowedIPs[i].IP()) != 0 {
+		if peer.AllowedIPs[i].Addr().Compare(other.AllowedIPs[i].Addr()) != 0 {
 			return false
 		}
 
@@ -160,7 +191,7 @@ func (spec *WireguardSpec) Sort() {
 			left := spec.Peers[k].AllowedIPs[i]
 			right := spec.Peers[k].AllowedIPs[j]
 
-			switch left.IP().Compare(right.IP()) {
+			switch left.Addr().Compare(right.Addr()) {
 			case -1:
 				return true
 			case 0:

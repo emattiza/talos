@@ -8,18 +8,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/hashicorp/go-multierror"
+	"github.com/siderolabs/gen/slices"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
-	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network/operator/vip"
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
@@ -37,14 +34,18 @@ func (ctrl *OperatorConfigController) Name() string {
 func (ctrl *OperatorConfigController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
-			Namespace: config.NamespaceName,
-			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			Namespace: network.NamespaceName,
+			Type:      network.DeviceConfigSpecType,
 			Kind:      controller.InputWeak,
 		},
 		{
 			Namespace: network.NamespaceName,
 			Type:      network.LinkStatusType,
+			Kind:      controller.InputWeak,
+		},
+		{
+			Namespace: network.ConfigNamespaceName,
+			Type:      network.LinkSpecType,
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -55,7 +56,7 @@ func (ctrl *OperatorConfigController) Outputs() []controller.Output {
 	return []controller.Output{
 		{
 			Type: network.OperatorSpecType,
-			Kind: controller.OutputExclusive,
+			Kind: controller.OutputShared,
 		},
 	}
 }
@@ -73,19 +74,14 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 
 		touchedIDs := make(map[resource.ID]struct{})
 
-		var cfgProvider talosconfig.Provider
-
-		cfg, err := r.Get(ctx, resource.NewMetadata(config.NamespaceName, config.MachineConfigType, config.V1Alpha1ID, resource.VersionUndefined))
+		items, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.DeviceConfigSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			if !state.IsNotFoundError(err) {
 				return fmt.Errorf("error getting config: %w", err)
 			}
-		} else {
-			cfgProvider = cfg.(*config.MachineConfig).Config()
 		}
 
 		ignoredInterfaces := map[string]struct{}{}
-		configuredInterfaces := map[string]struct{}{}
 
 		if ctrl.Cmdline != nil {
 			var settings CmdlineNetworking
@@ -98,10 +94,6 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 			for _, link := range settings.IgnoreInterfaces {
 				ignoredInterfaces[link] = struct{}{}
 			}
-
-			if settings.LinkName != "" {
-				configuredInterfaces[settings.LinkName] = struct{}{}
-			}
 		}
 
 		var (
@@ -109,23 +101,19 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 			specErrors *multierror.Error
 		)
 
-		// operators from the config
-		if cfgProvider != nil {
-			for _, device := range cfgProvider.Machine().Network().Devices() {
-				configuredInterfaces[device.Interface()] = struct{}{}
+		devices := slices.Map(items.Items, func(item resource.Resource) talosconfig.Device {
+			return item.(*network.DeviceConfigSpec).TypedSpec().Device
+		})
 
+		// operators from the config
+		if len(devices) > 0 {
+			for _, device := range devices {
 				if device.Ignore() {
-					continue
+					ignoredInterfaces[device.Interface()] = struct{}{}
 				}
 
 				if _, ignore := ignoredInterfaces[device.Interface()]; ignore {
 					continue
-				}
-
-				if device.Bond() != nil {
-					for _, link := range device.Bond().Interfaces() {
-						configuredInterfaces[link] = struct{}{}
-					}
 				}
 
 				if device.DHCP() && device.DHCPOptions().IPv4() {
@@ -141,6 +129,7 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 						DHCP4: network.DHCP4OperatorSpec{
 							RouteMetric: routeMetric,
 						},
+						ConfigLayer: network.ConfigMachineConfiguration,
 					})
 				}
 
@@ -156,52 +145,84 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 						RequireUp: true,
 						DHCP6: network.DHCP6OperatorSpec{
 							RouteMetric: routeMetric,
+							DUID:        device.DHCPOptions().DUIDv6(),
 						},
+						ConfigLayer: network.ConfigMachineConfiguration,
 					})
 				}
 
-				if device.VIPConfig() != nil {
-					if spec, specErr := handleVIP(ctx, device.VIPConfig(), device.Interface(), logger); specErr != nil {
-						specErrors = multierror.Append(specErrors, specErr)
-					} else {
-						specs = append(specs, spec)
-					}
-				}
-
 				for _, vlan := range device.Vlans() {
-					if vlan.DHCP() {
+					if vlan.DHCP() && vlan.DHCPOptions().IPv4() {
+						routeMetric := vlan.DHCPOptions().RouteMetric()
+						if routeMetric == 0 {
+							routeMetric = DefaultRouteMetric
+						}
+
 						specs = append(specs, network.OperatorSpecSpec{
 							Operator:  network.OperatorDHCP4,
 							LinkName:  fmt.Sprintf("%s.%d", device.Interface(), vlan.ID()),
 							RequireUp: true,
 							DHCP4: network.DHCP4OperatorSpec{
-								RouteMetric: DefaultRouteMetric,
+								RouteMetric: routeMetric,
 							},
+							ConfigLayer: network.ConfigMachineConfiguration,
 						})
 					}
 
-					if vlan.VIPConfig() != nil {
-						linkName := fmt.Sprintf("%s.%d", device.Interface(), vlan.ID())
-						if spec, specErr := handleVIP(ctx, vlan.VIPConfig(), linkName, logger); specErr != nil {
-							specErrors = multierror.Append(specErrors, specErr)
-						} else {
-							specs = append(specs, spec)
+					if vlan.DHCP() && vlan.DHCPOptions().IPv6() {
+						routeMetric := vlan.DHCPOptions().RouteMetric()
+						if routeMetric == 0 {
+							routeMetric = DefaultRouteMetric
 						}
+
+						specs = append(specs, network.OperatorSpecSpec{
+							Operator:  network.OperatorDHCP6,
+							LinkName:  fmt.Sprintf("%s.%d", device.Interface(), vlan.ID()),
+							RequireUp: true,
+							DHCP6: network.DHCP6OperatorSpec{
+								RouteMetric: routeMetric,
+								DUID:        vlan.DHCPOptions().DUIDv6(),
+							},
+							ConfigLayer: network.ConfigMachineConfiguration,
+						})
 					}
 				}
 			}
 		}
 
-		// operators from defaults
-		list, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.LinkStatusType, "", resource.VersionUndefined))
+		// build configuredInterfaces from linkSpecs in `network-config` namespace
+		// any link which has any configuration derived from the machine configuration or platform configuration should be ignored
+		configuredInterfaces := map[string]struct{}{}
+
+		list, err := r.List(ctx, resource.NewMetadata(network.ConfigNamespaceName, network.LinkSpecType, "", resource.VersionUndefined))
 		if err != nil {
-			return fmt.Errorf("error listing link statuses")
+			return fmt.Errorf("error listing link specs: %w", err)
+		}
+
+		for _, item := range list.Items {
+			linkSpec := item.(*network.LinkSpec).TypedSpec()
+
+			switch linkSpec.ConfigLayer {
+			case network.ConfigDefault:
+				// ignore default link specs
+			case network.ConfigOperator:
+				// specs produced by operators, ignore
+			case network.ConfigCmdline, network.ConfigMachineConfiguration, network.ConfigPlatform:
+				// interface is configured explicitly, don't run default dhcp4
+				configuredInterfaces[linkSpec.Name] = struct{}{}
+			}
+		}
+
+		// operators from defaults
+		list, err = r.List(ctx, resource.NewMetadata(network.NamespaceName, network.LinkStatusType, "", resource.VersionUndefined))
+		if err != nil {
+			return fmt.Errorf("error listing link statuses: %w", err)
 		}
 
 		for _, item := range list.Items {
 			linkStatus := item.(*network.LinkStatus) //nolint:errcheck,forcetypeassert
 
-			if linkStatus.Physical() {
+			if linkStatus.TypedSpec().Physical() {
 				if _, configured := configuredInterfaces[linkStatus.Metadata().ID()]; !configured {
 					if _, ignored := ignoredInterfaces[linkStatus.Metadata().ID()]; !ignored {
 						// enable DHCPv4 operator on physical interfaces which don't have any explicit configuration and are not ignored
@@ -212,6 +233,7 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 							DHCP4: network.DHCP4OperatorSpec{
 								RouteMetric: DefaultRouteMetric,
 							},
+							ConfigLayer: network.ConfigDefault,
 						})
 					}
 				}
@@ -230,7 +252,7 @@ func (ctrl *OperatorConfigController) Run(ctx context.Context, r controller.Runt
 		}
 
 		// list specs for cleanup
-		list, err = r.List(ctx, resource.NewMetadata(network.NamespaceName, network.OperatorSpecType, "", resource.VersionUndefined))
+		list, err = r.List(ctx, resource.NewMetadata(network.ConfigNamespaceName, network.OperatorSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			return fmt.Errorf("error listing resources: %w", err)
 		}
@@ -261,11 +283,11 @@ func (ctrl *OperatorConfigController) apply(ctx context.Context, r controller.Ru
 
 	for _, spec := range specs {
 		spec := spec
-		id := network.OperatorID(spec.Operator, spec.LinkName)
+		id := network.LayeredID(spec.ConfigLayer, network.OperatorID(spec.Operator, spec.LinkName))
 
 		if err := r.Modify(
 			ctx,
-			network.NewOperatorSpec(network.NamespaceName, id),
+			network.NewOperatorSpec(network.ConfigNamespaceName, id),
 			func(r resource.Resource) error {
 				*r.(*network.OperatorSpec).TypedSpec() = spec
 
@@ -279,48 +301,4 @@ func (ctrl *OperatorConfigController) apply(ctx context.Context, r controller.Ru
 	}
 
 	return ids, nil
-}
-
-func handleVIP(ctx context.Context, vlanConfig talosconfig.VIPConfig, deviceName string, logger *zap.Logger) (network.OperatorSpecSpec, error) {
-	var sharedIP netaddr.IP
-
-	sharedIP, err := netaddr.ParseIP(vlanConfig.IP())
-	if err != nil {
-		logger.Warn("ignoring vip parse failure", zap.Error(err), zap.String("link", deviceName))
-
-		return network.OperatorSpecSpec{}, err
-	}
-
-	spec := network.OperatorSpecSpec{
-		Operator:  network.OperatorVIP,
-		LinkName:  deviceName,
-		RequireUp: true,
-		VIP: network.VIPOperatorSpec{
-			IP:            sharedIP,
-			GratuitousARP: true,
-		},
-	}
-
-	switch {
-	// Equinix Metal VIP
-	case vlanConfig.EquinixMetal() != nil:
-		spec.VIP.GratuitousARP = false
-		spec.VIP.EquinixMetal.APIToken = vlanConfig.EquinixMetal().APIToken()
-
-		if err = vip.GetProjectAndDeviceIDs(ctx, &spec.VIP.EquinixMetal); err != nil {
-			return network.OperatorSpecSpec{}, err
-		}
-	// Hetzner Cloud VIP
-	case vlanConfig.HCloud() != nil:
-		spec.VIP.GratuitousARP = false
-		spec.VIP.HCloud.APIToken = vlanConfig.HCloud().APIToken()
-
-		if err = vip.GetNetworkAndDeviceIDs(ctx, &spec.VIP.HCloud, sharedIP); err != nil {
-			return network.OperatorSpecSpec{}, err
-		}
-	// Regular layer 2 VIP
-	default:
-	}
-
-	return spec, nil
 }

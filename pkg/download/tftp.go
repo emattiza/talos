@@ -7,7 +7,7 @@ package download
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 
 	"github.com/pin/tftp"
@@ -16,14 +16,12 @@ import (
 // NewTFTPTransport returns an http.RoundTripper capable of handling the TFTP
 // protocol.
 func NewTFTPTransport() http.RoundTripper {
-	return &tftpRoundTripper{}
+	return tftpRoundTripper{}
 }
-
-var _ http.RoundTripper = &tftpRoundTripper{}
 
 type tftpRoundTripper struct{}
 
-func (t *tftpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t tftpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	addr := req.URL.Host
 
 	if req.URL.Port() == "" {
@@ -55,11 +53,11 @@ func (t *tftpRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	return &http.Response{
 		Status:        "200 OK",
-		StatusCode:    200,
+		StatusCode:    http.StatusOK,
 		Proto:         "TFTP/1.0",
 		ProtoMajor:    1,
 		ProtoMinor:    0,
-		Body:          ioutil.NopCloser(buf),
+		Body:          io.NopCloser(buf),
 		ContentLength: -1,
 		Request:       req,
 	}, nil

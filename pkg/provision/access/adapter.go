@@ -22,28 +22,16 @@ type Adapter struct {
 
 type infoWrapper struct {
 	clusterInfo provision.ClusterInfo
+	nodes       []cluster.NodeInfo
+	nodesByType map[machine.Type][]cluster.NodeInfo
 }
 
-func (wrapper *infoWrapper) Nodes() []string {
-	nodes := make([]string, len(wrapper.clusterInfo.Nodes))
-
-	for i := range nodes {
-		nodes[i] = wrapper.clusterInfo.Nodes[i].IPs[0].String()
-	}
-
-	return nodes
+func (wrapper *infoWrapper) Nodes() []cluster.NodeInfo {
+	return wrapper.nodes
 }
 
-func (wrapper *infoWrapper) NodesByType(t machine.Type) []string {
-	var nodes []string
-
-	for _, node := range wrapper.clusterInfo.Nodes {
-		if node.Type == t {
-			nodes = append(nodes, node.IPs[0].String())
-		}
-	}
-
-	return nodes
+func (wrapper *infoWrapper) NodesByType(t machine.Type) []cluster.NodeInfo {
+	return wrapper.nodesByType[t]
 }
 
 // NewAdapter returns ClusterAccess object from Cluster.
@@ -56,7 +44,23 @@ func NewAdapter(clusterInfo provision.Cluster, opts ...provision.Option) *Adapte
 		}
 	}
 
-	info := &infoWrapper{clusterInfo: clusterInfo.Info()}
+	c := clusterInfo.Info()
+
+	nodeInfos, err := cluster.MapProvisionNodeInfosToClusterNodeInfos(c.Nodes)
+	if err != nil {
+		panic(err)
+	}
+
+	nodeInfosByType, err := cluster.MapProvisionNodeInfosToNodeInfosByType(c.Nodes)
+	if err != nil {
+		panic(err)
+	}
+
+	infoW := &infoWrapper{
+		clusterInfo: c,
+		nodes:       nodeInfos,
+		nodesByType: nodeInfosByType,
+	}
 
 	configProvider := cluster.ConfigClientProvider{
 		DefaultClient: options.TalosClient,
@@ -71,12 +75,12 @@ func NewAdapter(clusterInfo provision.Cluster, opts ...provision.Option) *Adapte
 		},
 		APICrashDumper: cluster.APICrashDumper{
 			ClientProvider: &configProvider,
-			Info:           info,
+			Info:           infoW,
 		},
 		APIBootstrapper: cluster.APIBootstrapper{
 			ClientProvider: &configProvider,
-			Info:           info,
+			Info:           infoW,
 		},
-		Info: info,
+		Info: infoW,
 	}
 }

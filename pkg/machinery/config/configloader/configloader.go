@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 
 	"github.com/talos-systems/talos/pkg/machinery/config"
@@ -34,7 +33,7 @@ func newConfig(source []byte) (config config.Provider, err error) {
 	// a special way.
 	for _, manifest := range manifests {
 		if talosconfig, ok := manifest.(*v1alpha1.Config); ok {
-			return talosconfig, nil
+			return v1alpha1.WrapReadonly(talosconfig, source), nil
 		}
 	}
 
@@ -75,5 +74,5 @@ func NewFromBytes(source []byte) (config.Provider, error) {
 
 // fromFile is a convenience function that reads the config from disk.
 func fromFile(p string) ([]byte, error) {
-	return ioutil.ReadFile(p)
+	return os.ReadFile(p)
 }

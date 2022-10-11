@@ -5,70 +5,46 @@
 package network
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // ResolverSpecType is type of ResolverSpec resource.
 const ResolverSpecType = resource.Type("ResolverSpecs.net.talos.dev")
 
 // ResolverSpec resource holds DNS resolver info.
-type ResolverSpec struct {
-	md   resource.Metadata
-	spec ResolverSpecSpec
-}
+type ResolverSpec = typed.Resource[ResolverSpecSpec, ResolverSpecRD]
 
 // ResolverID is the ID of the singleton instance.
 const ResolverID resource.ID = "resolvers"
 
 // ResolverSpecSpec describes DNS resolvers.
+//
+//gotagsrewrite:gen
 type ResolverSpecSpec struct {
-	DNSServers  []netaddr.IP `yaml:"dnsServers"`
-	ConfigLayer ConfigLayer  `yaml:"layer"`
+	DNSServers  []netip.Addr `yaml:"dnsServers" protobuf:"1"`
+	ConfigLayer ConfigLayer  `yaml:"layer" protobuf:"2"`
 }
 
 // NewResolverSpec initializes a ResolverSpec resource.
 func NewResolverSpec(namespace resource.Namespace, id resource.ID) *ResolverSpec {
-	r := &ResolverSpec{
-		md:   resource.NewMetadata(namespace, ResolverSpecType, id, resource.VersionUndefined),
-		spec: ResolverSpecSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[ResolverSpecSpec, ResolverSpecRD](
+		resource.NewMetadata(namespace, ResolverSpecType, id, resource.VersionUndefined),
+		ResolverSpecSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *ResolverSpec) Metadata() *resource.Metadata {
-	return &r.md
-}
+// ResolverSpecRD provides auxiliary methods for ResolverSpec.
+type ResolverSpecRD struct{}
 
-// Spec implements resource.Resource.
-func (r *ResolverSpec) Spec() interface{} {
-	return r.spec
-}
-
-func (r *ResolverSpec) String() string {
-	return fmt.Sprintf("network.ResolverSpec(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *ResolverSpec) DeepCopy() resource.Resource {
-	return &ResolverSpec{
-		md: r.md,
-		spec: ResolverSpecSpec{
-			DNSServers:  append([]netaddr.IP(nil), r.spec.DNSServers...),
-			ConfigLayer: r.spec.ConfigLayer,
-		},
-	}
-}
-
-// ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *ResolverSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
+// ResourceDefinition implements typed.ResourceDefinition interface.
+func (ResolverSpecRD) ResourceDefinition(resource.Metadata, ResolverSpecSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             ResolverSpecType,
 		Aliases:          []resource.Type{},
@@ -77,7 +53,11 @@ func (r *ResolverSpec) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec allows to access the Spec with the proper type.
-func (r *ResolverSpec) TypedSpec() *ResolverSpecSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[ResolverSpecSpec](ResolverSpecType, &ResolverSpec{})
+	if err != nil {
+		panic(err)
+	}
 }

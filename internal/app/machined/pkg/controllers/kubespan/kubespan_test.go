@@ -17,6 +17,7 @@ import (
 	"github.com/cosi-project/runtime/pkg/state"
 	"github.com/cosi-project/runtime/pkg/state/impl/inmem"
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
+	"github.com/siderolabs/gen/slices"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
 
@@ -33,7 +34,7 @@ type KubeSpanSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -67,11 +68,7 @@ func (suite *KubeSpanSuite) assertResourceIDs(md resource.Metadata, expectedIDs 
 			return err
 		}
 
-		actualIDs := make([]resource.ID, 0, len(l.Items))
-
-		for _, r := range l.Items {
-			actualIDs = append(actualIDs, r.Metadata().ID())
-		}
+		actualIDs := slices.Map(l.Items, func(r resource.Resource) string { return r.Metadata().ID() })
 
 		sort.Strings(expectedIDs)
 
@@ -136,10 +133,14 @@ func (suite *KubeSpanSuite) TearDownTest() {
 	suite.wg.Wait()
 
 	// trigger updates in resources to stop watch loops
-	err := suite.state.Create(context.Background(), config.NewMachineConfig(&v1alpha1.Config{
-		ConfigVersion: "v1alpha1",
-		MachineConfig: &v1alpha1.MachineConfig{},
-	}))
+	err := suite.state.Create(
+		context.Background(), config.NewMachineConfig(
+			&v1alpha1.Config{
+				ConfigVersion: "v1alpha1",
+				MachineConfig: &v1alpha1.MachineConfig{},
+			},
+		),
+	)
 	if state.IsConflictError(err) {
 		err = suite.state.Destroy(context.Background(), config.NewMachineConfig(nil).Metadata())
 	}

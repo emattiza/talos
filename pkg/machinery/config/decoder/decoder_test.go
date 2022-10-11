@@ -5,7 +5,7 @@
 package decoder_test
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -30,6 +30,10 @@ type MockV3 struct {
 	Omit bool `yaml:"omit,omitempty"`
 }
 
+type MockUnstructured struct {
+	Pods []v1alpha1.Unstructured `yaml:"pods,omitempty"`
+}
+
 func init() {
 	config.Register("mock", func(version string) interface{} {
 		switch version {
@@ -44,6 +48,10 @@ func init() {
 
 	config.Register("kubelet", func(string) interface{} {
 		return &v1alpha1.KubeletConfig{}
+	})
+
+	config.Register("unstructured", func(string) interface{} {
+		return &MockUnstructured{}
 	})
 }
 
@@ -261,7 +269,33 @@ spec:
 			name:        "internal error",
 			source:      []byte(":   \xea"),
 			expected:    nil,
-			expectedErr: "recovered: internal error: attempted to parse unknown event (please report): none",
+			expectedErr: "decode error: yaml: incomplete UTF-8 octet sequence",
+		},
+		{
+			name: "unstructured config",
+			source: []byte(`---
+kind: unstructured
+version: v1alpha1
+spec:
+  pods:
+   - destination: /var/local
+     options:
+       - rbind
+       - rw
+     source: /var/local
+     something: 1.34
+`),
+			expected:    nil,
+			expectedErr: "",
+		},
+		{
+			name: "omit empty test",
+			source: []byte(`---
+kind: mock
+version: v1alpha3
+spec:
+  omit: false
+`),
 		},
 	}
 
@@ -297,7 +331,7 @@ func TestDecoderV1Alpha1Config(t *testing.T) {
 		t.Run(file, func(t *testing.T) {
 			t.Parallel()
 
-			contents, err := ioutil.ReadFile(file)
+			contents, err := os.ReadFile(file)
 			require.NoError(t, err)
 
 			d := decoder.NewDecoder(contents)
@@ -311,7 +345,7 @@ func TestDecoderV1Alpha1Config(t *testing.T) {
 func BenchmarkDecoderV1Alpha1Config(b *testing.B) {
 	b.ReportAllocs()
 
-	contents, err := ioutil.ReadFile("testdata/controlplane.yaml")
+	contents, err := os.ReadFile("testdata/controlplane.yaml")
 	require.NoError(b, err)
 
 	for i := 0; i < b.N; i++ {

@@ -7,20 +7,18 @@ package network
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/maps"
+	"github.com/siderolabs/gen/pair/ordered"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
-	networkadapter "github.com/talos-systems/talos/internal/app/machined/pkg/adapters/network"
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
@@ -38,9 +36,8 @@ func (ctrl *LinkConfigController) Name() string {
 func (ctrl *LinkConfigController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
-			Namespace: config.NamespaceName,
-			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			Namespace: network.NamespaceName,
+			Type:      network.DeviceConfigSpecType,
 			Kind:      controller.InputWeak,
 		},
 		{
@@ -74,24 +71,23 @@ func (ctrl *LinkConfigController) Run(ctx context.Context, r controller.Runtime,
 
 		touchedIDs := make(map[resource.ID]struct{})
 
-		var cfgProvider talosconfig.Provider
-
-		cfg, err := r.Get(ctx, resource.NewMetadata(config.NamespaceName, config.MachineConfigType, config.V1Alpha1ID, resource.VersionUndefined))
+		items, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.DeviceConfigSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			if !state.IsNotFoundError(err) {
 				return fmt.Errorf("error getting config: %w", err)
 			}
-		} else {
-			cfgProvider = cfg.(*config.MachineConfig).Config()
 		}
 
 		ignoredInterfaces := map[string]struct{}{}
 
-		if cfgProvider != nil {
-			for _, device := range cfgProvider.Machine().Network().Devices() {
-				if device.Ignore() {
-					ignoredInterfaces[device.Interface()] = struct{}{}
-				}
+		devices := make([]talosconfig.Device, len(items.Items))
+
+		for i, item := range items.Items {
+			device := item.(*network.DeviceConfigSpec).TypedSpec().Device
+			devices[i] = device
+
+			if device.Ignore() {
+				ignoredInterfaces[device.Interface()] = struct{}{}
 			}
 		}
 
@@ -117,25 +113,27 @@ func (ctrl *LinkConfigController) Run(ctx context.Context, r controller.Runtime,
 		}
 
 		// parse kernel cmdline for the interface name
-		cmdlineLink, cmdlineIgnored := ctrl.parseCmdline(logger)
-		if cmdlineLink.Name != "" {
-			if _, ignored := ignoredInterfaces[cmdlineLink.Name]; !ignored {
-				var ids []string
+		cmdlineLinks, cmdlineIgnored := ctrl.parseCmdline(logger)
+		for _, cmdlineLink := range cmdlineLinks {
+			if cmdlineLink.Name != "" {
+				if _, ignored := ignoredInterfaces[cmdlineLink.Name]; !ignored {
+					var ids []string
 
-				ids, err = ctrl.apply(ctx, r, []network.LinkSpecSpec{cmdlineLink})
-				if err != nil {
-					return fmt.Errorf("error applying cmdline route: %w", err)
-				}
+					ids, err = ctrl.apply(ctx, r, []network.LinkSpecSpec{cmdlineLink})
+					if err != nil {
+						return fmt.Errorf("error applying cmdline route: %w", err)
+					}
 
-				for _, id := range ids {
-					touchedIDs[id] = struct{}{}
+					for _, id := range ids {
+						touchedIDs[id] = struct{}{}
+					}
 				}
 			}
 		}
 
 		// parse machine configuration for link specs
-		if cfgProvider != nil {
-			links := ctrl.parseMachineConfiguration(logger, cfgProvider)
+		if len(devices) > 0 {
+			links := ctrl.processDevicesConfiguration(logger, devices)
 
 			var ids []string
 
@@ -156,16 +154,24 @@ func (ctrl *LinkConfigController) Run(ctx context.Context, r controller.Runtime,
 			configuredLinks[linkName] = struct{}{}
 		}
 
-		if cmdlineLink.Name != "" {
-			configuredLinks[cmdlineLink.Name] = struct{}{}
+		for _, cmdlineLink := range cmdlineLinks {
+			if cmdlineLink.Name != "" {
+				configuredLinks[cmdlineLink.Name] = struct{}{}
+			}
 		}
 
-		if cfgProvider != nil {
-			for _, device := range cfgProvider.Machine().Network().Devices() {
+		if len(devices) > 0 {
+			for _, device := range devices {
 				configuredLinks[device.Interface()] = struct{}{}
 
 				if device.Bond() != nil {
 					for _, link := range device.Bond().Interfaces() {
+						configuredLinks[link] = struct{}{}
+					}
+				}
+
+				if device.Bridge() != nil {
+					for _, link := range device.Bridge().Interfaces() {
 						configuredLinks[link] = struct{}{}
 					}
 				}
@@ -181,7 +187,7 @@ func (ctrl *LinkConfigController) Run(ctx context.Context, r controller.Runtime,
 			linkStatus := item.(*network.LinkStatus) //nolint:errcheck,forcetypeassert
 
 			if _, configured := configuredLinks[linkStatus.Metadata().ID()]; !configured {
-				if linkStatus.Physical() {
+				if linkStatus.TypedSpec().Physical() {
 					var ids []string
 
 					ids, err = ctrl.apply(ctx, r, []network.LinkSpecSpec{
@@ -249,51 +255,68 @@ func (ctrl *LinkConfigController) apply(ctx context.Context, r controller.Runtim
 	return ids, nil
 }
 
-func (ctrl *LinkConfigController) parseCmdline(logger *zap.Logger) (network.LinkSpecSpec, []string) {
+func (ctrl *LinkConfigController) parseCmdline(logger *zap.Logger) ([]network.LinkSpecSpec, []string) {
 	if ctrl.Cmdline == nil {
-		return network.LinkSpecSpec{}, nil
+		return []network.LinkSpecSpec{}, nil
 	}
 
 	settings, err := ParseCmdlineNetwork(ctrl.Cmdline)
 	if err != nil {
 		logger.Info("ignoring error", zap.Error(err))
 
-		return network.LinkSpecSpec{}, nil
+		return []network.LinkSpecSpec{}, nil
 	}
 
-	return network.LinkSpecSpec{
-		Name:        settings.LinkName,
-		Up:          true,
-		ConfigLayer: network.ConfigCmdline,
-	}, settings.IgnoreInterfaces
+	return settings.NetworkLinkSpecs, settings.IgnoreInterfaces
 }
 
-//nolint:gocyclo
-func (ctrl *LinkConfigController) parseMachineConfiguration(logger *zap.Logger, cfgProvider talosconfig.Provider) []network.LinkSpecSpec {
-	// scan for the bonds
-	bondedLinks := map[string]string{} // mapping physical interface -> bond interface
+//nolint:gocyclo,cyclop
+func (ctrl *LinkConfigController) processDevicesConfiguration(logger *zap.Logger, devices []talosconfig.Device) []network.LinkSpecSpec {
+	// scan for the bonds or bridges
+	bondedLinks := map[string]ordered.Pair[string, int]{} // mapping physical interface -> bond interface
+	bridgedLinks := map[string]string{}                   // mapping physical interface -> bridge interface
 
-	for _, device := range cfgProvider.Machine().Network().Devices() {
+	for _, device := range devices {
 		if device.Ignore() {
 			continue
 		}
 
-		if device.Bond() == nil {
+		if device.Bond() == nil && device.Bridge() == nil {
 			continue
 		}
 
-		for _, linkName := range device.Bond().Interfaces() {
-			if bondName, exists := bondedLinks[linkName]; exists && bondName != device.Interface() {
-				logger.Sugar().Warnf("link %q is included into more than two bonds", linkName)
-			}
+		if device.Bond() != nil {
+			for idx, linkName := range device.Bond().Interfaces() {
+				if bondData, exists := bondedLinks[linkName]; exists && bondData.F1 != device.Interface() {
+					logger.Sugar().Warnf("link %q is included into more than two bonds", linkName)
+				}
 
-			bondedLinks[linkName] = device.Interface()
+				if bridgeIface, exists := bridgedLinks[linkName]; exists && bridgeIface != device.Interface() {
+					logger.Sugar().Warnf("link %q is included into both a bond and a bridge", linkName)
+				}
+
+				bondedLinks[linkName] = ordered.MakePair(device.Interface(), idx)
+			}
+		}
+
+		if device.Bridge() != nil {
+			for _, linkName := range device.Bridge().Interfaces() {
+				if iface, exists := bridgedLinks[linkName]; exists && iface != device.Interface() {
+					logger.Sugar().Warnf("link %q is included into more than two bridges", linkName)
+				}
+
+				if bondData, exists := bondedLinks[linkName]; exists && bondData.F1 != device.Interface() {
+					logger.Sugar().Warnf("link %q is included into both a bond and a bridge", linkName)
+				}
+
+				bridgedLinks[linkName] = device.Interface()
+			}
 		}
 	}
 
 	linkMap := map[string]*network.LinkSpecSpec{}
 
-	for _, device := range cfgProvider.Machine().Network().Devices() {
+	for _, device := range devices {
 		if device.Ignore() {
 			continue
 		}
@@ -311,8 +334,14 @@ func (ctrl *LinkConfigController) parseMachineConfiguration(logger *zap.Logger, 
 		}
 
 		if device.Bond() != nil {
-			if err := bondMaster(linkMap[device.Interface()], device.Bond()); err != nil {
+			if err := SetBondMaster(linkMap[device.Interface()], device.Bond()); err != nil {
 				logger.Error("error parsing bond config", zap.Error(err))
+			}
+		}
+
+		if device.Bridge() != nil {
+			if err := SetBridgeMaster(linkMap[device.Interface()], device.Bridge()); err != nil {
+				logger.Error("error parsing bridge config", zap.Error(err))
 			}
 		}
 
@@ -327,13 +356,19 @@ func (ctrl *LinkConfigController) parseMachineConfiguration(logger *zap.Logger, 
 		}
 
 		for _, vlan := range device.Vlans() {
-			vlanSpec := vlanLink(device.Interface(), vlan)
+			vlanName := fmt.Sprintf("%s.%d", device.Interface(), vlan.ID())
 
-			linkMap[vlanSpec.Name] = &vlanSpec
+			linkMap[vlanName] = &network.LinkSpecSpec{
+				Name:        device.Interface(),
+				Up:          true,
+				ConfigLayer: network.ConfigMachineConfiguration,
+			}
+
+			vlanLink(linkMap[vlanName], device.Interface(), vlan)
 		}
 	}
 
-	for slaveName, bondName := range bondedLinks {
+	for slaveName, bondData := range bondedLinks {
 		if _, exists := linkMap[slaveName]; !exists {
 			linkMap[slaveName] = &network.LinkSpecSpec{
 				Name:        slaveName,
@@ -342,126 +377,40 @@ func (ctrl *LinkConfigController) parseMachineConfiguration(logger *zap.Logger, 
 			}
 		}
 
-		bondSlave(linkMap[slaveName], bondName)
+		SetBondSlave(linkMap[slaveName], bondData)
 	}
 
-	links := make([]network.LinkSpecSpec, 0, len(linkMap))
-
-	for _, link := range linkMap {
-		links = append(links, *link)
-	}
-
-	return links
-}
-
-func bondSlave(link *network.LinkSpecSpec, bondName string) {
-	link.MasterName = bondName
-}
-
-//nolint:gocyclo
-func bondMaster(link *network.LinkSpecSpec, bond talosconfig.Bond) error {
-	link.Logical = true
-	link.Kind = network.LinkKindBond
-	link.Type = nethelpers.LinkEther
-
-	bondMode, err := nethelpers.BondModeByName(bond.Mode())
-	if err != nil {
-		return err
-	}
-
-	hashPolicy, err := nethelpers.BondXmitHashPolicyByName(bond.HashPolicy())
-	if err != nil {
-		return err
-	}
-
-	lacpRate, err := nethelpers.LACPRateByName(bond.LACPRate())
-	if err != nil {
-		return err
-	}
-
-	arpValidate, err := nethelpers.ARPValidateByName(bond.ARPValidate())
-	if err != nil {
-		return err
-	}
-
-	arpAllTargets, err := nethelpers.ARPAllTargetsByName(bond.ARPAllTargets())
-	if err != nil {
-		return err
-	}
-
-	var primary uint32
-
-	if bond.Primary() != "" {
-		var iface *net.Interface
-
-		iface, err = net.InterfaceByName(bond.Primary())
-		if err != nil {
-			return err
+	for slaveName, bridgeIface := range bridgedLinks {
+		if _, exists := linkMap[slaveName]; !exists {
+			linkMap[slaveName] = &network.LinkSpecSpec{
+				Name:        slaveName,
+				Up:          true,
+				ConfigLayer: network.ConfigMachineConfiguration,
+			}
 		}
 
-		primary = uint32(iface.Index)
+		SetBridgeSlave(linkMap[slaveName], bridgeIface)
 	}
 
-	primaryReselect, err := nethelpers.PrimaryReselectByName(bond.PrimaryReselect())
-	if err != nil {
-		return err
-	}
-
-	failOverMAC, err := nethelpers.FailOverMACByName(bond.FailOverMac())
-	if err != nil {
-		return err
-	}
-
-	adSelect, err := nethelpers.ADSelectByName(bond.ADSelect())
-	if err != nil {
-		return err
-	}
-
-	link.BondMaster = network.BondMasterSpec{
-		Mode:            bondMode,
-		HashPolicy:      hashPolicy,
-		LACPRate:        lacpRate,
-		ARPValidate:     arpValidate,
-		ARPAllTargets:   arpAllTargets,
-		PrimaryIndex:    primary,
-		PrimaryReselect: primaryReselect,
-		FailOverMac:     failOverMAC,
-		ADSelect:        adSelect,
-		MIIMon:          bond.MIIMon(),
-		UpDelay:         bond.UpDelay(),
-		DownDelay:       bond.DownDelay(),
-		ARPInterval:     bond.ARPInterval(),
-		ResendIGMP:      bond.ResendIGMP(),
-		MinLinks:        bond.MinLinks(),
-		LPInterval:      bond.LPInterval(),
-		PacketsPerSlave: bond.PacketsPerSlave(),
-		NumPeerNotif:    bond.NumPeerNotif(),
-		TLBDynamicLB:    bond.TLBDynamicLB(),
-		AllSlavesActive: bond.AllSlavesActive(),
-		UseCarrier:      bond.UseCarrier(),
-		ADActorSysPrio:  bond.ADActorSysPrio(),
-		ADUserPortKey:   bond.ADUserPortKey(),
-		PeerNotifyDelay: bond.PeerNotifyDelay(),
-	}
-	networkadapter.BondMasterSpec(&link.BondMaster).FillDefaults()
-
-	return nil
+	return maps.ValuesFunc(linkMap, func(link *network.LinkSpecSpec) network.LinkSpecSpec { return *link })
 }
 
-func vlanLink(linkName string, vlan talosconfig.Vlan) network.LinkSpecSpec {
-	return network.LinkSpecSpec{
-		Name:       fmt.Sprintf("%s.%d", linkName, vlan.ID()),
-		Logical:    true,
-		Up:         true,
-		MTU:        vlan.MTU(),
-		Kind:       network.LinkKindVLAN,
-		Type:       nethelpers.LinkEther,
-		ParentName: linkName,
-		VLAN: network.VLANSpec{
-			VID:      vlan.ID(),
-			Protocol: nethelpers.VLANProtocol8021Q,
-		},
-		ConfigLayer: network.ConfigMachineConfiguration,
+type vlaner interface {
+	ID() uint16
+	MTU() uint32
+}
+
+func vlanLink(link *network.LinkSpecSpec, linkName string, vlan vlaner) {
+	link.Name = fmt.Sprintf("%s.%d", linkName, vlan.ID())
+	link.Logical = true
+	link.Up = true
+	link.MTU = vlan.MTU()
+	link.Kind = network.LinkKindVLAN
+	link.Type = nethelpers.LinkEther
+	link.ParentName = linkName
+	link.VLAN = network.VLANSpec{
+		VID:      vlan.ID(),
+		Protocol: nethelpers.VLANProtocol8021Q,
 	}
 }
 
@@ -476,10 +425,10 @@ func wireguardLink(link *network.LinkSpecSpec, config talosconfig.WireguardConfi
 	}
 
 	for _, peer := range config.Peers() {
-		allowedIPs := make([]netaddr.IPPrefix, 0, len(peer.AllowedIPs()))
+		allowedIPs := make([]netip.Prefix, 0, len(peer.AllowedIPs()))
 
 		for _, allowedIP := range peer.AllowedIPs() {
-			ip, err := netaddr.ParseIPPrefix(allowedIP)
+			ip, err := netip.ParsePrefix(allowedIP)
 			if err != nil {
 				return err
 			}

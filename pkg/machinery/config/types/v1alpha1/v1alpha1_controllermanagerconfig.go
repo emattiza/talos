@@ -7,6 +7,8 @@ package v1alpha1
 import (
 	"fmt"
 
+	"github.com/siderolabs/gen/slices"
+
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
@@ -29,11 +31,10 @@ func (c *ControllerManagerConfig) ExtraArgs() map[string]string {
 
 // ExtraVolumes implements the config.ControllerManager interface.
 func (c *ControllerManagerConfig) ExtraVolumes() []config.VolumeMount {
-	volumes := make([]config.VolumeMount, 0, len(c.ExtraVolumesConfig))
+	return slices.Map(c.ExtraVolumesConfig, func(v VolumeMountConfig) config.VolumeMount { return v })
+}
 
-	for _, volume := range c.ExtraVolumesConfig {
-		volumes = append(volumes, volume)
-	}
-
-	return volumes
+// Env implements the config.ControllerManager interface.
+func (c *ControllerManagerConfig) Env() Env {
+	return c.EnvConfig
 }

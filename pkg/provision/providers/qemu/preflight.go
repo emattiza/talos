@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/hashicorp/go-getter"
-	"github.com/talos-systems/go-cmd/pkg/cmd"
 
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 	"github.com/talos-systems/talos/pkg/provision"
@@ -67,15 +67,15 @@ func (check *preflightCheckContext) checkKVM(ctx context.Context) error {
 }
 
 func (check *preflightCheckContext) qemuExecutable(ctx context.Context) error {
-	if _, err := cmd.Run(check.arch.QemuExecutable(), "--version"); err != nil {
-		return fmt.Errorf("error running QEMU %q, please install QEMU with package manager: %w", check.arch.QemuExecutable(), err)
+	if check.arch.QemuExecutable() == "" {
+		return fmt.Errorf("QEMU executable (qemu-system-%s or qemu-kvm) not found, please install QEMU with package manager", check.arch.QemuArch())
 	}
 
 	return nil
 }
 
 func (check *preflightCheckContext) checkFlashImages(ctx context.Context) error {
-	for _, flashImage := range check.arch.PFlash(check.options.UEFIEnabled) {
+	for _, flashImage := range check.arch.PFlash(check.options.UEFIEnabled, check.options.ExtraUEFISearchPaths) {
 		if len(flashImage.SourcePaths) == 0 {
 			continue
 		}
@@ -92,7 +92,8 @@ func (check *preflightCheckContext) checkFlashImages(ctx context.Context) error 
 		}
 
 		if !found {
-			return fmt.Errorf("the required flash image was not found in any of the expected paths for (%q), please install it with the package manager", flashImage.SourcePaths)
+			return fmt.Errorf("the required flash image was not found in any of the expected paths for (%q), "+
+				"please install it with the package manager or specify --extra-uefi-search-paths", flashImage.SourcePaths)
 		}
 	}
 
@@ -164,8 +165,9 @@ func (check *preflightCheckContext) cniBundle(ctx context.Context) error {
 	}
 
 	client := getter.Client{
-		Ctx:  ctx,
-		Src:  strings.ReplaceAll(check.request.Network.CNI.BundleURL, constants.ArchVariable, check.options.TargetArch),
+		Ctx: ctx,
+		// Network CNI runs on the host
+		Src:  strings.ReplaceAll(check.request.Network.CNI.BundleURL, constants.ArchVariable, runtime.GOARCH),
 		Dst:  check.request.Network.CNI.BinPath[0],
 		Pwd:  pwd,
 		Mode: getter.ClientModeDir,

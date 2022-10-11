@@ -10,6 +10,7 @@ import (
 
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
+	"github.com/siderolabs/gen/value"
 	"go.uber.org/zap"
 
 	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
@@ -92,7 +93,7 @@ func (ctrl *EndpointController) Run(ctx context.Context, r controller.Runtime, l
 				continue
 			}
 
-			if peerStatus.Endpoint.IsZero() {
+			if value.IsZero(peerStatus.Endpoint) {
 				continue
 			}
 

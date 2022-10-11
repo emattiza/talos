@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_api
-// +build integration_api
 
 package api
 
@@ -12,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"io/ioutil"
 	"time"
 
 	"github.com/talos-systems/talos/internal/integration/base"
@@ -25,10 +23,10 @@ import (
 type LogsSuite struct {
 	base.APISuite
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 
-	nodeCtx context.Context
+	nodeCtx context.Context //nolint:containedctx
 }
 
 // SuiteName ...
@@ -41,7 +39,7 @@ func (suite *LogsSuite) SetupTest() {
 	// make sure API calls have timeout
 	suite.ctx, suite.ctxCancel = context.WithTimeout(context.Background(), 2*time.Minute)
 
-	suite.nodeCtx = client.WithNodes(suite.ctx, suite.RandomDiscoveredNode())
+	suite.nodeCtx = client.WithNodes(suite.ctx, suite.RandomDiscoveredNodeInternalIP())
 }
 
 // TearDownTest ...
@@ -74,7 +72,7 @@ func (suite *LogsSuite) TestServicesHaveLogs() {
 		logReader, errCh, err := client.ReadStream(logsStream)
 		suite.Require().NoError(err)
 
-		n, err := io.Copy(ioutil.Discard, logReader)
+		n, err := io.Copy(io.Discard, logReader)
 		suite.Require().NoError(err)
 
 		logsSize += n
@@ -167,7 +165,11 @@ func (suite *LogsSuite) testStreaming(tailLines int32) {
 		// invoke machined enough times to generate
 		// some logs
 		for i := int32(0); i < tailLines; i++ {
-			_, err := suite.Client.Stats(suite.nodeCtx, constants.SystemContainerdNamespace, common.ContainerDriver_CONTAINERD)
+			_, err := suite.Client.Stats(
+				suite.nodeCtx,
+				constants.SystemContainerdNamespace,
+				common.ContainerDriver_CONTAINERD,
+			)
 			suite.Require().NoError(err)
 		}
 	}

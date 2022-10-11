@@ -19,13 +19,17 @@ func IsRetryableError(err error) bool {
 		return true
 	}
 
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNREFUSED) {
-		return true
+	for _, retryableError := range []error{io.EOF, io.ErrUnexpectedEOF, syscall.ECONNREFUSED, syscall.ECONNRESET} {
+		if errors.Is(err, retryableError) {
+			return true
+		}
 	}
 
 	var netErr net.Error
 
 	if errors.As(err, &netErr) {
+		// https://groups.google.com/g/golang-nuts/c/-JcZzOkyqYI/m/xwaZzjCgAwAJ
+		//nolint:staticcheck
 		if netErr.Temporary() || netErr.Timeout() {
 			return true
 		}

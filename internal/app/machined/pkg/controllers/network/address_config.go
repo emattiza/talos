@@ -7,20 +7,19 @@ package network
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 
-	"github.com/AlekSi/pointer"
 	"github.com/cosi-project/runtime/pkg/controller"
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/state"
+	"github.com/siderolabs/gen/value"
 	"github.com/talos-systems/go-procfs/procfs"
 	"go.uber.org/zap"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
-	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
+	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/nethelpers"
-	"github.com/talos-systems/talos/pkg/machinery/resources/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 )
 
@@ -39,9 +38,8 @@ func (ctrl *AddressConfigController) Name() string {
 func (ctrl *AddressConfigController) Inputs() []controller.Input {
 	return []controller.Input{
 		{
-			Namespace: config.NamespaceName,
-			Type:      config.MachineConfigType,
-			ID:        pointer.ToString(config.V1Alpha1ID),
+			Namespace: network.NamespaceName,
+			Type:      network.DeviceConfigSpecType,
 			Kind:      controller.InputWeak,
 		},
 	}
@@ -80,30 +78,30 @@ func (ctrl *AddressConfigController) Run(ctx context.Context, r controller.Runti
 			touchedIDs[id] = struct{}{}
 		}
 
-		var cfgProvider talosconfig.Provider
-
-		cfg, err := r.Get(ctx, resource.NewMetadata(config.NamespaceName, config.MachineConfigType, config.V1Alpha1ID, resource.VersionUndefined))
+		items, err := r.List(ctx, resource.NewMetadata(network.NamespaceName, network.DeviceConfigSpecType, "", resource.VersionUndefined))
 		if err != nil {
 			if !state.IsNotFoundError(err) {
 				return fmt.Errorf("error getting config: %w", err)
 			}
-		} else {
-			cfgProvider = cfg.(*config.MachineConfig).Config()
 		}
 
 		ignoredInterfaces := map[string]struct{}{}
 
-		if cfgProvider != nil {
-			for _, device := range cfgProvider.Machine().Network().Devices() {
-				if device.Ignore() {
-					ignoredInterfaces[device.Interface()] = struct{}{}
-				}
+		devices := make([]config.Device, len(items.Items))
+
+		for i, item := range items.Items {
+			device := item.(*network.DeviceConfigSpec).TypedSpec().Device
+
+			devices[i] = device
+
+			if device.Ignore() {
+				ignoredInterfaces[device.Interface()] = struct{}{}
 			}
 		}
 
 		// parse kernel cmdline for the address
 		cmdlineAddress := ctrl.parseCmdline(logger)
-		if !cmdlineAddress.Address.IsZero() {
+		if !value.IsZero(cmdlineAddress.Address) {
 			if _, ignored := ignoredInterfaces[cmdlineAddress.LinkName]; !ignored {
 				var ids []string
 
@@ -119,8 +117,8 @@ func (ctrl *AddressConfigController) Run(ctx context.Context, r controller.Runti
 		}
 
 		// parse machine configuration for static addresses
-		if cfgProvider != nil {
-			addresses := ctrl.parseMachineConfiguration(logger, cfgProvider)
+		if len(devices) > 0 {
+			addresses := ctrl.processDevicesConfiguration(logger, devices)
 
 			var ids []string
 
@@ -155,6 +153,7 @@ func (ctrl *AddressConfigController) Run(ctx context.Context, r controller.Runti
 	}
 }
 
+//nolint:dupl
 func (ctrl *AddressConfigController) apply(ctx context.Context, r controller.Runtime, addresses []network.AddressSpecSpec) ([]resource.ID, error) {
 	ids := make([]string, 0, len(addresses))
 
@@ -188,7 +187,7 @@ func (ctrl *AddressConfigController) loopbackDefaults() []network.AddressSpecSpe
 
 	return []network.AddressSpecSpec{
 		{
-			Address:     netaddr.IPPrefixFrom(netaddr.IPv4(127, 0, 0, 1), 8),
+			Address:     netip.PrefixFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 8),
 			Family:      nethelpers.FamilyInet4,
 			Scope:       nethelpers.ScopeHost,
 			Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
@@ -210,12 +209,12 @@ func (ctrl *AddressConfigController) parseCmdline(logger *zap.Logger) (address n
 		return
 	}
 
-	if settings.Address.IsZero() {
+	if value.IsZero(settings.Address) {
 		return
 	}
 
 	address.Address = settings.Address
-	if address.Address.IP().Is6() {
+	if address.Address.Addr().Is6() {
 		address.Family = nethelpers.FamilyInet6
 	} else {
 		address.Family = nethelpers.FamilyInet4
@@ -229,22 +228,22 @@ func (ctrl *AddressConfigController) parseCmdline(logger *zap.Logger) (address n
 	return address
 }
 
-func parseIPOrIPPrefix(address string) (netaddr.IPPrefix, error) {
+func parseIPOrIPPrefix(address string) (netip.Prefix, error) {
 	if strings.IndexByte(address, '/') >= 0 {
-		return netaddr.ParseIPPrefix(address)
+		return netip.ParsePrefix(address)
 	}
 
 	// parse as IP address and assume netmask of all ones
-	ip, err := netaddr.ParseIP(address)
+	ip, err := netip.ParseAddr(address)
 	if err != nil {
-		return netaddr.IPPrefix{}, err
+		return netip.Prefix{}, err
 	}
 
-	return netaddr.IPPrefixFrom(ip, ip.BitLen()), nil
+	return netip.PrefixFrom(ip, ip.BitLen()), nil
 }
 
-func (ctrl *AddressConfigController) parseMachineConfiguration(logger *zap.Logger, cfgProvider talosconfig.Provider) (addresses []network.AddressSpecSpec) {
-	for _, device := range cfgProvider.Machine().Network().Devices() {
+func (ctrl *AddressConfigController) processDevicesConfiguration(logger *zap.Logger, devices []config.Device) (addresses []network.AddressSpecSpec) {
+	for _, device := range devices {
 		if device.Ignore() {
 			continue
 		}
@@ -265,7 +264,7 @@ func (ctrl *AddressConfigController) parseMachineConfiguration(logger *zap.Logge
 				Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
 			}
 
-			if address.Address.IP().Is6() {
+			if address.Address.Addr().Is6() {
 				address.Family = nethelpers.FamilyInet6
 			} else {
 				address.Family = nethelpers.FamilyInet4
@@ -276,7 +275,7 @@ func (ctrl *AddressConfigController) parseMachineConfiguration(logger *zap.Logge
 
 		for _, vlan := range device.Vlans() {
 			for _, cidr := range vlan.Addresses() {
-				ipPrefix, err := netaddr.ParseIPPrefix(cidr)
+				ipPrefix, err := netip.ParsePrefix(cidr)
 				if err != nil {
 					logger.Info(fmt.Sprintf("skipping address %q on interface %q vlan %d", cidr, device.Interface(), vlan.ID()), zap.Error(err))
 
@@ -291,7 +290,7 @@ func (ctrl *AddressConfigController) parseMachineConfiguration(logger *zap.Logge
 					Flags:       nethelpers.AddressFlags(nethelpers.AddressPermanent),
 				}
 
-				if address.Address.IP().Is6() {
+				if address.Address.Addr().Is6() {
 					address.Family = nethelpers.FamilyInet6
 				} else {
 					address.Family = nethelpers.FamilyInet4

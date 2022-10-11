@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/gizak/termui/v3/widgets"
+	"github.com/siderolabs/gen/maps"
 
 	"github.com/talos-systems/talos/cmd/talosctl/cmd/talos/dashboard/data"
 )
@@ -28,12 +29,7 @@ func NewNodeTabs() *NodeTabs {
 
 // Update implements the DataWidget interface.
 func (widget *NodeTabs) Update(node string, data *data.Data) {
-	nodes := make([]string, 0, len(data.Nodes))
-
-	for node := range data.Nodes {
-		nodes = append(nodes, node)
-	}
-
+	nodes := maps.Keys(data.Nodes)
 	sort.Strings(nodes)
 
 	widget.TabNames = nodes

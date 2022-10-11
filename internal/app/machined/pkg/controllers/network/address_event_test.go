@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +19,6 @@ import (
 	"github.com/cosi-project/runtime/pkg/state/impl/namespaced"
 	"github.com/stretchr/testify/suite"
 	"github.com/talos-systems/go-retry/retry"
-	"inet.af/netaddr"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/controllers/network"
 	"github.com/talos-systems/talos/pkg/logging"
@@ -33,7 +33,7 @@ type mockEventsStream struct {
 	messages   []proto.Message
 }
 
-func (s *mockEventsStream) Publish(m proto.Message) {
+func (s *mockEventsStream) Publish(_ context.Context, m proto.Message) {
 	s.messagesMu.Lock()
 	defer s.messagesMu.Unlock()
 
@@ -49,7 +49,7 @@ type AddressEventsSuite struct {
 	runtime *runtime.Runtime
 	wg      sync.WaitGroup
 
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 }
 
@@ -67,9 +67,13 @@ func (suite *AddressEventsSuite) SetupTest() {
 	suite.runtime, err = runtime.NewRuntime(suite.state, logging.Wrap(log.Writer()))
 	suite.Require().NoError(err)
 
-	suite.Require().NoError(suite.runtime.RegisterController(&network.AddressEventController{
-		V1Alpha1Events: suite.events,
-	}))
+	suite.Require().NoError(
+		suite.runtime.RegisterController(
+			&network.AddressEventController{
+				V1Alpha1Events: suite.events,
+			},
+		),
+	)
 
 	suite.startRuntime()
 }
@@ -92,38 +96,42 @@ func (suite *AddressEventsSuite) TestReconcile() {
 
 	var event *machine.AddressEvent
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			suite.events.messagesMu.Lock()
-			defer suite.events.messagesMu.Unlock()
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				suite.events.messagesMu.Lock()
+				defer suite.events.messagesMu.Unlock()
 
-			if len(suite.events.messages) == 0 {
-				return retry.ExpectedError(fmt.Errorf("no events created"))
-			}
+				if len(suite.events.messages) == 0 {
+					return retry.ExpectedError(fmt.Errorf("no events created"))
+				}
 
-			m := suite.events.messages[len(suite.events.messages)-1]
+				m := suite.events.messages[len(suite.events.messages)-1]
 
-			var ok bool
+				var ok bool
 
-			event, ok = m.(*machine.AddressEvent)
-			if !ok {
-				return fmt.Errorf("not an endpoint event")
-			}
+				event, ok = m.(*machine.AddressEvent)
+				if !ok {
+					return fmt.Errorf("not an endpoint event")
+				}
 
-			if event.Hostname == "" {
-				return retry.ExpectedError(fmt.Errorf("expected hostname to be set"))
-			}
+				if event.Hostname == "" {
+					return retry.ExpectedError(fmt.Errorf("expected hostname to be set"))
+				}
 
-			return nil
-		},
-	))
+				return nil
+			},
+		),
+	)
 
 	suite.Require().Equal(hostname.TypedSpec().Hostname, event.Hostname)
 	suite.Require().Empty(event.Addresses)
 
-	nodeAddress := networkresource.NewNodeAddress(networkresource.NamespaceName, networkresource.FilteredNodeAddressID(
-		networkresource.NodeAddressCurrentID,
-		k8s.NodeAddressFilterNoK8s),
+	nodeAddress := networkresource.NewNodeAddress(
+		networkresource.NamespaceName, networkresource.FilteredNodeAddressID(
+			networkresource.NodeAddressCurrentID,
+			k8s.NodeAddressFilterNoK8s,
+		),
 	)
 
 	addrs := []string{
@@ -133,37 +141,39 @@ func (suite *AddressEventsSuite) TestReconcile() {
 
 	nodeAddress.TypedSpec().Addresses = append(
 		nodeAddress.TypedSpec().Addresses,
-		netaddr.IPPrefixFrom(netaddr.MustParseIP(addrs[0]), 32),
-		netaddr.IPPrefixFrom(netaddr.MustParseIP(addrs[1]), 32),
+		netip.PrefixFrom(netip.MustParseAddr(addrs[0]), 32),
+		netip.PrefixFrom(netip.MustParseAddr(addrs[1]), 32),
 	)
 
 	suite.Require().NoError(suite.state.Create(suite.ctx, nodeAddress))
 
-	suite.Assert().NoError(retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
-		func() error {
-			suite.events.messagesMu.Lock()
-			defer suite.events.messagesMu.Unlock()
+	suite.Assert().NoError(
+		retry.Constant(10*time.Second, retry.WithUnits(100*time.Millisecond)).Retry(
+			func() error {
+				suite.events.messagesMu.Lock()
+				defer suite.events.messagesMu.Unlock()
 
-			if len(suite.events.messages) == 0 {
-				return retry.ExpectedError(fmt.Errorf("no events created"))
-			}
+				if len(suite.events.messages) == 0 {
+					return retry.ExpectedError(fmt.Errorf("no events created"))
+				}
 
-			m := suite.events.messages[len(suite.events.messages)-1]
+				m := suite.events.messages[len(suite.events.messages)-1]
 
-			var ok bool
+				var ok bool
 
-			event, ok = m.(*machine.AddressEvent)
-			if !ok {
-				return fmt.Errorf("not an address event")
-			}
+				event, ok = m.(*machine.AddressEvent)
+				if !ok {
+					return fmt.Errorf("not an address event")
+				}
 
-			if len(event.Addresses) == 0 {
-				return retry.ExpectedError(fmt.Errorf("expected addresses to be set"))
-			}
+				if len(event.Addresses) == 0 {
+					return retry.ExpectedError(fmt.Errorf("expected addresses to be set"))
+				}
 
-			return nil
-		},
-	))
+				return nil
+			},
+		),
+	)
 
 	suite.Require().Equal(addrs, event.Addresses)
 }

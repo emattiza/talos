@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -32,10 +31,10 @@ func (suite *ListSuite) SuiteName() string {
 
 // TestSuccess runs comand with success.
 func (suite *ListSuite) TestSuccess() {
-	suite.RunCLI([]string{"list", "--nodes", suite.RandomDiscoveredNode(), "/etc"},
+	suite.RunCLI([]string{"list", "--nodes", suite.RandomDiscoveredNodeInternalIP(), "/etc"},
 		base.StdoutShouldMatch(regexp.MustCompile(`os-release`)))
 
-	suite.RunCLI([]string{"list", "--nodes", suite.RandomDiscoveredNode(), "/"},
+	suite.RunCLI([]string{"list", "--nodes", suite.RandomDiscoveredNodeInternalIP(), "/"},
 		base.StdoutShouldNotMatch(regexp.MustCompile(`os-release`)))
 }
 
@@ -43,12 +42,12 @@ func (suite *ListSuite) TestSuccess() {
 func (suite *ListSuite) TestDepth() {
 	suite.T().Parallel()
 
-	node := suite.RandomDiscoveredNode(machine.TypeControlPlane)
+	node := suite.RandomDiscoveredNodeInternalIP(machine.TypeControlPlane)
 
 	// checks that enough separators are encountered in the output
 	runAndCheck := func(t *testing.T, expectedSeparators int, flags ...string) {
 		args := append([]string{"list", "--nodes", node, "/system"}, flags...)
-		stdout := suite.RunCLI(args)
+		stdout, _ := suite.RunCLI(args)
 
 		lines := strings.Split(strings.TrimSpace(stdout), "\n")
 		assert.Greater(t, len(lines), 2)
@@ -87,25 +86,14 @@ func (suite *ListSuite) TestDepth() {
 		{separators: 0},
 
 		{separators: 0, flags: []string{"--recurse=false"}},
-		{separators: 5, flags: []string{"--recurse=true"}},
 
 		{separators: 0, flags: []string{"--depth=-1"}},
 		{separators: 0, flags: []string{"--depth=0"}},
 		{separators: 0, flags: []string{"--depth=1"}},
-		{separators: 0, flags: []string{"--depth=2"}},
-		{separators: 0, flags: []string{"--depth=3"}},
+		{separators: 1, flags: []string{"--depth=2"}},
+		{separators: 2, flags: []string{"--depth=3"}},
 
-		{separators: 0, flags: []string{"--recurse=false", "--depth=-1"}},
-		{separators: 0, flags: []string{"--recurse=false", "--depth=0"}},
-		{separators: 0, flags: []string{"--recurse=false", "--depth=1"}},
-		{separators: 0, flags: []string{"--recurse=false", "--depth=2"}},
-		{separators: 0, flags: []string{"--recurse=false", "--depth=3"}},
-
-		{separators: 5, flags: []string{"--recurse=true", "--depth=-1"}},
-		{separators: 5, flags: []string{"--recurse=true", "--depth=0"}},
-		{separators: 0, flags: []string{"--recurse=true", "--depth=1"}},
-		{separators: 1, flags: []string{"--recurse=true", "--depth=2"}},
-		{separators: 2, flags: []string{"--recurse=true", "--depth=3"}},
+		{separators: 5, flags: []string{"--recurse=true"}},
 	} {
 		test := test
 		suite.Run(strings.Join(test.flags, ","), func() {

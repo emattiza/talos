@@ -7,12 +7,17 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
+	"sync"
+	"time"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/system"
+	"github.com/talos-systems/talos/internal/app/machined/pkg/system/services"
 	"github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
@@ -25,6 +30,9 @@ type Runtime struct {
 	s runtime.State
 	e runtime.EventStream
 	l runtime.LoggingManager
+
+	rollbackTimerMu sync.Mutex
+	rollbackTimer   *time.Timer
 }
 
 // NewRuntime initializes and returns the v1alpha1 runtime.
@@ -56,6 +64,37 @@ func (r *Runtime) LoadAndValidateConfig(b []byte) (config.Provider, error) {
 	return cfg, nil
 }
 
+// RollbackToConfigAfter implements the Runtime interface.
+func (r *Runtime) RollbackToConfigAfter(cfg []byte, timeout time.Duration) error {
+	cfgProvider, err := r.LoadAndValidateConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	r.CancelConfigRollbackTimeout()
+
+	r.rollbackTimer = time.AfterFunc(timeout, func() {
+		log.Println("rolling back the configuration")
+
+		if err := r.SetConfig(cfgProvider); err != nil {
+			log.Printf("config rollback failed %s", err)
+		}
+	})
+
+	return nil
+}
+
+// CancelConfigRollbackTimeout implements the Runtime interface.
+func (r *Runtime) CancelConfigRollbackTimeout() {
+	r.rollbackTimerMu.Lock()
+	defer r.rollbackTimerMu.Unlock()
+
+	if r.rollbackTimer != nil {
+		r.rollbackTimer.Stop()
+		r.rollbackTimer = nil
+	}
+}
+
 // SetConfig implements the Runtime interface.
 func (r *Runtime) SetConfig(cfg config.Provider) error {
 	r.c = cfg
@@ -65,24 +104,12 @@ func (r *Runtime) SetConfig(cfg config.Provider) error {
 
 // CanApplyImmediate implements the Runtime interface.
 func (r *Runtime) CanApplyImmediate(cfg config.Provider) error {
-	// serialize and load back current config to remove any changes made
-	// to the config in-memory while the node was running
-	currentBytes, err := r.Config().Bytes()
-	if err != nil {
-		return fmt.Errorf("error serializing current config: %w", err)
-	}
-
-	currentConfigProvider, err := configloader.NewFromBytes(currentBytes)
-	if err != nil {
-		return fmt.Errorf("error loading current config: %w", err)
-	}
-
-	currentConfig, ok := currentConfigProvider.(*v1alpha1.Config)
+	currentConfig, ok := r.Config().Raw().(*v1alpha1.Config)
 	if !ok {
 		return fmt.Errorf("current config is not v1alpha1")
 	}
 
-	newConfig, ok := cfg.(*v1alpha1.Config)
+	newConfig, ok := cfg.Raw().(*v1alpha1.Config)
 	if !ok {
 		return fmt.Errorf("new config is not v1alpha1")
 	}
@@ -95,22 +122,39 @@ func (r *Runtime) CanApplyImmediate(cfg config.Provider) error {
 	// * .cluster
 	// * .machine.time
 	// * .machine.certCANs
+	// * .machine.install
 	// * .machine.network
+	// * .machine.sysfs
 	// * .machine.sysctls
 	// * .machine.logging
 	// * .machine.controlplane
 	// * .machine.kubelet
+	// * .machine.kernel
+	// * .machine.registries (note that auth is not applied immediately, containerd limitation)
+	// * .machine.pods
+	// * .machine.seccompProfiles
+	// * .machine.features.kubernetesTalosAPIAccess
 	newConfig.ConfigDebug = currentConfig.ConfigDebug
 	newConfig.ClusterConfig = currentConfig.ClusterConfig
 
 	if newConfig.MachineConfig != nil && currentConfig.MachineConfig != nil {
 		newConfig.MachineConfig.MachineTime = currentConfig.MachineConfig.MachineTime
 		newConfig.MachineConfig.MachineCertSANs = currentConfig.MachineConfig.MachineCertSANs
+		newConfig.MachineConfig.MachineInstall = currentConfig.MachineConfig.MachineInstall
 		newConfig.MachineConfig.MachineNetwork = currentConfig.MachineConfig.MachineNetwork
+		newConfig.MachineConfig.MachineSysfs = currentConfig.MachineConfig.MachineSysfs
 		newConfig.MachineConfig.MachineSysctls = currentConfig.MachineConfig.MachineSysctls
 		newConfig.MachineConfig.MachineLogging = currentConfig.MachineConfig.MachineLogging
 		newConfig.MachineConfig.MachineControlPlane = currentConfig.MachineConfig.MachineControlPlane
 		newConfig.MachineConfig.MachineKubelet = currentConfig.MachineConfig.MachineKubelet
+		newConfig.MachineConfig.MachineKernel = currentConfig.MachineConfig.MachineKernel
+		newConfig.MachineConfig.MachineRegistries = currentConfig.MachineConfig.MachineRegistries
+		newConfig.MachineConfig.MachinePods = currentConfig.MachineConfig.MachinePods
+		newConfig.MachineConfig.MachineSeccompProfiles = currentConfig.MachineConfig.MachineSeccompProfiles
+
+		if newConfig.MachineConfig.MachineFeatures != nil && currentConfig.MachineConfig.MachineFeatures != nil {
+			newConfig.MachineConfig.MachineFeatures.KubernetesTalosAPIAccessConfig = currentConfig.MachineConfig.MachineFeatures.KubernetesTalosAPIAccessConfig
+		}
 	}
 
 	if !reflect.DeepEqual(currentConfig, newConfig) {
@@ -145,4 +189,17 @@ func (r *Runtime) NodeName() (string, error) {
 	}
 
 	return nodenameResource.(*k8s.Nodename).TypedSpec().Nodename, nil
+}
+
+// IsBootstrapAllowed checks for CRI to be up, checked in the bootstrap method.
+func (r *Runtime) IsBootstrapAllowed() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	svc := &services.CRI{}
+	if err := system.WaitForService(system.StateEventUp, svc.ID(r)).Wait(ctx); err != nil {
+		return false
+	}
+
+	return true
 }

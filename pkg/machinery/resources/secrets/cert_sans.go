@@ -5,13 +5,18 @@
 package secrets
 
 import (
-	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/gen/slices"
+	"go4.org/netipx"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // CertSANType is type of CertSAN resource.
@@ -24,58 +29,30 @@ const CertSANAPIID = resource.ID("api")
 const CertSANKubernetesID = resource.ID("k8s")
 
 // CertSAN contains certficiate subject alternative names.
-type CertSAN struct {
-	md   resource.Metadata
-	spec CertSANSpec
-}
+type CertSAN = typed.Resource[CertSANSpec, CertSANRD]
 
 // CertSANSpec describes fields of the cert SANs.
+//
+//gotagsrewrite:gen
 type CertSANSpec struct {
-	IPs      []netaddr.IP `yaml:"ips"`
-	DNSNames []string     `yaml:"dnsNames"`
-	FQDN     string       `yaml:"fqdn"`
+	IPs      []netip.Addr `yaml:"ips" protobuf:"1"`
+	DNSNames []string     `yaml:"dnsNames" protobuf:"2"`
+	FQDN     string       `yaml:"fqdn" protobuf:"3"`
 }
 
 // NewCertSAN initializes a Etc resource.
 func NewCertSAN(namespace resource.Namespace, id resource.ID) *CertSAN {
-	r := &CertSAN{
-		md:   resource.NewMetadata(namespace, CertSANType, id, resource.VersionUndefined),
-		spec: CertSANSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[CertSANSpec, CertSANRD](
+		resource.NewMetadata(namespace, CertSANType, id, resource.VersionUndefined),
+		CertSANSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *CertSAN) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *CertSAN) Spec() interface{} {
-	return r.spec
-}
-
-func (r *CertSAN) String() string {
-	return fmt.Sprintf("secrets.CertSANs(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *CertSAN) DeepCopy() resource.Resource {
-	return &CertSAN{
-		md: r.md,
-		spec: CertSANSpec{
-			IPs:      append([]netaddr.IP(nil), r.spec.IPs...),
-			DNSNames: append([]string(nil), r.spec.DNSNames...),
-			FQDN:     r.spec.FQDN,
-		},
-	}
-}
+// CertSANRD is a resource data of CertSAN.
+type CertSANRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *CertSAN) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (CertSANRD) ResourceDefinition(resource.Metadata, CertSANSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             CertSANType,
 		Aliases:          []resource.Type{},
@@ -84,15 +61,17 @@ func (r *CertSAN) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *CertSAN) TypedSpec() *CertSANSpec {
-	return &r.spec
+// Reset the list of SANs.
+func (spec *CertSANSpec) Reset() {
+	spec.DNSNames = nil
+	spec.IPs = nil
+	spec.FQDN = ""
 }
 
 // Append list of SANs splitting into IPs/DNS names.
 func (spec *CertSANSpec) Append(sans ...string) {
 	for _, san := range sans {
-		if ip, err := netaddr.ParseIP(san); err == nil {
+		if ip, err := netip.ParseAddr(san); err == nil {
 			spec.AppendIPs(ip)
 		} else {
 			spec.AppendDNSNames(san)
@@ -101,7 +80,7 @@ func (spec *CertSANSpec) Append(sans ...string) {
 }
 
 // AppendIPs skipping duplicates.
-func (spec *CertSANSpec) AppendIPs(ips ...netaddr.IP) {
+func (spec *CertSANSpec) AppendIPs(ips ...netip.Addr) {
 	for _, ip := range ips {
 		found := false
 
@@ -122,7 +101,7 @@ func (spec *CertSANSpec) AppendIPs(ips ...netaddr.IP) {
 // AppendStdIPs is same as AppendIPs, but for net.IP.
 func (spec *CertSANSpec) AppendStdIPs(ips ...net.IP) {
 	for _, ip := range ips {
-		if nip, ok := netaddr.FromStdIP(ip); ok {
+		if nip, ok := netipx.FromStdIP(ip); ok {
 			spec.AppendIPs(nip)
 		}
 	}
@@ -149,17 +128,20 @@ func (spec *CertSANSpec) AppendDNSNames(dnsNames ...string) {
 
 // StdIPs returns a list of converted std.IPs.
 func (spec *CertSANSpec) StdIPs() []net.IP {
-	result := make([]net.IP, len(spec.IPs))
-
-	for i := range spec.IPs {
-		result[i] = spec.IPs[i].IPAddr().IP
-	}
-
-	return result
+	return slices.Map(spec.IPs, func(ip netip.Addr) net.IP { return ip.AsSlice() })
 }
 
 // Sort the CertSANs.
 func (spec *CertSANSpec) Sort() {
 	sort.Strings(spec.DNSNames)
 	sort.Slice(spec.IPs, func(i, j int) bool { return spec.IPs[i].Compare(spec.IPs[j]) < 0 })
+}
+
+func init() {
+	proto.RegisterDefaultTypes()
+
+	err := protobuf.RegisterDynamic[CertSANSpec](CertSANType, &CertSAN{})
+	if err != nil {
+		panic(err)
+	}
 }

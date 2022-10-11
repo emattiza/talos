@@ -8,7 +8,7 @@ import (
 	"fmt"
 	goruntime "runtime"
 
-	"github.com/talos-systems/crypto/x509"
+	"github.com/siderolabs/crypto/x509"
 
 	"github.com/talos-systems/talos/pkg/machinery/constants"
 )
@@ -43,7 +43,31 @@ func (e *EtcdConfig) ExtraArgs() map[string]string {
 	return e.EtcdExtraArgs
 }
 
-// Subnet implements the config.Etcd interface.
-func (e *EtcdConfig) Subnet() string {
-	return e.EtcdSubnet
+// AdvertisedSubnets implements the config.Etcd interface.
+func (e *EtcdConfig) AdvertisedSubnets() []string {
+	if len(e.EtcdAdvertisedSubnets) > 0 {
+		return e.EtcdAdvertisedSubnets
+	}
+
+	if e.EtcdSubnet != "" {
+		return []string{e.EtcdSubnet}
+	}
+
+	return nil
+}
+
+// ListenSubnets implements the config.Etcd interface.
+func (e *EtcdConfig) ListenSubnets() []string {
+	if len(e.EtcdListenSubnets) > 0 {
+		return e.EtcdListenSubnets
+	}
+
+	// if advertised subnets are set, use them
+	if len(e.EtcdAdvertisedSubnets) > 0 {
+		return e.EtcdAdvertisedSubnets
+	}
+
+	// nothing set, rely on defaults (listen on all interfaces)
+
+	return nil
 }

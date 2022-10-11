@@ -6,7 +6,6 @@ package cri_test
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -50,7 +49,7 @@ type CRISuite struct {
 	containerdAddress string
 
 	client    *criclient.Client
-	ctx       context.Context
+	ctx       context.Context //nolint:containedctx
 	ctxCancel context.CancelFunc
 
 	inspector ctrs.Inspector
@@ -65,8 +64,7 @@ func (suite *CRISuite) SetupSuite() {
 
 	var err error
 
-	suite.tmpDir, err = ioutil.TempDir("", "talos")
-	suite.Require().NoError(err)
+	suite.tmpDir = suite.T().TempDir()
 
 	stateDir, rootDir := filepath.Join(suite.tmpDir, "state"), filepath.Join(suite.tmpDir, "root")
 	suite.Require().NoError(os.Mkdir(stateDir, 0o777))
@@ -140,8 +138,6 @@ func (suite *CRISuite) TearDownSuite() {
 
 	suite.Require().NoError(suite.containerdRunner.Stop())
 	suite.containerdWg.Wait()
-
-	suite.Require().NoError(os.RemoveAll(suite.tmpDir))
 }
 
 func (suite *CRISuite) SetupTest() {
@@ -175,12 +171,15 @@ func (suite *CRISuite) SetupTest() {
 	suite.pods = append(suite.pods, podSandboxID)
 	suite.Require().Len(podSandboxID, 64)
 
-	imageRef, err := suite.client.PullImage(suite.ctx, &runtimeapi.ImageSpec{
-		Image: busyboxImage,
-	}, podSandboxConfig)
+	imageRef, err := suite.client.PullImage(
+		suite.ctx, &runtimeapi.ImageSpec{
+			Image: busyboxImage,
+		}, podSandboxConfig,
+	)
 	suite.Require().NoError(err)
 
-	ctrID, err := suite.client.CreateContainer(suite.ctx, podSandboxID,
+	ctrID, err := suite.client.CreateContainer(
+		suite.ctx, podSandboxID,
 		&runtimeapi.ContainerConfig{
 			Metadata: &runtimeapi.ContainerMetadata{
 				Name: "etcd",
@@ -197,7 +196,8 @@ func (suite *CRISuite) SetupTest() {
 				Image: imageRef,
 			},
 			Command: []string{"/bin/sh", "-c", "sleep 3600"},
-		}, podSandboxConfig)
+		}, podSandboxConfig,
+	)
 	suite.Require().NoError(err)
 	suite.Require().Len(ctrID, 64)
 

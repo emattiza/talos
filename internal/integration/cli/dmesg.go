@@ -3,7 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //go:build integration_cli
-// +build integration_cli
 
 package cli
 
@@ -12,6 +11,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/siderolabs/gen/slices"
 
 	"github.com/talos-systems/talos/internal/integration/base"
 )
@@ -28,21 +29,19 @@ func (suite *DmesgSuite) SuiteName() string {
 
 // TestHasOutput verifies that dmesg is displayed.
 func (suite *DmesgSuite) TestHasOutput() {
-	suite.RunCLI([]string{"dmesg", "--nodes", suite.RandomDiscoveredNode()}) // default checks for stdout not empty
+	suite.RunCLI([]string{"dmesg", "--nodes", suite.RandomDiscoveredNodeInternalIP()}) // default checks for stdout not empty
 }
 
 // TestClusterHasOutput verifies that each node in the cluster has some output.
 func (suite *DmesgSuite) TestClusterHasOutput() {
-	nodes := suite.DiscoverNodes(context.TODO()).Nodes()
+	nodes := suite.DiscoverNodeInternalIPs(context.TODO())
 	suite.Require().NotEmpty(nodes)
 
-	matchers := make([]base.RunOption, 0, len(nodes))
-
-	for _, node := range nodes {
-		matchers = append(matchers,
-			base.StdoutShouldMatch(
-				regexp.MustCompile(fmt.Sprintf(`(?m)^%s:`, regexp.QuoteMeta(node)))))
-	}
+	matchers := slices.Map(nodes, func(node string) base.RunOption {
+		return base.StdoutShouldMatch(
+			regexp.MustCompile(fmt.Sprintf(`(?m)^%s:`, regexp.QuoteMeta(node))),
+		)
+	})
 
 	suite.RunCLI([]string{"--nodes", strings.Join(nodes, ","), "dmesg"},
 		matchers...)

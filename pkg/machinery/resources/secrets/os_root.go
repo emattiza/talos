@@ -5,12 +5,15 @@
 package secrets
 
 import (
-	"fmt"
+	"net/netip"
 
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
-	"github.com/talos-systems/crypto/x509"
-	"inet.af/netaddr"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
+	"github.com/cosi-project/runtime/pkg/resource/typed"
+	"github.com/siderolabs/crypto/x509"
+
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // OSRootType is type of OSRoot secret resource.
@@ -20,56 +23,32 @@ const OSRootType = resource.Type("OSRootSecrets.secrets.talos.dev")
 const OSRootID = resource.ID("os")
 
 // OSRoot contains root (not generated) secrets.
-type OSRoot struct {
-	md   resource.Metadata
-	spec OSRootSpec
-}
+type OSRoot = typed.Resource[OSRootSpec, OSRootRD]
 
 // OSRootSpec describes operating system CA.
+//
+//gotagsrewrite:gen
 type OSRootSpec struct {
-	CA              *x509.PEMEncodedCertificateAndKey `yaml:"ca"`
-	CertSANIPs      []netaddr.IP                      `yaml:"certSANIPs"`
-	CertSANDNSNames []string                          `yaml:"certSANDNSNames"`
+	CA              *x509.PEMEncodedCertificateAndKey `yaml:"ca" protobuf:"1"`
+	CertSANIPs      []netip.Addr                      `yaml:"certSANIPs" protobuf:"2"`
+	CertSANDNSNames []string                          `yaml:"certSANDNSNames" protobuf:"3"`
 
-	Token string `yaml:"token"`
+	Token string `yaml:"token" protobuf:"4"`
 }
 
 // NewOSRoot initializes a OSRoot resource.
 func NewOSRoot(id resource.ID) *OSRoot {
-	r := &OSRoot{
-		md:   resource.NewMetadata(NamespaceName, OSRootType, id, resource.VersionUndefined),
-		spec: OSRootSpec{},
-	}
-
-	r.md.BumpVersion()
-
-	return r
+	return typed.NewResource[OSRootSpec, OSRootRD](
+		resource.NewMetadata(NamespaceName, OSRootType, id, resource.VersionUndefined),
+		OSRootSpec{},
+	)
 }
 
-// Metadata implements resource.Resource.
-func (r *OSRoot) Metadata() *resource.Metadata {
-	return &r.md
-}
-
-// Spec implements resource.Resource.
-func (r *OSRoot) Spec() interface{} {
-	return &r.spec
-}
-
-func (r *OSRoot) String() string {
-	return fmt.Sprintf("secrets.OSRoot(%q)", r.md.ID())
-}
-
-// DeepCopy implements resource.Resource.
-func (r *OSRoot) DeepCopy() resource.Resource {
-	return &OSRoot{
-		md:   r.md,
-		spec: r.spec,
-	}
-}
+// OSRootRD provides auxiliary methods for OSRoot.
+type OSRootRD struct{}
 
 // ResourceDefinition implements meta.ResourceDefinitionProvider interface.
-func (r *OSRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
+func (OSRootRD) ResourceDefinition(resource.Metadata, OSRootSpec) meta.ResourceDefinitionSpec {
 	return meta.ResourceDefinitionSpec{
 		Type:             OSRootType,
 		Aliases:          []resource.Type{},
@@ -78,7 +57,10 @@ func (r *OSRoot) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
-// TypedSpec returns .spec.
-func (r *OSRoot) TypedSpec() *OSRootSpec {
-	return &r.spec
+func init() {
+	proto.RegisterDefaultTypes()
+
+	if err := protobuf.RegisterDynamic[OSRootSpec](OSRootType, &OSRoot{}); err != nil {
+		panic(err)
+	}
 }

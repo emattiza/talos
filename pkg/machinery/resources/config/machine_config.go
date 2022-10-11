@@ -5,14 +5,15 @@
 package config
 
 import (
-	"fmt"
-
 	"github.com/cosi-project/runtime/pkg/resource"
 	"github.com/cosi-project/runtime/pkg/resource/meta"
+	"github.com/cosi-project/runtime/pkg/resource/protobuf"
 
+	configpb "github.com/talos-systems/talos/pkg/machinery/api/resource/config"
 	"github.com/talos-systems/talos/pkg/machinery/config"
-	"github.com/talos-systems/talos/pkg/machinery/config/encoder"
+	"github.com/talos-systems/talos/pkg/machinery/config/configloader"
 	"github.com/talos-systems/talos/pkg/machinery/config/types/v1alpha1"
+	"github.com/talos-systems/talos/pkg/machinery/proto"
 )
 
 // MachineConfigType is type of Service resource.
@@ -31,8 +32,9 @@ type v1alpha1Spec struct {
 	cfg config.Provider
 }
 
-func (s *v1alpha1Spec) MarshalYAML() (interface{}, error) {
-	return encoder.NewEncoder(s.cfg).Marshal()
+// MarshalYAMLBytes implements RawYAML interface.
+func (s *v1alpha1Spec) MarshalYAMLBytes() ([]byte, error) {
+	return s.cfg.Bytes()
 }
 
 // NewMachineConfig initializes a V1Alpha1 resource.
@@ -43,8 +45,6 @@ func NewMachineConfig(spec config.Provider) *MachineConfig {
 			cfg: spec,
 		},
 	}
-
-	r.md.BumpVersion()
 
 	return r
 }
@@ -59,16 +59,22 @@ func (r *MachineConfig) Spec() interface{} {
 	return r.spec
 }
 
-func (r *MachineConfig) String() string {
-	return fmt.Sprintf("config.MachineConfig(%q)", r.md.ID())
-}
-
 // DeepCopy implements resource.Resource.
 func (r *MachineConfig) DeepCopy() resource.Resource {
+	var cfgCopy config.Provider
+
+	switch r.spec.cfg.(type) {
+	case *v1alpha1.ReadonlyProvider:
+		// don't copy read only config
+		cfgCopy = r.spec.cfg
+	default:
+		cfgCopy = r.spec.cfg.Raw().(*v1alpha1.Config).DeepCopy()
+	}
+
 	return &MachineConfig{
 		md: r.md,
 		spec: &v1alpha1Spec{
-			cfg: r.spec.cfg.(*v1alpha1.Config).DeepCopy(),
+			cfg: cfgCopy,
 		},
 	}
 }
@@ -83,7 +89,48 @@ func (r *MachineConfig) ResourceDefinition() meta.ResourceDefinitionSpec {
 	}
 }
 
+// MarshalProto implements ProtoMarshaler.
+func (s *v1alpha1Spec) MarshalProto() ([]byte, error) {
+	yamlBytes, err := s.cfg.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	protoSpec := configpb.MachineConfigSpec{
+		YamlMarshalled: yamlBytes,
+	}
+
+	return proto.Marshal(&protoSpec)
+}
+
+// UnmarshalProto implements protobuf.ResourceUnmarshaler.
+func (r *MachineConfig) UnmarshalProto(md *resource.Metadata, protoBytes []byte) error {
+	protoSpec := configpb.MachineConfigSpec{}
+
+	if err := proto.Unmarshal(protoBytes, &protoSpec); err != nil {
+		return err
+	}
+
+	cfg, err := configloader.NewFromBytes(protoSpec.YamlMarshalled)
+	if err != nil {
+		return err
+	}
+
+	r.md = *md
+	r.spec = &v1alpha1Spec{
+		cfg: cfg,
+	}
+
+	return nil
+}
+
 // Config returns config.Provider.
 func (r *MachineConfig) Config() config.Provider {
 	return r.spec.cfg
+}
+
+func init() {
+	if err := protobuf.RegisterResource(MachineConfigType, &MachineConfig{}); err != nil {
+		panic(err)
+	}
 }

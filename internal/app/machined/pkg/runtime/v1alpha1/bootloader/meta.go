@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/talos-systems/go-blockdevice/blockdevice/probe"
+	"github.com/siderolabs/go-blockdevice/blockdevice/probe"
 
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/adv"
 	"github.com/talos-systems/talos/internal/app/machined/pkg/runtime/v1alpha1/bootloader/adv/syslinux"
@@ -112,9 +112,22 @@ func (m *Meta) Revert() (err error) {
 		return m.Write()
 	}
 
-	g := &grub.Grub{}
+	conf, err := grub.Read(grub.ConfigPath)
+	if err != nil {
+		return err
+	}
 
-	if err = g.Default(label); err != nil {
+	if conf == nil {
+		return nil
+	}
+
+	bootEntry, err := grub.ParseBootLabel(label)
+	if err != nil {
+		return err
+	}
+
+	conf.Default = bootEntry
+	if err = conf.Write(grub.ConfigPath); err != nil {
 		return err
 	}
 

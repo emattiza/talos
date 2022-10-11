@@ -16,8 +16,12 @@ import (
 	talosconfig "github.com/talos-systems/talos/pkg/machinery/config"
 	"github.com/talos-systems/talos/pkg/machinery/resources/cluster"
 	"github.com/talos-systems/talos/pkg/machinery/resources/config"
+	"github.com/talos-systems/talos/pkg/machinery/resources/cri"
+	"github.com/talos-systems/talos/pkg/machinery/resources/etcd"
 	"github.com/talos-systems/talos/pkg/machinery/resources/files"
+	"github.com/talos-systems/talos/pkg/machinery/resources/hardware"
 	"github.com/talos-systems/talos/pkg/machinery/resources/k8s"
+	"github.com/talos-systems/talos/pkg/machinery/resources/kubeaccess"
 	"github.com/talos-systems/talos/pkg/machinery/resources/kubespan"
 	"github.com/talos-systems/talos/pkg/machinery/resources/network"
 	"github.com/talos-systems/talos/pkg/machinery/resources/perf"
@@ -62,12 +66,15 @@ func NewState() (*State, error) {
 		{cluster.NamespaceName, "Cluster configuration and discovery resources."},
 		{cluster.RawNamespaceName, "Cluster unmerged raw resources."},
 		{config.NamespaceName, "Talos node configuration."},
+		{etcd.NamespaceName, "etcd resources."},
 		{files.NamespaceName, "Files and file-like resources."},
+		{hardware.NamespaceName, "Hardware resources."},
 		{k8s.NamespaceName, "Kubernetes all node types resources."},
 		{k8s.ControlPlaneNamespaceName, "Kubernetes control plane resources."},
 		{kubespan.NamespaceName, "KubeSpan resources."},
 		{network.NamespaceName, "Networking resources."},
 		{network.ConfigNamespaceName, "Networking configuration resources."},
+		{cri.NamespaceName, "CRI Seccomp resources."},
 		{secrets.NamespaceName, "Resources with secret material."},
 		{perf.NamespaceName, "Stats resources."},
 	} {
@@ -85,20 +92,36 @@ func NewState() (*State, error) {
 		&cluster.Member{},
 		&config.MachineConfig{},
 		&config.MachineType{},
-		&config.K8sControlPlane{},
+		&cri.SeccompProfile{},
+		&etcd.Config{},
+		&etcd.PKIStatus{},
+		&etcd.Spec{},
 		&files.EtcFileSpec{},
 		&files.EtcFileStatus{},
+		&hardware.Processor{},
+		&hardware.MemoryModule{},
+		&hardware.SystemInformation{},
+		&k8s.AdmissionControlConfig{},
+		&k8s.AuditPolicyConfig{},
+		&k8s.APIServerConfig{},
+		&k8s.ConfigStatus{},
+		&k8s.ControllerManagerConfig{},
 		&k8s.Endpoint{},
+		&k8s.ExtraManifestsConfig{},
 		&k8s.KubeletConfig{},
+		&k8s.KubeletLifecycle{},
 		&k8s.KubeletSpec{},
 		&k8s.Manifest{},
 		&k8s.ManifestStatus{},
+		&k8s.BootstrapManifestsConfig{},
 		&k8s.NodeIP{},
 		&k8s.NodeIPConfig{},
 		&k8s.Nodename{},
+		&k8s.SchedulerConfig{},
 		&k8s.StaticPod{},
 		&k8s.StaticPodStatus{},
 		&k8s.SecretsStatus{},
+		&kubeaccess.Config{},
 		&kubespan.Config{},
 		&kubespan.Endpoint{},
 		&kubespan.Identity{},
@@ -106,6 +129,7 @@ func NewState() (*State, error) {
 		&kubespan.PeerStatus{},
 		&network.AddressStatus{},
 		&network.AddressSpec{},
+		&network.DeviceConfigSpec{},
 		&network.HardwareAddr{},
 		&network.HostnameStatus{},
 		&network.HostnameSpec{},
@@ -124,9 +148,12 @@ func NewState() (*State, error) {
 		&network.TimeServerSpec{},
 		&perf.CPU{},
 		&perf.Memory{},
+		&runtime.ExtensionStatus{},
+		&runtime.KernelModuleSpec{},
 		&runtime.KernelParamSpec{},
 		&runtime.KernelParamDefaultSpec{},
 		&runtime.KernelParamStatus{},
+		&runtime.MachineStatus{},
 		&runtime.MountStatus{},
 		&secrets.API{},
 		&secrets.CertSAN{},
@@ -136,6 +163,7 @@ func NewState() (*State, error) {
 		&secrets.Kubernetes{},
 		&secrets.KubernetesRoot{},
 		&secrets.OSRoot{},
+		&secrets.Trustd{},
 		&time.Status{},
 	} {
 		if err := s.resourceRegistry.Register(ctx, r); err != nil {
@@ -176,7 +204,6 @@ func (s *State) SetConfig(cfg talosconfig.Provider) error {
 	}
 
 	cfgResource.Metadata().SetVersion(oldCfg.Metadata().Version())
-	cfgResource.Metadata().BumpVersion()
 
-	return s.resources.Update(ctx, oldCfg.Metadata().Version(), cfgResource)
+	return s.resources.Update(ctx, cfgResource)
 }
